@@ -1,7 +1,5 @@
 package com.enve.app.data.remote.dto
 
-import com.enve.app.data.remote.dto.grimmoryapp.LanguageOptionDto
-import com.enve.app.data.remote.dto.grimmoryapp.NamedCountDto
 import kotlinx.serialization.KSerializer
 import kotlinx.serialization.SerialName
 import kotlinx.serialization.Serializable
@@ -10,7 +8,9 @@ import kotlinx.serialization.descriptors.PrimitiveSerialDescriptor
 import kotlinx.serialization.descriptors.SerialDescriptor
 import kotlinx.serialization.encoding.Decoder
 import kotlinx.serialization.encoding.Encoder
+import kotlinx.serialization.json.JsonArray
 import kotlinx.serialization.json.JsonDecoder
+import kotlinx.serialization.json.JsonElement
 import kotlinx.serialization.json.JsonPrimitive
 import kotlinx.serialization.json.contentOrNull
 import kotlinx.serialization.json.longOrNull
@@ -235,15 +235,24 @@ data class LegacyBookloreBookDto(
     val metadata: LegacyBookloreMetadataDto? = null,
     val primaryFile: BookFileDto? = null,
     val alternativeFormats: List<BookFileDto>? = null,
+    val shelves: List<ShelfDto>? = null,
     val audiobookProgress: AudiobookProgressDto? = null,
     val epubProgress: EbookProgressObjectDto? = null,
     val pdfProgress: PageProgressDto? = null,
     val cbxProgress: PageProgressDto? = null,
+    val koreaderProgress: GrimmoryPercentageDto? = null,
+    val koboProgress: GrimmoryPercentageDto? = null,
+)
+
+@Serializable
+data class GrimmoryPercentageDto(
+    val percentage: Float? = null,
 )
 
 @Serializable
 data class LegacyBookloreMetadataDto(
     val title: String? = null,
+    val subtitle: String? = null,
     val authors: List<String>? = null,
     val seriesName: String? = null,
     val seriesNumber: String? = null,
@@ -259,6 +268,7 @@ data class LegacyBookloreMetadataDto(
     val audiobookCoverUpdatedOn: String? = null,
     val categories: List<String>? = null,
     val goodreadsRating: Float? = null,
+    val goodreadsReviewCount: Int? = null,
     val isbn10: String? = null,
     val ageRating: Int? = null,
     val contentRating: String? = null,
@@ -270,16 +280,26 @@ data class GrimmoryComicMetadataDto(
 )
 
 @Serializable
-data class PaginatedBooksResponse(
-    val content: List<BookSummaryDto> = emptyList(),
-    val totalElements: Int? = null,
-    val totalPages: Int? = null,
-
-    @SerialName("page") val page: Int? = null,
-    val size: Int? = null,
-    val hasNext: Boolean? = null,
-    val hasPrevious: Boolean? = null,
+data class GrimmoryBrowsePage<T>(
+    val content: List<T>,
+    val page: GrimmoryPageInfo,
 )
+
+@Serializable
+data class GrimmoryPageInfo(
+    val number: Int,
+    val size: Int,
+    val totalElements: Long,
+    val totalPages: Int,
+) {
+    init {
+        require(number >= 0 && size > 0 && totalElements >= 0 && totalPages >= 0)
+        require(totalPages.toLong() == (totalElements + size - 1) / size)
+    }
+
+    val hasNext: Boolean
+        get() = number + 1 < totalPages
+}
 
 @Serializable
 data class AudiobookInfoDto(
@@ -320,9 +340,11 @@ data class TrackDto(
 
 @Serializable
 data class ShelfDto(
-    val id: String,
+    @Serializable(with = FlexibleIdSerializer::class) val id: String,
     val name: String,
+    val icon: String? = null,
     val bookCount: Int? = null,
+    val publicShelf: Boolean = false,
 )
 
 @Serializable
@@ -345,11 +367,6 @@ data class GrimmoryKoreaderProgressDto(
 )
 
 @Serializable
-data class GrimmoryUpdateProgressRequest(
-    val fileProgress: GrimmoryFileProgressDto? = null,
-)
-
-@Serializable
 data class GrimmoryFileProgressDto(
     val bookFileId: Long,
     val positionData: String? = null,
@@ -362,16 +379,7 @@ data class GrimmoryFileProgressDto(
 @Serializable
 data class GrimmoryProgressRequest(
     val bookId: Long,
-    val fileProgress: GrimmoryProgressFileProgress,
-    val dateFinished: String? = null,
-)
-
-@Serializable
-data class GrimmoryProgressFileProgress(
-    val bookFileId: Long,
-    val positionData: String? = null,
-    val positionHref: String? = null,
-    val progressPercent: Double,
+    val fileProgress: GrimmoryFileProgressDto,
 )
 
 @Serializable
@@ -413,36 +421,46 @@ data class OidcDiscoveryDto(
 )
 
 @Serializable
-data class SeriesSummaryDto(
-    @SerialName("seriesName") val name: String,
-    val bookCount: Int? = null,
-    val bookIds: List<String>? = null,
+data class GrimmoryFacetGroupsResponse(
+    val links: List<GrimmoryBrowseLink> = emptyList(),
+    val facets: List<GrimmoryFacetGroup> = emptyList(),
+) {
+    val hasNext: Boolean
+        get() = links.any { link -> "next" in link.rels }
+}
 
-    val id: String? = null,
-    val coverUrl: String? = null,
+@Serializable
+data class GrimmoryBrowseLink(
+    val rel: JsonElement? = null,
+    val href: String? = null,
+) {
+    val rels: List<String>
+        get() = when (rel) {
+            is JsonArray -> rel.mapNotNull { (it as? JsonPrimitive)?.contentOrNull }
+            is JsonPrimitive -> listOfNotNull(rel.contentOrNull)
+            else -> emptyList()
+        }
+}
+
+@Serializable
+data class GrimmoryFacetGroup(
+    val links: List<GrimmoryFacetValueDto> = emptyList(),
 )
 
 @Serializable
-data class PaginatedSeriesResponse(
-    val content: List<SeriesSummaryDto> = emptyList(),
-    val totalElements: Int? = null,
-    val totalPages: Int? = null,
-    val number: Int? = null,
-    val hasNext: Boolean? = null,
+data class GrimmoryFacetValueDto(
+    val value: String? = null,
+    val properties: GrimmoryFacetPropertiesDto? = null,
 )
 
 @Serializable
-data class FilterOptionsDto(
-    val authors: List<NamedCountDto>? = null,
-    val narrators: List<NamedCountDto>? = null,
-    val languages: List<LanguageOptionDto>? = null,
-    val categories: List<NamedCountDto>? = null,
-    val fileTypes: List<NamedCountDto>? = null,
-    val publishers: List<NamedCountDto>? = null,
+data class GrimmoryFacetPropertiesDto(
+    val numberOfItems: Long? = null,
 )
 
 @Serializable
-data class UpdateStatusRequest(
+data class ReadStatusUpdateRequest(
+    val bookIds: List<Long>,
     val status: String,
 )
 
@@ -454,51 +472,25 @@ data class UpdateRatingRequest(
 
 @Serializable
 data class MagicShelfDto(
-    val id: String,
+    @Serializable(with = FlexibleIdSerializer::class) val id: String,
     val name: String,
-    val description: String? = null,
-    val bookCount: Int? = null,
-    val isPublic: Boolean? = null,
+    val icon: String? = null,
+    val iconType: String? = null,
+    val isPublic: Boolean = false,
 )
 
 @Serializable
 data class AuthorSummaryDto(
-    val id: String,
+    @Serializable(with = FlexibleIdSerializer::class) val id: String,
     val name: String,
-    val photoUrl: String? = null,
     val bookCount: Int? = null,
-)
-
-@Serializable
-data class AuthorDetailDto(
-    val id: String,
-    val name: String,
-    val photoUrl: String? = null,
-    val biography: String? = null,
-    val books: List<BookSummaryDto>? = null,
-)
-
-@Serializable
-data class PaginatedAuthorsResponse(
-    val content: List<AuthorSummaryDto> = emptyList(),
-    val totalElements: Int? = null,
-    val totalPages: Int? = null,
-    val number: Int? = null,
-    val hasNext: Boolean? = null,
-)
-
-@Serializable
-data class NotebookBookSummaryDto(
-    @Serializable(with = FlexibleIdSerializer::class) val bookId: String,
-    val bookTitle: String? = null,
-    val noteCount: Int? = null,
-    val authors: List<String>? = null,
-    val coverUpdatedOn: String? = null,
 )
 
 @Serializable
 data class NotebookEntryDto(
     @Serializable(with = FlexibleIdSerializer::class) val id: String,
+    @Serializable(with = FlexibleIdSerializer::class) val bookId: String = "",
+    val bookTitle: String? = null,
     val type: String? = null,
     val text: String? = null,
     val note: String? = null,
@@ -507,24 +499,6 @@ data class NotebookEntryDto(
     val color: String? = null,
     val createdAt: String? = null,
     val updatedAt: String? = null,
-)
-
-@Serializable
-data class PaginatedNotebookBooksResponse(
-    val content: List<NotebookBookSummaryDto> = emptyList(),
-    val totalElements: Int? = null,
-    val totalPages: Int? = null,
-    val number: Int? = null,
-    val hasNext: Boolean? = null,
-)
-
-@Serializable
-data class PaginatedNotebookEntriesResponse(
-    val content: List<NotebookEntryDto> = emptyList(),
-    val totalElements: Int? = null,
-    val totalPages: Int? = null,
-    val number: Int? = null,
-    val hasNext: Boolean? = null,
 )
 
 @Serializable

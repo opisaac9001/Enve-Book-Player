@@ -13,6 +13,8 @@ struct LibraryBookGrid: View {
     var isSelecting = false
     var isSelected: ((Book) -> Bool)? = nil
     var onToggleSelect: ((Book) -> Void)? = nil
+    /// Set while a detail pane is showing beside the grid; opens the book there instead of pushing.
+    var onOpen: ((Book, LibraryWorkRef?) -> Void)? = nil
 
     @Environment(\.profileSession) private var profileSession
 
@@ -34,7 +36,8 @@ struct LibraryBookGrid: View {
                     isSelecting: isSelecting,
                     isSelected: isSelected?(book) ?? false,
                     onToggleSelect: onToggleSelect,
-                    onHide: onHide
+                    onHide: onHide,
+                    onOpen: onOpen
                 )
                 .onAppear { onBookAppear?(book) }
             }
@@ -54,6 +57,7 @@ struct LibraryBookCell: View {
     var isSelected = false
     var onToggleSelect: ((Book) -> Void)? = nil
     var onHide: ((Book) -> Void)?
+    var onOpen: ((Book, LibraryWorkRef?) -> Void)? = nil
 
     @Environment(\.hearth) private var hearth
     @Environment(EnveEngine.self) private var engine
@@ -69,6 +73,35 @@ struct LibraryBookCell: View {
             }
             .buttonStyle(PressableStyle())
         } else {
+            opener
+                .buttonStyle(PressableStyle())
+                .contextMenu {
+                    LibraryBookContextMenu(
+                        book: book,
+                        onHide: onHide,
+                        onDelete: { _ in confirmDelete = true }
+                    )
+                }
+                .alert("Delete local book?", isPresented: $confirmDelete) {
+                    Button("Delete", role: .destructive) {
+                        engine.library.permanentlyDelete(book)
+                    }
+                    Button("Cancel", role: .cancel) {}
+                } message: {
+                    Text("Removes \"\(book.title)\" from Enve and deletes its imported files from this device.")
+                }
+        }
+    }
+
+    @ViewBuilder
+    private var opener: some View {
+        if let onOpen {
+            Button {
+                onOpen(book, workRef)
+            } label: {
+                cover
+            }
+        } else {
             NavigationLink {
                 if let workRef {
                     WorkHubScreen(workKey: workRef.key, seed: book)
@@ -77,22 +110,6 @@ struct LibraryBookCell: View {
                 }
             } label: {
                 cover
-            }
-            .buttonStyle(PressableStyle())
-            .contextMenu {
-                LibraryBookContextMenu(
-                    book: book,
-                    onHide: onHide,
-                    onDelete: { _ in confirmDelete = true }
-                )
-            }
-            .alert("Delete local book?", isPresented: $confirmDelete) {
-                Button("Delete", role: .destructive) {
-                    engine.library.permanentlyDelete(book)
-                }
-                Button("Cancel", role: .cancel) {}
-            } message: {
-                Text("Removes \"\(book.title)\" from Enve and deletes its imported files from this device.")
             }
         }
     }
@@ -390,8 +407,8 @@ struct LibraryAuthorGridCell: View {
             }
         }
         .buttonStyle(PressableStyle())
-        .task(id: aggregate.name) {
-            guard cover == nil else { return }
+        .task(id: aggregate.representativeBookUniqueID) {
+            guard cover?.uniqueId != aggregate.representativeBookUniqueID else { return }
             cover = await engine.library.coverBook(forAuthor: aggregate, mediaScope: mediaScope)
         }
     }
@@ -531,8 +548,8 @@ struct LibraryAuthorRow: View {
             }
         }
         .buttonStyle(PressableStyle())
-        .task(id: aggregate.name) {
-            guard cover == nil else { return }
+        .task(id: aggregate.representativeBookUniqueID) {
+            guard cover?.uniqueId != aggregate.representativeBookUniqueID else { return }
             cover = await engine.library.coverBook(forAuthor: aggregate, mediaScope: mediaScope)
         }
     }

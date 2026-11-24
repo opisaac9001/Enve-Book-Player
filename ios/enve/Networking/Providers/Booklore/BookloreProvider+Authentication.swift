@@ -340,12 +340,16 @@ extension BookloreProvider {
     func attemptTierUpgrade() async {
         guard useLegacyRestAPI || useKomgaFallback else { return }
 
-        guard let req = try? makeRequest(path: "/api/v1/app/users/me") else { return }
-        guard let (_, response) = try? await send(req), response.statusCode == 200 else { return }
+        // `/api/v1/users/me` predates the browse API, so probe the catalog endpoint this tier depends on.
+        guard let req = try? browsePageRequest(facets: [], sort: "-addedOn", page: 0, size: 1),
+            let (data, response) = try? await send(req),
+            response.statusCode == 200,
+            (try? JSONDecoder().decode(BooklorePage<BookloreLegacyBook>.self, from: data)) != nil
+        else { return }
         useLegacyRestAPI = false
         useKomgaFallback = false
         tierPreference.clear()
-        AppLogger.network.info("[Booklore] Upgraded back to app-tier API")
+        AppLogger.network.info("[Booklore] Upgraded back to the browse-tier API")
     }
 
     func demoteKomgaToLegacyREST() {

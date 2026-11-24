@@ -55,6 +55,28 @@ class BookCacheDaoTest {
     }
 
     @Test
+    fun catalogSampleIsBoundedWithoutDroppingDownloadsOrLocalFilterMetadata() = runBlocking {
+        val mirror = (1..1_500).map { index ->
+            cachedBook(id = "silo-$index").copy(
+                cacheKey = "silo:silo-$index", connectionId = "silo", source = "SILO",
+                libraryId = "silo::books", cachedAt = index.toLong(), inProgress = false,
+                isDownloaded = index == 1, language = "en", categoriesJson = "[\"Fiction\"]",
+            )
+        }
+        dao.upsert(mirror + cachedBook(id = "local").copy(source = "LOCAL", inProgress = false))
+        val sample = dao.observeCatalogLocalBooks(emptyList()).first()
+        assertEquals(1_202, sample.size)
+        assertNotNull(sample.find { it.id == "silo-1" })
+        assertNull(sample.find { it.id == "silo-2" })
+        assertEquals("en", sample.first { it.id == "silo-1" }.language)
+        assertEquals("[\"Fiction\"]", sample.first { it.id == "silo-1" }.categoriesJson)
+        assertEquals(listOf("local"), dao.observeCatalogLocalBooks(listOf("silo::books")).first().map { it.id })
+        dao.insertIfAbsent(listOf(mirror.first().copy(language = null, categoriesJson = "[]", isDownloaded = false)))
+        assertEquals("en", dao.getByCacheKey("silo:silo-1")!!.language)
+        assertEquals(true, dao.getByCacheKey("silo:silo-1")!!.isDownloaded)
+    }
+
+    @Test
     fun detectedNarrationSurvivesReplacementWithoutLeakingToAnotherConnection() = runBlocking {
         val first = cachedBook(id = "narrated").copy(cacheKey = "one:narrated", connectionId = "one", readAlongAvailable = false)
         val second = first.copy(cacheKey = "two:narrated", connectionId = "two")

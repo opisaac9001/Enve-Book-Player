@@ -1067,11 +1067,7 @@ class StorytellerProvider: WholeSnapshotCatalogProvider, PlaybackSessionProvider
             throw ProviderError.serverError("Download failed HTTP \(code)")
         }
 
-        let stableURL = FileManager.default.temporaryDirectory.appendingPathComponent("\(book.id).epub")
-        let atomicTemp = FileManager.default.temporaryDirectory.appendingPathComponent("\(UUID().uuidString).epub")
-        try FileManager.default.moveItem(at: tempURL, to: atomicTemp)
-        _ = try? FileManager.default.replaceItemAt(stableURL, withItemAt: atomicTemp)
-        return stableURL
+        return try ebookImporter.cacheRemoteEbook(tempURL: tempURL, preferredFilename: "book.epub", bookIdentifier: book.ebookStorageID)
     }
 
     func downloadReadaloud(for book: Book, onProgress: (@Sendable (Double) -> Void)?) async throws -> URL {
@@ -1096,7 +1092,7 @@ class StorytellerProvider: WholeSnapshotCatalogProvider, PlaybackSessionProvider
         #endif
         let cachedURL = try ebookImporter.cacheReadaloudEpub(
             tempURL: tempURL,
-            bookId: book.id
+            bookId: book.ebookStorageID
         )
         return cachedURL
     }

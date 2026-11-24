@@ -5,22 +5,6 @@ import Logging
 final class BookloreProgressClient {
     typealias RequestBuilder = (String) throws -> URLRequest
     typealias AuthorizedRequest = (URLRequest) async throws -> (Data, HTTPURLResponse)
-    typealias ResponseValidator = (Data, HTTPURLResponse, String) throws -> Void
-
-    struct EbookProgressContext {
-        struct PageProgress {
-            let page: Int?
-            let percentage: Double?
-            let updatedAt: String?
-        }
-
-        let usesEpubProgress: Bool
-        let readProgress: Double?
-        let readStatus: String?
-        let lastReadTime: String?
-        let pdfProgress: PageProgress?
-        let cbxProgress: PageProgress?
-    }
 
     private struct AudiobookProgressPayload: Decodable {
         struct Position: Decodable {
@@ -61,29 +45,6 @@ final class BookloreProgressClient {
         }
     }
 
-    private struct AppEbookProgressPayload: Decodable {
-        struct EpubPosition: Decodable {
-            let percentage: Double?
-            let cfi: String?
-            let href: String?
-            let contentSourceProgressPercent: Double?
-            let updatedAt: String?
-        }
-
-        struct PagePosition: Decodable {
-            let percentage: Double?
-            let page: Int?
-            let updatedAt: String?
-        }
-
-        let readProgress: Double?
-        let readStatus: String?
-        let lastReadTime: String?
-        let epubProgress: EpubPosition?
-        let pdfProgress: PagePosition?
-        let cbxProgress: PagePosition?
-    }
-
     struct EbookProgressRequest: Encodable {
         struct FileProgress: Encodable {
             let bookFileId: Int
@@ -94,11 +55,8 @@ final class BookloreProgressClient {
             let contentSourceProgressPercent: Double?
         }
 
+        let bookId: Int
         let fileProgress: FileProgress
-    }
-
-    private struct BookDetailEpubProgressPayload: Decodable {
-        let epubProgress: AppEbookProgressPayload.EpubPosition?
     }
 
     private struct AudiobookInfo: Decodable {
@@ -120,77 +78,49 @@ final class BookloreProgressClient {
 
     private let makeRequest: RequestBuilder
     private let performAuthorizedRequest: AuthorizedRequest
-    private let validateResponse: ResponseValidator
     private var audiobookFileIds: [String: Int] = [:]
 
     init(
         makeRequest: @escaping RequestBuilder,
-        performAuthorizedRequest: @escaping AuthorizedRequest,
-        validateResponse: @escaping ResponseValidator = { _, _, _ in }
+        performAuthorizedRequest: @escaping AuthorizedRequest
     ) {
         self.makeRequest = makeRequest
         self.performAuthorizedRequest = performAuthorizedRequest
-        self.validateResponse = validateResponse
+    }
+
+    // The standard Book response omits audio progress when an ebook file was read more recently.
+    private func fetchAudiobookProgressData(bookId: String) async -> Data? {
+        guard let (data, response) = try? await performAuthorizedRequest(
+            try makeRequest("/api/v1/app/books/\(bookId)/progress")
+        ),
+            response.statusCode == 200
+        else { return nil }
+        return data
     }
 
     func fetchAudiobookProgress(
         for book: Book,
         bookId: String
     ) async -> ProviderAudiobookProgress? {
-        let primaryData: Data
-        let primaryResponse: HTTPURLResponse
-        do {
-            (primaryData, primaryResponse) = try await performAuthorizedRequest(
-                try makeRequest("/api/v1/app/books/\(bookId)")
-            )
-        } catch {
-            return nil
-        }
-
-        if primaryResponse.statusCode == 200,
-            let progress = Self.decodeAudiobookProgress(primaryData, for: book)
-        {
-            return progress
-        }
-
-        guard
-            let fallback = try? await performAuthorizedRequest(
-                try makeRequest("/api/v1/books/\(bookId)")
-            ),
-            fallback.1.statusCode == 200
-        else {
-            return nil
-        }
-        return Self.decodeAudiobookProgress(fallback.0, for: book)
+        guard let data = await fetchAudiobookProgressData(bookId: bookId) else { return nil }
+        return Self.decodeAudiobookProgress(data, for: book)
     }
 
-    func fetchEbookProgress(
-        for book: Book,
-        bookId: Int,
-        context: EbookProgressContext
-    ) async throws -> ProviderEbookProgress? {
-        let (data, response) = try await performAuthorizedRequest(
-            try makeRequest("/api/v1/app/books/\(bookId)/progress")
-        )
-        let appProgress: AppEbookProgressPayload?
-        switch response.statusCode {
-        case 200:
-            try validateResponse(data, response, "/api/v1/app/books/{bookId}/progress")
-            appProgress = try JSONDecoder().decode(AppEbookProgressPayload.self, from: data)
-        case 404:
-            appProgress = nil
-        case 401, 403:
-            throw ProviderError.unauthorized
-        default:
-            throw ProviderError.serverError(
-                "Failed to fetch Booklore app progress (HTTP \(response.statusCode))"
-            )
-        }
+    func fetchAudiobookPercentage(bookId: String) async -> Double? {
+        guard let data = await fetchAudiobookProgressData(bookId: bookId) else { return nil }
+        return (try? JSONDecoder().decode(AudiobookProgressPayload.self, from: data))?.audiobookProgress?.percentage
+    }
 
-        let epubProgress = context.usesEpubProgress ? appProgress?.epubProgress : nil
-        let appCFI = EpubLocationBridge.canonicalFullEPUBCFI(epubProgress?.cfi)
+    // The app endpoint reported Grimmory's book-level lastReadTime as every ebook format's updatedAt.
+    static func ebookProgress(
+        for book: Book,
+        from detail: BookloreLegacyBook,
+        usesEpubProgress: Bool
+    ) -> ProviderEbookProgress? {
+        let epubProgress = usesEpubProgress ? detail.epubProgress : nil
+        let exactCFI = EpubLocationBridge.canonicalFullEPUBCFI(epubProgress?.cfi)
         let readiumLocator: String? = {
-            guard appCFI == nil,
+            guard exactCFI == nil,
                 let value = epubProgress?.cfi,
                 let data = value.data(using: .utf8),
                 let object = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
@@ -198,55 +128,57 @@ final class BookloreProgressClient {
             else { return nil }
             return value
         }()
-        let filePosition: AppEbookProgressPayload.EpubPosition? =
-            if let epubProgress, appCFI == nil, readiumLocator == nil {
-                await fetchLatestFileEpubPosition(bookId: bookId, appHref: epubProgress.href)
-            } else {
-                nil
-            }
-        let exactCFI = appCFI ?? EpubLocationBridge.canonicalFullEPUBCFI(filePosition?.cfi)
-        let positionHref = filePosition?.href ?? epubProgress?.href
-        let readState = ProviderReadState(
-            serverValue: appProgress?.readStatus ?? context.readStatus
-        )
+        let readState = ProviderReadState(serverValue: detail.readStatus)
         let fraction =
             BookloreBookMapper.fraction(
                 fromPercent: epubProgress?.percentage
-                    ?? appProgress?.pdfProgress?.percentage
-                    ?? appProgress?.cbxProgress?.percentage
+                    ?? detail.pdfProgress?.percentage
+                    ?? detail.cbxProgress?.percentage
             )
-            ?? BookloreBookMapper.fraction(fromReadProgress: appProgress?.readProgress ?? context.readProgress)
-            ?? BookloreBookMapper.fraction(fromPercent: context.pdfProgress?.percentage ?? context.cbxProgress?.percentage)
+            ?? BookloreBookMapper.fraction(fromPercent: detail.readProgressPercent)
             ?? (readState.isFinished ? book.canonicalEbookProgress : 0)
 
         let locator: String? = {
             if let readiumLocator {
+                if let object = SharedReadingLocator.object(readiumLocator),
+                    object["href"] == nil,
+                    let locations = object["locations"] as? [String: Any],
+                    Set(locations.keys) == ["totalProgression"],
+                    let storedProgress = locations["totalProgression"] as? Double,
+                    abs(storedProgress - fraction) <= 0.000_5
+                {
+                    // Provider writes omit the local marker; restore it using the server's rounded text percentage.
+                    return SharedReadingLocator.encoded([
+                        "enveSharedPosition": true,
+                        "locations": ["totalProgression": fraction],
+                    ])
+                }
                 return readiumLocator
             }
             if let exactCFI {
                 return EpubLocationBridge.readiumLocator(
-                    href: positionHref,
+                    href: epubProgress?.href,
                     epubCFI: exactCFI,
                     fraction: fraction,
                     sourceEngine: .foliate
                 )
             }
-            if let positionHref,
-                let chapterProgress = BookloreBookMapper.fraction(fromPercent: filePosition?.contentSourceProgressPercent)
+            if let href = epubProgress?.href, !href.isEmpty,
+                let chapterProgress = BookloreBookMapper.fraction(fromPercent: epubProgress?.contentSourceProgressPercent)
             {
                 return EpubLocationBridge.readiumLocator(
-                    href: positionHref,
+                    href: href,
                     fraction: fraction,
                     resourceProgression: chapterProgress
                 )
             }
-            if context.usesEpubProgress {
+            if usesEpubProgress {
                 return nil
             }
-            if let page = appProgress?.pdfProgress?.page ?? context.pdfProgress?.page {
+            if let page = detail.pdfProgress?.page {
                 return "{\"page\":\(max(page - 1, 0))}"
             }
-            if let page = appProgress?.cbxProgress?.page ?? context.cbxProgress?.page {
+            if let page = detail.cbxProgress?.page {
                 return "cbz-page:\(max(page - 1, 0))"
             }
             return nil
@@ -270,39 +202,9 @@ final class BookloreProgressClient {
         return ProviderEbookProgress(
             progress: fraction,
             locator: locator,
-            updatedAt: Self.parseTimestamp(
-                epubProgress?.updatedAt
-                    ?? appProgress?.pdfProgress?.updatedAt
-                    ?? appProgress?.cbxProgress?.updatedAt
-                    ?? appProgress?.lastReadTime
-                    ?? context.lastReadTime
-                    ?? context.pdfProgress?.updatedAt
-                    ?? context.cbxProgress?.updatedAt
-            ),
+            updatedAt: parseTimestamp(detail.lastReadTime),
             readState: readState
         )
-    }
-
-    // The app endpoint reports book-level progress only; chapter progress from Kobo and other file-level writers is on the book detail.
-    private func fetchLatestFileEpubPosition(
-        bookId: Int,
-        appHref: String?
-    ) async -> AppEbookProgressPayload.EpubPosition? {
-        guard let request = try? makeRequest("/api/v1/books/\(bookId)"),
-            let (data, response) = try? await performAuthorizedRequest(request),
-            response.statusCode == 200,
-            let detail = try? JSONDecoder().decode(BookDetailEpubProgressPayload.self, from: data).epubProgress,
-            let href = detail.href, !href.isEmpty
-        else { return nil }
-        if let appHref, !appHref.isEmpty,
-            EpubLocationBridge.normalizedHref(appHref) != EpubLocationBridge.normalizedHref(href)
-        {
-            return nil
-        }
-        guard EpubLocationBridge.canonicalFullEPUBCFI(detail.cfi) != nil
-            || detail.contentSourceProgressPercent != nil
-        else { return nil }
-        return detail
     }
 
     func cacheAudiobookFileId(_ fileId: Int, for bookId: String) {
@@ -358,10 +260,11 @@ final class BookloreProgressClient {
         }()
         let resourcePercentage = Self.resourcePercentage(from: provenanceLocator)
         let locatorPositionData = pagePosition ?? fullCFI ?? (format == EbookFormat.epub.rawValue ? provenanceLocator : nil)
-        var request = try makeRequest("/api/v1/app/books/\(bookId)/progress")
-        request.httpMethod = "PUT"
+        var request = try makeRequest("/api/v1/books/progress")
+        request.httpMethod = "POST"
         request.httpBody = try JSONEncoder().encode(
             EbookProgressRequest(
+                bookId: bookId,
                 fileProgress: .init(
                     bookFileId: resourceFileId,
                     positionData: locatorPositionData,
@@ -526,7 +429,7 @@ final class BookloreProgressClient {
             positionSeconds: positionSeconds,
             percentage: fraction,
             trackIndex: trackIndex,
-            updatedAt: parseTimestamp(payload.lastReadTime ?? progress?.updatedAt),
+            updatedAt: parseTimestamp(progress?.updatedAt ?? payload.lastReadTime),
             readState: readState
         )
     }

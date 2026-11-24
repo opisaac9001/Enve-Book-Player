@@ -40,7 +40,6 @@ struct EmberGlow: View {
             }
         }
         .allowsHitTesting(false)
-        .drawingGroup()
     }
 
     private var shouldAnimate: Bool {

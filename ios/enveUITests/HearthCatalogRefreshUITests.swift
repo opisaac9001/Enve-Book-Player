@@ -45,7 +45,7 @@ final class HearthCatalogRefreshUITests: XCTestCase {
         app.buttons["tab_hearth"].tap()
         try await Task.sleep(for: .seconds(1))
         let beforePull = try await state(baseURL: endpoint)
-        XCTAssertFalse(beforePull.requests.contains { $0.path == "/api/v1/app/books" && $0.query["size"] == ["50"] })
+        XCTAssertFalse(beforePull.requests.contains { $0.path == "/api/v1/books/page" && $0.query["size"] == ["50"] })
         let scroll = app.scrollViews.firstMatch
         let pullStart = scroll.coordinate(withNormalizedOffset: CGVector(dx: 0.9, dy: 0.2))
         let pullEnd = scroll.coordinate(withNormalizedOffset: CGVector(dx: 0.9, dy: 0.8))
@@ -56,7 +56,7 @@ final class HearthCatalogRefreshUITests: XCTestCase {
             if requests.contains(where: { $0.query["size"] == ["50"] && $0.query["page"] == ["2"] }) { break }
             try await Task.sleep(for: .milliseconds(500))
         }
-        let catalogPages = requests.filter { $0.path == "/api/v1/app/books" && $0.query["size"] == ["50"] }
+        let catalogPages = requests.filter { $0.path == "/api/v1/books/page" && $0.query["size"] == ["50"] }
         XCTAssertEqual(catalogPages.compactMap { $0.query["page"]?.first }, ["0", "1", "2"])
         XCTAssertFalse(requests.contains { $0.path == "/api/v1/libraries/1/book" || $0.query["size"] == ["500"] })
         let added = app.buttons.matching(NSPredicate(format: "label CONTAINS %@", "Hearth Fixture Added")).firstMatch

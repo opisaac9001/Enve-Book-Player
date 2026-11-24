@@ -4,7 +4,6 @@ import android.content.ClipData
 import com.enve.core.reader.highlightColorHex
 import android.content.ClipboardManager
 import android.content.Context
-import android.content.Intent
 import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
@@ -58,6 +57,7 @@ import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
@@ -72,7 +72,10 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import com.enve.hearth.shell.profileViewModel
 import coil.compose.AsyncImage
+import com.enve.app.data.export.AnnotationExportBook
 import com.enve.app.data.export.AnnotationExporter
+import com.enve.app.data.export.AnnotationFileFormat
+import com.enve.app.data.export.AnnotationShareFiles
 import com.enve.app.ui.components.AnnotationEditSheet
 import com.enve.app.ui.components.ScreenBackButton
 import com.enve.app.ui.theme.EnveTheme
@@ -85,6 +88,8 @@ import com.enve.core.data.model.AnnotationStyle
 import com.enve.core.data.model.Book
 import com.enve.core.data.model.ReaderAnnotation
 import com.enve.hearth.design.parseHexColor
+import kotlinx.coroutines.launch
+import java.io.IOException
 import java.text.DateFormat
 import java.util.Date
 import kotlin.math.roundToInt
@@ -93,6 +98,7 @@ import kotlin.math.roundToInt
 fun AnnotationsScreen(
     onBack: () -> Unit = {},
     onOpenAnnotation: (Book, ReaderAnnotation) -> Unit = { _, _ -> },
+    onSendToReadwise: (() -> Unit)? = null,
     vm: AnnotationsViewModel = profileViewModel(),
 ) {
     val colors = EnveTheme.colors
@@ -100,6 +106,7 @@ fun AnnotationsScreen(
     val sections = vm.visibleSections()
     val visibleAnnotations = vm.visibleAnnotations()
     val context = LocalContext.current
+    val scope = rememberCoroutineScope()
     val snackbarHostState = remember { SnackbarHostState() }
     var editing by remember { mutableStateOf<ReaderAnnotation?>(null) }
     var menuOpen by remember { mutableStateOf(false) }
@@ -153,25 +160,36 @@ fun AnnotationsScreen(
                             enabled = visibleAnnotations.isNotEmpty(),
                             onClick = {
                                 menuOpen = false
-                                copy(context, visibleAnnotations, AnnotationExporter.Format.MARKDOWN)
+                                copy(context, sections.toExportBooks())
                             },
                         )
-                        DropdownMenuItem(
-                            text = { Text("Share as Markdown") },
-                            enabled = visibleAnnotations.isNotEmpty(),
-                            onClick = {
-                                menuOpen = false
-                                share(context, visibleAnnotations, AnnotationExporter.Format.MARKDOWN)
-                            },
-                        )
-                        DropdownMenuItem(
-                            text = { Text("Share as JSON") },
-                            enabled = visibleAnnotations.isNotEmpty(),
-                            onClick = {
-                                menuOpen = false
-                                share(context, visibleAnnotations, AnnotationExporter.Format.JSON)
-                            },
-                        )
+                        AnnotationFileFormat.all.forEach { format ->
+                            DropdownMenuItem(
+                                text = { Text("Share as ${format.label}") },
+                                enabled = visibleAnnotations.isNotEmpty(),
+                                onClick = {
+                                    menuOpen = false
+                                    val books = sections.toExportBooks()
+                                    scope.launch {
+                                        try {
+                                            AnnotationShareFiles.share(context, books, format, "Highlights")
+                                        } catch (_: IOException) {
+                                            snackbarHostState.showSnackbar("Couldn't create the export file.")
+                                        }
+                                    }
+                                },
+                            )
+                        }
+                        if (onSendToReadwise != null) {
+                            DropdownMenuItem(
+                                text = { Text("Send to Readwise…") },
+                                enabled = visibleAnnotations.isNotEmpty(),
+                                onClick = {
+                                    menuOpen = false
+                                    onSendToReadwise()
+                                },
+                            )
+                        }
                     }
                 }
             }
@@ -557,18 +575,11 @@ private fun ReaderAnnotation.progressLabel(): String? {
 private fun formatDate(timestamp: Long): String =
     DateFormat.getDateInstance(DateFormat.MEDIUM).format(Date(timestamp))
 
-private fun copy(context: Context, list: List<ReaderAnnotation>, format: AnnotationExporter.Format) {
-    val text = AnnotationExporter.export(list, null, null, format)
+private fun List<AnnotationBookSection>.toExportBooks(): List<AnnotationExportBook> =
+    map { AnnotationExportBook(it.title, it.author, it.annotations) }
+
+private fun copy(context: Context, books: List<AnnotationExportBook>) {
+    val text = AnnotationExporter.export(books, AnnotationExporter.Format.MARKDOWN)
     val clipboard = context.getSystemService(Context.CLIPBOARD_SERVICE) as ClipboardManager
     clipboard.setPrimaryClip(ClipData.newPlainText("Highlights", text))
-}
-
-private fun share(context: Context, list: List<ReaderAnnotation>, format: AnnotationExporter.Format) {
-    val text = AnnotationExporter.export(list, null, null, format)
-    val intent = Intent(Intent.ACTION_SEND).apply {
-        type = AnnotationExporter.mimeType(format)
-        putExtra(Intent.EXTRA_SUBJECT, "Highlights")
-        putExtra(Intent.EXTRA_TEXT, text)
-    }
-    context.startActivity(Intent.createChooser(intent, "Share highlights"))
 }

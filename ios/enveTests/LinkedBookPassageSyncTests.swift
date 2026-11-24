@@ -1,4 +1,5 @@
 import Foundation
+import ReadiumShared
 import Testing
 @testable import enve
 
@@ -31,9 +32,27 @@ struct LinkedBookPassageSyncTests {
             book: fixture.audiobook, currentTime: 400, isFinished: false, observedAt: later, authoritative: true
         )
         let ebook = try #require(fixture.session.appState.libraryCache.bookInMemory(stableId: fixture.ebook.stableId))
-        #expect(ebook.epubLocator == nil)
+        let location = try #require(SharedReadingLocator.object(ebook.epubLocator))
+        #expect(location["enveSharedPosition"] as? Bool == true)
+        #expect(location["href"] == nil)
         #expect(abs((ebook.ebookProgress ?? 0) - 400.0 / 600.0) < 0.001)
         #expect(ebook.lastUpdate == later)
+        let positions = try [0.0, 0.5].enumerated().map { index, progression in
+            try Locator(jsonString: "{\"href\":\"chapter-\(index).xhtml\",\"type\":\"application/xhtml+xml\",\"locations\":{\"totalProgression\":\(progression)}}")
+        }
+        let publication = Publication(
+            manifest: Manifest(metadata: Metadata(title: "Linked estimate"), readingOrder: positions.map {
+                Link(href: $0.href.string, mediaType: .xhtml)
+            }),
+            servicesBuilder: PublicationServicesBuilder(positions: InMemoryPositionsService.makeFactory(
+                positionsByReadingOrder: positions.map { [$0] }
+            ))
+        )
+        let restored = await ReaderInitialLocationResolver.sharedLocation(
+            locatorJSON: ebook.epubLocator, syncedProgress: ebook.canonicalEbookProgress, in: publication
+        )
+        #expect(restored?.locator?.href.string == "chapter-1.xhtml")
+        #expect(restored?.locator?.locations.totalProgression == ebook.canonicalEbookProgress)
         await fixture.session.retire()
     }
 
@@ -163,6 +182,7 @@ struct LinkedBookPassageSyncTests {
             var audiobook = Book(id: "passage-audio-\(suffix)", title: "Harbor", source: .local, mediaType: .audiobook)
             audiobook.duration = 600
             var ebook = Book(id: "passage-ebook-\(suffix)", title: "Harbor", source: .local, mediaType: .ebook)
+            ebook.ebookFormat = EbookFormat.epub.rawValue
             let epub = session.storage.documentsDirectory.appendingPathComponent("Ebooks/local/harbor.epub")
             try FileManager.default.createDirectory(at: epub.deletingLastPathComponent(), withIntermediateDirectories: true)
             try Data("fixture epub".utf8).write(to: epub)

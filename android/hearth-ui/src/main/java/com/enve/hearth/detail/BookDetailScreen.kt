@@ -24,6 +24,7 @@ import androidx.compose.ui.unit.dp
 import com.enve.hearth.shell.profileViewModel
 import com.enve.hearth.listeningposition.ListeningPositionShareSheet
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
+import com.enve.core.data.local.PendingBookMutationKind
 import com.enve.core.data.model.AppMediaType
 import com.enve.core.data.model.Book
 import com.enve.core.data.model.BookSource
@@ -64,6 +65,9 @@ fun BookDetailScreen(
     val metadataEditSupported by vm.metadataEditSupported.collectAsStateWithLifecycle()
     val personalRatingSupported by vm.personalRatingSupported.collectAsStateWithLifecycle()
     val personalRatingUpdating by vm.personalRatingUpdating.collectAsStateWithLifecycle()
+    val readStatusOptions by vm.readStatusOptions.collectAsStateWithLifecycle()
+    val readStatusUpdating by vm.readStatusUpdating.collectAsStateWithLifecycle()
+    val pendingEdits by vm.pendingEdits.collectAsStateWithLifecycle()
     val metadataQuery by vm.metadataQuery.collectAsStateWithLifecycle()
     val metadataMatches by vm.metadataMatches.collectAsStateWithLifecycle()
     val metadataSearching by vm.metadataSearching.collectAsStateWithLifecycle()
@@ -163,11 +167,31 @@ fun BookDetailScreen(
             }
             if (personalRatingSupported) {
                 item {
+                    val pendingRating = pendingEdits.firstOrNull { it.kind == PendingBookMutationKind.RATING }
                     PersonalRatingSection(
-                        rating = b.personalRating?.roundToInt(),
+                        rating = pendingRating?.value?.toIntOrNull() ?: b.personalRating?.roundToInt(),
                         sourceName = b.source.displayName,
                         updating = personalRatingUpdating,
+                        sync = pendingRating?.let { bookEditSyncStatus(it, b.source.displayName) },
                         onRate = vm::setPersonalRating,
+                        onRetry = { vm.retryEdit(PendingBookMutationKind.RATING) },
+                        onDiscard = { vm.discardEdit(PendingBookMutationKind.RATING) },
+                    )
+                }
+            }
+            if (readStatusOptions.isNotEmpty()) {
+                item {
+                    val pendingStatus = pendingEdits.firstOrNull { it.kind == PendingBookMutationKind.READ_STATUS }
+                    ReadingStatusSection(
+                        options = readStatusOptions,
+                        current = pendingStatus?.value ?: b.serverReadStatus?.uppercase()
+                            ?: if (b.isFinished) "READ" else "UNREAD",
+                        sourceName = b.source.displayName,
+                        updating = readStatusUpdating,
+                        sync = pendingStatus?.let { bookEditSyncStatus(it, b.source.displayName) },
+                        onSelect = vm::setReadStatus,
+                        onRetry = { vm.retryEdit(PendingBookMutationKind.READ_STATUS) },
+                        onDiscard = { vm.discardEdit(PendingBookMutationKind.READ_STATUS) },
                     )
                 }
             }

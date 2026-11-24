@@ -7,6 +7,8 @@ import com.enve.core.data.local.ProfileStorageLocations
 import com.enve.core.data.model.AppMediaType
 import com.enve.core.data.model.AudiobookBookmark
 import com.enve.core.data.model.Book
+import com.enve.core.data.model.BookSource
+import java.security.MessageDigest
 import dagger.hilt.android.qualifiers.ApplicationContext
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.Dispatchers
@@ -42,7 +44,7 @@ class PlayerBookmarkService(locations: ProfileStorageLocations) {
     @Serializable
     private data class BookmarkPayload(val bookmarks: List<AudiobookBookmark> = emptyList())
 
-    suspend fun loadBookmarks(book: Book): List<AudiobookBookmark> = mutex.withLock { readBookmarks(book.id) }
+    suspend fun loadBookmarks(book: Book): List<AudiobookBookmark> = mutex.withLock { readBookmarks(storageKey(book)) }
 
     suspend fun addBookmark(
         book: Book,
@@ -64,7 +66,7 @@ class PlayerBookmarkService(locations: ProfileStorageLocations) {
             mediaType = book.mediaType,
             chapterTitle = chapterTitle?.takeIf { it.isNotBlank() },
         )
-        upsertLocal(book.id, bookmark)
+        upsertLocal(storageKey(book), bookmark)
         return bookmark
     }
 
@@ -73,13 +75,13 @@ class PlayerBookmarkService(locations: ProfileStorageLocations) {
             title = title.ifBlank { bookmark.title },
             note = note?.takeIf { it.isNotBlank() },
         )
-        upsertLocal(book.id, updated)
+        upsertLocal(storageKey(book), updated)
         return updated
     }
 
     suspend fun deleteBookmark(book: Book, bookmark: AudiobookBookmark) = mutex.withLock {
-        val remaining = readBookmarks(book.id).filterNot { it.id == bookmark.id }
-        writeBookmarks(book.id, remaining)
+        val remaining = readBookmarks(storageKey(book)).filterNot { it.id == bookmark.id }
+        writeBookmarks(storageKey(book), remaining)
     }
 
     fun buildTitle(
@@ -130,6 +132,13 @@ class PlayerBookmarkService(locations: ProfileStorageLocations) {
             file.failWrite(output)
             throw error
         }
+    }
+
+    private fun storageKey(book: Book): String {
+        if (book.source == BookSource.LOCAL && book.connectionId == null) return book.id
+        val identity = json.encodeToString(listOf(book.source.name, book.connectionId, book.id))
+        return "scoped-" + MessageDigest.getInstance("SHA-256").digest(identity.toByteArray(Charsets.UTF_8))
+            .joinToString("") { "%02x".format(it) }
     }
 
     private fun bookmarkFile(bookId: String): File {

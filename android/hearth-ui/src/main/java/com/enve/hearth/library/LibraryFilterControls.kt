@@ -38,6 +38,7 @@ import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
@@ -259,7 +260,7 @@ internal fun FloatingSearch(
                     .clip(shape)
                     .background(palette.bgElevated)
                     .border(1.dp, palette.hairline, shape)
-                    .padding(horizontal = Hearth.Spacing.L, vertical = Hearth.Spacing.M),
+                    .padding(start = Hearth.Spacing.L, end = Hearth.Spacing.XS),
                 verticalAlignment = Alignment.CenterVertically,
             ) {
                 Icon(Icons.Outlined.Search, contentDescription = null, tint = palette.textTertiary, modifier = Modifier.size(18.dp))
@@ -279,16 +280,9 @@ internal fun FloatingSearch(
                         modifier = Modifier.fillMaxWidth().focusRequester(focusRequester),
                     )
                 }
-                Icon(
-                    Icons.Outlined.Close,
-                    contentDescription = "Close search",
-                    tint = palette.textTertiary,
-                    modifier = Modifier
-                        .clip(CircleShape)
-                        .clickable { keyboard?.hide(); onExpandedChange(false) }
-                        .padding(Hearth.Spacing.XS)
-                        .size(18.dp),
-                )
+                IconButton(onClick = { onExpandedChange(false) }, modifier = Modifier.size(48.dp)) {
+                    Icon(Icons.Outlined.Close, contentDescription = "Close search", tint = palette.textTertiary, modifier = Modifier.size(18.dp))
+                }
             }
         } else {
             val shape = CircleShape
@@ -344,7 +338,14 @@ internal fun FilterSortSheet(vm: HearthLibraryViewModel, onDismiss: () -> Unit) 
     val media by vm.effectiveMedia.collectAsStateWithLifecycle()
     val readingEnabled by vm.readingEnabled.collectAsStateWithLifecycle()
     val advanced by vm.advancedFilters.collectAsStateWithLifecycle()
-    val advancedOptions by vm.advancedFilterOptions.collectAsStateWithLifecycle()
+    val options by vm.filterOptions.collectAsStateWithLifecycle()
+    val optionSearch by vm.filterOptionSearch.collectAsStateWithLifecycle()
+    val plan by vm.catalogPlan.collectAsStateWithLifecycle()
+    DisposableEffect(vm) {
+        vm.setFilterSheetVisible(true)
+        onDispose { vm.setFilterSheetVisible(false) }
+    }
+    val cachedOnly = if (plan.siloInScope) " · cached books only" else ""
     val sheetShape = if (Hearth.eink.sharpCorners) {
         androidx.compose.ui.graphics.RectangleShape
     } else {
@@ -383,6 +384,7 @@ internal fun FilterSortSheet(vm: HearthLibraryViewModel, onDismiss: () -> Unit) 
                     color = palette.textSecondary,
                 )
             }
+            plan.sortNotice?.let { Text(it, style = HearthText.Caption, color = palette.ember) }
             sortStack.forEachIndexed { index, descriptor ->
                 SortPriorityRow(
                     index = index,
@@ -442,7 +444,15 @@ internal fun FilterSortSheet(vm: HearthLibraryViewModel, onDismiss: () -> Unit) 
                 }
             }
 
-            Overline("Rating")
+            if (plan.siloInScope && (advanced.minimumRating != null || advanced.series != SeriesFilter.ALL)) {
+                Text(
+                    "With a rating or series filter on, the whole result uses cached books. Silo books that haven't been cached won't appear.",
+                    style = HearthText.Caption,
+                    color = palette.ember,
+                )
+            }
+
+            Overline("Rating$cachedOnly")
             androidx.compose.foundation.layout.FlowRow(
                 horizontalArrangement = Arrangement.spacedBy(Hearth.Spacing.S),
                 verticalArrangement = Arrangement.spacedBy(Hearth.Spacing.S),
@@ -456,7 +466,7 @@ internal fun FilterSortSheet(vm: HearthLibraryViewModel, onDismiss: () -> Unit) 
                 }
             }
 
-            Overline("Series")
+            Overline("Series$cachedOnly")
             Row(horizontalArrangement = Arrangement.spacedBy(Hearth.Spacing.S)) {
                 SeriesFilter.entries.forEach { series ->
                     HearthChip(
@@ -467,16 +477,36 @@ internal fun FilterSortSheet(vm: HearthLibraryViewModel, onDismiss: () -> Unit) 
                 }
             }
 
-            val genres = (advancedOptions.genres + advanced.genres)
-                .distinct()
-                .sortedWith(String.CASE_INSENSITIVE_ORDER)
-            if (genres.isNotEmpty()) {
+            if (options.remote || optionSearch.isNotEmpty() || options.genres.isNotEmpty() || options.languages.isNotEmpty()) {
+                FilterOptionSearchField(optionSearch, vm::setFilterOptionSearch)
+            }
+            if (options.loading) {
+                Text("Loading genres and languages…", style = HearthText.Caption, color = palette.textSecondary)
+            }
+            options.error?.let { error ->
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                    Text(error, style = HearthText.Caption, color = palette.statusError, modifier = Modifier.weight(1f))
+                    androidx.compose.material3.TextButton(
+                        onClick = vm::retryFilterOptions,
+                        modifier = Modifier.heightIn(min = 48.dp),
+                    ) { Text("Retry", style = HearthText.Label, color = palette.ember) }
+                }
+            }
+            if (options.hasMore) {
+                Text(
+                    "Showing the first matches. Type to find more genres or languages.",
+                    style = HearthText.Caption,
+                    color = palette.textTertiary,
+                )
+            }
+
+            if (options.genres.isNotEmpty()) {
                 Overline("Genres")
                 androidx.compose.foundation.layout.FlowRow(
                     horizontalArrangement = Arrangement.spacedBy(Hearth.Spacing.S),
                     verticalArrangement = Arrangement.spacedBy(Hearth.Spacing.S),
                 ) {
-                    genres.forEach { genre ->
+                    options.genres.forEach { genre ->
                         HearthChip(
                             genre,
                             selected = genre in advanced.genres,
@@ -486,16 +516,13 @@ internal fun FilterSortSheet(vm: HearthLibraryViewModel, onDismiss: () -> Unit) 
                 }
             }
 
-            val languages = (advancedOptions.languages + advanced.languages)
-                .distinct()
-                .sortedWith(String.CASE_INSENSITIVE_ORDER)
-            if (languages.isNotEmpty()) {
+            if (options.languages.isNotEmpty()) {
                 Overline("Languages")
                 androidx.compose.foundation.layout.FlowRow(
                     horizontalArrangement = Arrangement.spacedBy(Hearth.Spacing.S),
                     verticalArrangement = Arrangement.spacedBy(Hearth.Spacing.S),
                 ) {
-                    languages.forEach { language ->
+                    options.languages.forEach { language ->
                         HearthChip(
                             language,
                             selected = language in advanced.languages,
@@ -512,6 +539,42 @@ internal fun FilterSortSheet(vm: HearthLibraryViewModel, onDismiss: () -> Unit) 
                     .clickable { vm.resetFiltersAndSorting() }
                     .padding(vertical = Hearth.Spacing.M),
             )
+        }
+    }
+}
+
+@Composable
+private fun FilterOptionSearchField(value: String, onValueChange: (String) -> Unit) {
+    val palette = Hearth.palette
+    val shape = if (Hearth.eink.sharpCorners) RectangleShape else RoundedCornerShape(50)
+    val keyboard = LocalSoftwareKeyboardController.current
+    Row(
+        Modifier.fillMaxWidth().heightIn(min = 48.dp).clip(shape).background(palette.bg)
+            .border(1.dp, palette.hairline, shape)
+            .padding(start = Hearth.Spacing.M, end = Hearth.Spacing.XS),
+        verticalAlignment = Alignment.CenterVertically,
+    ) {
+        Icon(Icons.Outlined.Search, contentDescription = null, tint = palette.textTertiary, modifier = Modifier.size(18.dp))
+        Spacer(Modifier.width(Hearth.Spacing.S))
+        Box(Modifier.weight(1f)) {
+            if (value.isEmpty()) {
+                Text("Find a genre or language", style = HearthText.Body, color = palette.textTertiary)
+            }
+            BasicTextField(
+                value = value,
+                onValueChange = onValueChange,
+                singleLine = true,
+                textStyle = HearthText.Body.copy(color = palette.text),
+                cursorBrush = SolidColor(palette.ember),
+                keyboardOptions = KeyboardOptions(imeAction = ImeAction.Search),
+                keyboardActions = KeyboardActions(onSearch = { keyboard?.hide() }),
+                modifier = Modifier.fillMaxWidth().semantics { contentDescription = "Find a genre or language" },
+            )
+        }
+        if (value.isNotEmpty()) {
+            IconButton(onClick = { onValueChange("") }, modifier = Modifier.size(48.dp)) {
+                Icon(Icons.Outlined.Close, contentDescription = "Clear genre and language search", tint = palette.textTertiary, modifier = Modifier.size(18.dp))
+            }
         }
     }
 }

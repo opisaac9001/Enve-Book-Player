@@ -1,6 +1,7 @@
 package com.enve.app.ui.screens
 
 import android.content.Context
+import android.view.View
 import androidx.compose.ui.test.*
 import androidx.compose.ui.test.junit4.createEmptyComposeRule
 import org.junit.Rule
@@ -18,6 +19,7 @@ import org.hamcrest.Matchers.allOf
 import androidx.test.espresso.matcher.ViewMatchers.isAssignableFrom
 import androidx.test.ext.junit.runners.AndroidJUnit4
 import com.enve.app.MainActivity
+import com.enve.app.R
 import com.enve.app.profiles.ProfileActivityBinding
 import com.enve.app.viewmodel.ReaderViewModel
 import com.enve.core.data.local.toCachedBook
@@ -107,7 +109,7 @@ class ReaderScrollingNavigationTest {
                     }
                     nav != null && vm.state.value.totalPages > 1
                 }
-                kotlinx.coroutines.delay(1200)
+                awaitReaderSurface(scenario)
                 withContext(Dispatchers.Main) { vm.seekToProgress(0.8f) }
                 await { vm.state.value.progressPct > 40 }
                 val destination = checkNotNull(nav!!.currentLocator.value.locations.totalProgression).toFloat()
@@ -407,7 +409,7 @@ class ReaderScrollingNavigationTest {
                 }
                 val original = vm.state.value.prefs
                 try {
-                    kotlinx.coroutines.delay(800)
+                    awaitReaderSurface(scenario)
                     withContext(Dispatchers.Main) { vm.seekToProgress(0.75f) }
                     await(description = { "Seek did not settle: ${vm.state.value.progressPct}%, locator=${nav?.currentLocator?.value}, prefs=${vm.state.value.prefs.scroll}" }) { vm.state.value.progressPct in 50..99 }
                     kotlinx.coroutines.delay(400)
@@ -434,6 +436,14 @@ class ReaderScrollingNavigationTest {
         } finally {
             component.bookCacheDao().deleteByCacheKeys(listOf(book.uniqueKey))
             file.delete()
+        }
+    }
+
+    private suspend fun awaitReaderSurface(scenario: ActivityScenario<EbookReaderActivity>) {
+        await(description = { "The reader loading cover did not dismiss" }) {
+            var ready = false
+            scenario.onActivity { ready = it.findViewById<View>(R.id.loading_container).visibility == View.GONE }
+            ready
         }
     }
 

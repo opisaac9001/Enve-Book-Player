@@ -87,6 +87,7 @@ private struct CollectionsRefreshControl: UIViewRepresentable {
 }
 
 struct CollectionsScreen: View {
+    @Environment(\.profileSession) private var capturedSession
     @Environment(EnveEngine.self) private var engine
     @Environment(\.hearth) private var hearth
     @Environment(\.mantelInset) private var mantelInset
@@ -105,7 +106,7 @@ struct CollectionsScreen: View {
     @State private var loaded = false
     @State private var previewLoadGeneration = 0
     @State private var isRefreshing = false
-    private let savedBooks = SavedBooksStore.shared
+    private var savedBooks: SavedBooksStore { (capturedSession ?? .owner).savedBooks }
 
     var body: some View {
         GeometryReader { geo in

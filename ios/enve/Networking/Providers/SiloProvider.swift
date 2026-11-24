@@ -26,11 +26,13 @@ enum SiloReaderAnnotationError: Error, Equatable {
     case notFound
 }
 
-final class SiloProvider: IncrementalCatalogProvider, PlaybackSessionProvider, AudiobookProgressProvider,
-    EbookProgressProvider, EngineAwareEbookProgressProvider, EbookDownloadProvider, @unchecked Sendable
+final class SiloProvider: IncrementalCatalogProvider, RemoteCatalogBrowsingProvider, PlaybackSessionProvider,
+    AudiobookProgressProvider, EbookProgressProvider, EngineAwareEbookProgressProvider, EbookDownloadProvider,
+    @unchecked Sendable
 {
     var connection: ServerConnection
     var onTokenUpdated: ((ServerConnection) -> Void)?
+    var catalogMappingRevision: Int { 1 }
 
     var capabilities: ProviderCapabilities {
         [
@@ -42,7 +44,7 @@ final class SiloProvider: IncrementalCatalogProvider, PlaybackSessionProvider, A
         ]
     }
 
-    private let pageSize = 100
+    private let pageSize = 200
     private let progressPageSize = 200
     private let annotationPageSize = 50
     private let progressBatchLimit = 100
@@ -50,7 +52,9 @@ final class SiloProvider: IncrementalCatalogProvider, PlaybackSessionProvider, A
     private let decoder: JSONDecoder
     private let encoder = JSONEncoder()
 
-    private var detailCache: [String: SiloItemDetail] = [:]
+    private static let detailCacheLimit = 100
+    private var detailCache: [String: (detail: SiloItemDetail, lastAccess: UInt64)] = [:]
+    private var detailAccessCounter: UInt64 = 0
     private var activeEbookFileIDs: [String: String] = [:]
     private var multipartSessions: [String: [MultipartPartSession]] = [:]
     private var singleSessionFiles: [String: String] = [:]
@@ -60,6 +64,8 @@ final class SiloProvider: IncrementalCatalogProvider, PlaybackSessionProvider, A
     private var progressSequences: [String: Int64] = [:]
     private var pendingStops: [String: PendingStop] = [:]
     private var authenticationRecovery: Task<Bool, Never>?
+    private var readRetryDeadline: ContinuousClock.Instant?
+    private var supportsFacetValueSearch: Bool?
 
     private struct MultipartPartSession {
         let sessionID: String
@@ -266,19 +272,133 @@ final class SiloProvider: IncrementalCatalogProvider, PlaybackSessionProvider, A
     }
 
     func fetchRecentBooks(libraryId: String, limit: Int) async throws -> [Book] {
-        detailCache.removeAll()
-        let batch = try await fetchCatalogPage(
+        try await fetchRemoteCatalogPage(
             libraryId: libraryId,
+            request: RemoteCatalogRequest(search: nil, mediaType: nil, sort: .recentlyAdded),
             cursor: nil,
-            sort: "-added_at",
-            limit: min(max(limit, 1), pageSize),
-            fallbackScope: "recent"
-        )
-        return try await mapCatalogItems(
-            batch.items,
-            libraryId: libraryId,
-            fallbackScope: "recent-detail"
+            limit: limit
         ).books
+    }
+
+    // Cards are mapped without detail requests; a stale cursor surfaces as an error instead of an empty page.
+    func fetchRemoteCatalogPage(
+        libraryId: String,
+        request: RemoteCatalogRequest,
+        cursor: String?,
+        limit: Int
+    ) async throws -> RemoteCatalogPage {
+        let type: String?
+        switch request.mediaType {
+        case nil: type = nil
+        case .audiobook: type = "audiobook"
+        case .ebook: type = "ebook"
+        case .podcast: return RemoteCatalogPage(books: [], nextCursor: nil)
+        }
+        try await ensureAuthenticated()
+        _ = try await ensureProfile()
+        let boundedLimit = min(max(limit, 1), pageSize)
+        let response: SiloCatalogBrowseResponse
+        do {
+            var catalogRequest: URLRequest
+            if request.genres.isEmpty && request.languages.isEmpty {
+                var query = [
+                    URLQueryItem(name: "library_id", value: libraryId),
+                    URLQueryItem(name: "sort", value: request.sort == .recentlyAdded ? "-added_at" : "title"),
+                    URLQueryItem(name: "limit", value: String(boundedLimit)),
+                    URLQueryItem(name: "skip_total", value: "true"),
+                ]
+                if let search = request.search {
+                    query.append(URLQueryItem(name: "q", value: search))
+                }
+                if let type {
+                    query.append(URLQueryItem(name: "type", value: type))
+                }
+                if let cursor {
+                    query.append(URLQueryItem(name: "cursor", value: cursor))
+                }
+                catalogRequest = try makeRequest(path: "/catalog", query: query)
+            } else {
+                // Rules within a group are OR'd; groups are AND'd by the top-level match.
+                let groups = [("genre", request.genres), ("original_language", request.languages)]
+                    .filter { !$0.1.isEmpty }
+                    .map { field, values in
+                        SiloCatalogQueryGroup(rules: values.sorted().map { SiloCatalogQueryRule(field: field, value: $0) })
+                    }
+                catalogRequest = try makeRequest(path: "/catalog/query", method: "POST")
+                catalogRequest.httpBody = try encoder.encode(
+                    SiloCatalogQueryRequest(
+                        libraryID: libraryId,
+                        type: type,
+                        q: request.search,
+                        sort: request.sort == .recentlyAdded ? "added_at" : "title",
+                        order: request.sort == .recentlyAdded ? "desc" : "asc",
+                        limit: min(boundedLimit, 100),
+                        cursor: cursor,
+                        groups: groups
+                    )
+                )
+            }
+            catalogRequest.timeoutInterval = 8
+            response = try await send(catalogRequest, as: SiloCatalogBrowseResponse.self)
+        } catch SiloCursorError.invalid {
+            throw ProviderError.serverError("These Silo results expired. Refresh to start again.")
+        }
+        guard response.items.allSatisfy({ !$0.contentID.isEmpty && !$0.title.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty }) else {
+            throw ProviderError.invalidResponse
+        }
+        return RemoteCatalogPage(
+            books: response.items.compactMap { summaryBook(from: $0, libraryId: libraryId) },
+            nextCursor: try SiloPageInfo.continuation(of: response.page)
+        )
+    }
+
+    func fetchRemoteCatalogFilterOptions(
+        libraryId: String, mediaType: AppMediaType?, search: String
+    ) async throws -> RemoteCatalogFilterOptions {
+        let type: String?
+        switch mediaType {
+        case nil: type = nil
+        case .audiobook: type = "audiobook"
+        case .ebook: type = "ebook"
+        case .podcast: return RemoteCatalogFilterOptions()
+        }
+        try await ensureAuthenticated()
+        _ = try await ensureProfile()
+        if supportsFacetValueSearch == nil {
+            var request = try makeRequest(path: "/catalog/search/capabilities")
+            request.timeoutInterval = 8
+            let (data, http) = try await perform(request)
+            if http.statusCode == 404 {
+                supportsFacetValueSearch = false
+            } else {
+                try validate(http, data)
+                supportsFacetValueSearch = try decode(SiloCatalogSearchCapabilities.self, from: data).facetValueSearch ?? false
+            }
+        }
+        guard supportsFacetValueSearch == true else {
+            throw ProviderError.serverError("Update this Silo server to search genre and language options.")
+        }
+        var query = [URLQueryItem(name: "library_id", value: libraryId), URLQueryItem(name: "limit", value: "24")]
+        if let type {
+            query.append(URLQueryItem(name: "type", value: type))
+        }
+        if !search.isEmpty {
+            query.append(URLQueryItem(name: "q", value: search))
+        }
+        async let genres = facetValues("genre", query: query)
+        async let languages = facetValues("original_language", query: query)
+        let (genreValues, languageValues) = try await (genres, languages)
+        return RemoteCatalogFilterOptions(
+            genres: genreValues.values.map(\.value),
+            languages: languageValues.values.map(\.value),
+            hasMore: genreValues.valuesHasMore || languageValues.valuesHasMore
+        )
+    }
+
+    private func facetValues(_ facet: String, query: [URLQueryItem]) async throws -> SiloFacetValuesResponse {
+        var request = try makeRequest(path: "/catalog/filters/search", query: query + [URLQueryItem(name: "facet", value: facet)])
+        request.timeoutInterval = 8
+        return try await send(request, as: SiloFacetValuesResponse.self)
     }
 
     func fetchCollections(libraryId: String?) async throws -> [Collection] {
@@ -1261,9 +1381,16 @@ final class SiloProvider: IncrementalCatalogProvider, PlaybackSessionProvider, A
     }
 
     // A recovered 401 resends the identical request, so sequenced and identity-bearing bodies are never re-minted.
-    private func perform(_ request: URLRequest, retryingAuth: Bool = true) async throws -> (Data, HTTPURLResponse) {
+    private func perform(_ request: URLRequest, retryingAuth: Bool = true, rateLimitRetries: Int = 0) async throws -> (Data, HTTPURLResponse) {
         guard !isRetired else { throw CancellationError() }
         try Task.checkCancellation()
+        let isRead = request.httpMethod == "GET" || request.httpMethod == "HEAD"
+        if isRead {
+            while let deadline = readRetryDeadline, deadline > ContinuousClock.now {
+                try await Task.sleep(until: deadline, clock: .continuous)
+                guard !isRetired else { throw CancellationError() }
+            }
+        }
         let (data, response) = try await session.data(for: request)
         try Task.checkCancellation()
         guard !isRetired else { throw CancellationError() }
@@ -1271,7 +1398,15 @@ final class SiloProvider: IncrementalCatalogProvider, PlaybackSessionProvider, A
         if http.statusCode == 401, retryingAuth, await recoverAuthentication() {
             var retried = request
             retried.setValue("Bearer \(connection.token ?? "")", forHTTPHeaderField: "Authorization")
-            return try await perform(retried, retryingAuth: false)
+            return try await perform(retried, retryingAuth: false, rateLimitRetries: rateLimitRetries)
+        }
+        if http.statusCode == 429, isRead, rateLimitRetries < 5 {
+            let serverDelay = http.value(forHTTPHeaderField: "Retry-After").flatMap(Double.init)
+            let delay = serverDelay.flatMap { $0.isFinite && $0 >= 0 ? $0 : nil }
+                ?? pow(2, Double(rateLimitRetries))
+            let deadline = ContinuousClock.now.advanced(by: .seconds(max(1, delay)))
+            readRetryDeadline = max(readRetryDeadline ?? deadline, deadline)
+            return try await perform(request, retryingAuth: retryingAuth, rateLimitRetries: rateLimitRetries + 1)
         }
         return (data, http)
     }
@@ -1388,6 +1523,7 @@ final class SiloProvider: IncrementalCatalogProvider, PlaybackSessionProvider, A
         ]
         if let cursor {
             query.append(URLQueryItem(name: "cursor", value: cursor))
+            query.append(URLQueryItem(name: "skip_total", value: "true"))
         }
         let result = try await send(try makeRequest(path: "/catalog", query: query), as: SiloCatalogResponse.self)
         rejectedContent.record(
@@ -1561,14 +1697,26 @@ final class SiloProvider: IncrementalCatalogProvider, PlaybackSessionProvider, A
     }
 
     private func itemDetail(_ id: String) async throws -> SiloItemDetail {
-        if let cached = detailCache[id] { return cached }
+        if var cached = detailCache[id] {
+            detailAccessCounter &+= 1
+            cached.lastAccess = detailAccessCounter
+            detailCache[id] = cached
+            return cached.detail
+        }
         try await ensureAuthenticated()
         _ = try await ensureProfile()
         let detail = try await send(
             try makeRequest(path: "/catalog/items/\(Self.pathSegment(id))"),
             as: SiloItemDetail.self
         )
-        detailCache[id] = detail
+        // Catalog imports resolve every item; retain only a bounded working set of full responses.
+        if detailCache[id] == nil, detailCache.count >= Self.detailCacheLimit,
+            let oldest = detailCache.min(by: { $0.value.lastAccess < $1.value.lastAccess })?.key
+        {
+            detailCache.removeValue(forKey: oldest)
+        }
+        detailAccessCounter &+= 1
+        detailCache[id] = (detail, detailAccessCounter)
         return detail
     }
 
@@ -1586,18 +1734,13 @@ final class SiloProvider: IncrementalCatalogProvider, PlaybackSessionProvider, A
         libraryId: String,
         fallbackScope: String
     ) async throws -> (books: [Book], rejectedItems: [RejectedContentCandidate]) {
-        var books: [Book] = []
-        var acceptedItemIdentifiers = Set<String>()
-        var rejectedItems: [RejectedContentCandidate] = []
-
-        for (index, item) in items.enumerated() {
+        let mapped = try await mapConcurrently(Array(items.indices)) { index in
+            try Task.checkCancellation()
+            let item = items[index]
             do {
-                if let book = try await book(from: item, libraryId: libraryId) {
-                    books.append(book)
-                }
-                acceptedItemIdentifiers.insert(item.contentID)
+                return (item.contentID, try await self.book(from: item, libraryId: libraryId), nil as RejectedContentCandidate?)
             } catch ProviderError.decodingFailed {
-                rejectedItems.append(
+                return (item.contentID, nil as Book?,
                     RejectedContentCandidate(
                         itemIdentifier: item.contentID,
                         title: nil,
@@ -1607,6 +1750,9 @@ final class SiloProvider: IncrementalCatalogProvider, PlaybackSessionProvider, A
                 )
             }
         }
+        let books = mapped.compactMap { $0.1 }
+        let acceptedItemIdentifiers = Set(mapped.filter { $0.2 == nil }.map { $0.0 })
+        let rejectedItems = mapped.compactMap { $0.2 }
 
         rejectedContent.update(
             connection: connection,
@@ -1626,6 +1772,35 @@ final class SiloProvider: IncrementalCatalogProvider, PlaybackSessionProvider, A
         default:
             return nil
         }
+    }
+
+    private func summaryBook(from item: SiloCatalogCard, libraryId: String) -> Book? {
+        let type = item.type.lowercased()
+        guard type == "audiobook" || type == "ebook" else { return nil }
+        let duration = item.durationSeconds ?? item.runtimeMinutes.map { Double($0) * 60 }
+        let progress = serverSyncEnabled() ? Book.normalizedFractionProgress(item.sortMetrics?.progressRatio) : nil
+        return Book(
+            id: item.contentID,
+            title: item.title,
+            author: item.sortMetrics?.author,
+            narrator: item.sortMetrics?.narrator,
+            seriesInfo: item.sortMetrics?.seriesName.map { SeriesInfo(name: $0, sequence: nil) },
+            duration: duration.flatMap { $0 > 0 ? $0 : nil },
+            coverURL: coverURL(from: item.posterURL),
+            mediaType: type == "audiobook" ? .audiobook : .ebook,
+            ebookProgress: type == "ebook" ? progress : nil,
+            dateAdded: item.addedAt,
+            description: item.overview,
+            genres: item.genres ?? [],
+            currentTime: type == "audiobook" ? (progress ?? 0) * (duration ?? 0) : 0,
+            isFinished: serverSyncEnabled() && (item.userState?.played ?? false),
+            lastUpdate: .distantPast,
+            libraryId: libraryId,
+            providerId: connection.id,
+            backendId: connection.id.uuidString,
+            source: .silo,
+            language: item.originalLanguage
+        )
     }
 
     private func book(from detail: SiloItemDetail, libraryId: String) -> Book? {
@@ -1716,7 +1891,8 @@ final class SiloProvider: IncrementalCatalogProvider, PlaybackSessionProvider, A
             backendId: connection.id.uuidString,
             source: .silo,
             filePath: version?.filePath,
-            publishedYear: detail.year
+            publishedYear: detail.year,
+            language: detail.originalLanguage
         )
     }
 
@@ -1987,11 +2163,10 @@ final class SiloProvider: IncrementalCatalogProvider, PlaybackSessionProvider, A
         if let url = URL(string: raw), url.scheme != nil {
             return url
         }
-        guard var components = URLComponents(string: baseURLString) else {
+        guard let base = URL(string: baseURLString.hasSuffix("/") ? baseURLString : baseURLString + "/") else {
             return nil
         }
-        components.path = raw.hasPrefix("/") ? raw : "\(components.path)/\(raw)"
-        return components.url
+        return URL(string: raw, relativeTo: base)?.absoluteURL
     }
 
     private func absoluteURL(_ value: String) throws -> URL {
@@ -2593,6 +2768,114 @@ private struct SiloCatalogResponse: Decodable {
     }
 }
 
+private struct SiloCatalogBrowseResponse: Decodable {
+    let items: [SiloCatalogCard]
+    let page: SiloPageInfo?
+
+    enum CodingKeys: String, CodingKey {
+        case items, page
+    }
+
+    init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        items = try container.decode([SiloCatalogCard].self, forKey: .items)
+        page = try container.decodeIfPresent(SiloPageInfo.self, forKey: .page)
+    }
+}
+
+private struct SiloCatalogCard: Decodable {
+    let contentID: String
+    let type: String
+    let title: String
+    let posterURL: String?
+    let overview: String?
+    let runtimeMinutes: Int?
+    let durationSeconds: Double?
+    let genres: [String]?
+    let originalLanguage: String?
+    let addedAt: Date?
+    let userState: SiloProgressState?
+    let sortMetrics: SiloCatalogSortMetrics?
+
+    enum CodingKeys: String, CodingKey {
+        case type, title, overview, genres
+        case contentID = "content_id"
+        case posterURL = "poster_url"
+        case runtimeMinutes = "runtime"
+        case durationSeconds = "duration_seconds"
+        case originalLanguage = "original_language"
+        case addedAt = "added_at"
+        case userState = "user_state"
+        case sortMetrics = "sort_metrics"
+    }
+}
+
+private struct SiloCatalogQueryRequest: Encodable {
+    let source = "query"
+    let libraryID: String
+    let type: String?
+    let q: String?
+    let sort: String
+    let order: String
+    let limit: Int
+    let skipTotal = true
+    let cursor: String?
+    let match = "all"
+    let groups: [SiloCatalogQueryGroup]
+
+    enum CodingKeys: String, CodingKey {
+        case source, type, q, sort, order, limit, cursor, match, groups
+        case libraryID = "library_id"
+        case skipTotal = "skip_total"
+    }
+}
+
+private struct SiloCatalogQueryGroup: Encodable {
+    let match = "any"
+    let rules: [SiloCatalogQueryRule]
+}
+
+private struct SiloCatalogQueryRule: Encodable {
+    let field: String
+    let op = "is"
+    let value: String
+}
+
+private struct SiloCatalogSearchCapabilities: Decodable {
+    let facetValueSearch: Bool?
+
+    enum CodingKeys: String, CodingKey {
+        case facetValueSearch = "facet_value_search"
+    }
+}
+
+private struct SiloFacetValuesResponse: Decodable {
+    let values: [SiloFacetValue]
+    let valuesHasMore: Bool
+
+    enum CodingKeys: String, CodingKey {
+        case values
+        case valuesHasMore = "values_has_more"
+    }
+}
+
+private struct SiloFacetValue: Decodable {
+    let value: String
+}
+
+private struct SiloCatalogSortMetrics: Decodable {
+    let author: String?
+    let narrator: String?
+    let seriesName: String?
+    let progressRatio: Double?
+
+    enum CodingKeys: String, CodingKey {
+        case author, narrator
+        case seriesName = "series_name"
+        case progressRatio = "progress_ratio"
+    }
+}
+
 private struct SiloCatalogItem: Decodable {
     let contentID: String
     let type: String
@@ -2611,6 +2894,7 @@ private struct SiloItemDetail: Decodable {
     let overview: String?
     let runtimeMinutes: Int?
     let genres: [String]?
+    let originalLanguage: String?
     let posterURL: String?
     let seriesTitle: String?
     let userData: SiloProgressState?
@@ -2624,6 +2908,7 @@ private struct SiloItemDetail: Decodable {
     enum CodingKeys: String, CodingKey {
         case type, title, year, overview, genres, versions, audiobook, ebook
         case contentID = "content_id"
+        case originalLanguage = "original_language"
         case runtimeMinutes = "runtime"
         case posterURL = "poster_url"
         case seriesTitle = "series_title"

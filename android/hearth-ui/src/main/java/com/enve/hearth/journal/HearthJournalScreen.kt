@@ -25,6 +25,7 @@ import androidx.compose.material.icons.automirrored.outlined.LibraryBooks
 import androidx.compose.material.icons.filled.CheckCircle
 import androidx.compose.material.icons.outlined.Book
 import androidx.compose.material.icons.outlined.Bedtime
+import androidx.compose.material.icons.outlined.CalendarMonth
 import androidx.compose.material.icons.outlined.ChevronRight
 import androidx.compose.material.icons.outlined.Headphones
 import androidx.compose.material.icons.outlined.Insights
@@ -60,6 +61,7 @@ fun HearthJournalScreen(
     onSelectBook: (Book) -> Unit,
     onOpenCompletions: () -> Unit,
     onOpenInsights: () -> Unit,
+    onOpenRecaps: () -> Unit,
     onOpenStatsHub: () -> Unit,
     onOpenSleep: () -> Unit,
     onOpenSettings: () -> Unit = {},
@@ -69,6 +71,8 @@ fun HearthJournalScreen(
     val mantel by vm.mantel.collectAsStateWithLifecycle()
     val heatmap by vm.heatmap.collectAsStateWithLifecycle()
     val achievements by vm.achievements.collectAsStateWithLifecycle()
+    val goalVm: ReadingGoalViewModel = profileViewModel()
+    val goalProgress by goalVm.progress.collectAsStateWithLifecycle()
     val palette = Hearth.palette
 
     LazyColumn(
@@ -105,6 +109,17 @@ fun HearthJournalScreen(
             ThisWeek(stats)
         }
 
+        goalProgress?.let { progress ->
+            item {
+                ReadingGoalSection(
+                    progress = progress,
+                    onSave = goalVm::save,
+                    onDisable = goalVm::disable,
+                    modifier = Modifier.padding(horizontal = Hearth.Spacing.XL),
+                )
+            }
+        }
+
         if (heatmap.any { it > 0f }) {
             item {
                 PastYear(heatmap)
@@ -131,7 +146,7 @@ fun HearthJournalScreen(
             }
         }
 
-        item { CloserLook(stats, onOpenCompletions, onOpenInsights, onOpenStatsHub, onOpenSleep) }
+        item { CloserLook(stats, onOpenCompletions, onOpenInsights, onOpenRecaps, onOpenStatsHub, onOpenSleep) }
 
         if (achievements.available > 0) {
             item { MilestonesSection(achievements) }
@@ -289,6 +304,7 @@ private fun CloserLook(
     stats: JournalStats,
     onOpenCompletions: () -> Unit,
     onOpenInsights: () -> Unit,
+    onOpenRecaps: () -> Unit,
     onOpenStatsHub: () -> Unit,
     onOpenSleep: () -> Unit,
 ) {
@@ -315,6 +331,13 @@ private fun CloserLook(
                 "Insights",
                 "Your rhythm, favorites, and year in review",
                 onClick = onOpenInsights,
+            )
+            JournalDivider()
+            JournalLinkRow(
+                Icons.Outlined.CalendarMonth,
+                "Recaps",
+                "Your month or year, ready to share",
+                onClick = onOpenRecaps,
             )
             JournalDivider()
             JournalLinkRow(Icons.Outlined.Headphones, "Listening", "${stats.audiobooks} audiobooks in your library")

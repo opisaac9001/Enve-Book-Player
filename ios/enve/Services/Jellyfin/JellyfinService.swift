@@ -110,19 +110,7 @@ class JellyfinService: @unchecked Sendable {
 
         var libraries: [LibraryMetadata] = []
         for item in viewsResponse.Items {
-            let libraryType: LibraryType
-            switch item.CollectionType?.lowercased() {
-            case "books", "audiobooks":
-                libraryType = .audiobooks
-            case "movies":
-                libraryType = .movies
-            case "tvshows":
-                libraryType = .tvshows
-            case "music":
-                libraryType = .music
-            default:
-                libraryType = .mixed
-            }
+            let libraryType = Self.libraryType(forCollectionType: item.CollectionType)
 
             var itemCount = 0
             do {
@@ -166,6 +154,17 @@ class JellyfinService: @unchecked Sendable {
         }
 
         return libraries
+    }
+
+    static func libraryType(forCollectionType collectionType: String?) -> LibraryType {
+        switch collectionType?.lowercased() {
+        case "books": .books
+        case "audiobooks": .audiobooks
+        case "movies": .movies
+        case "tvshows": .tvshows
+        case "music": .music
+        default: .mixed
+        }
     }
 
     private func getUserId(serverUrl: String, token: String) async throws -> String {

@@ -6,6 +6,18 @@ import Testing
 @testable import enve
 
 struct ClassicReaderAppearanceTests {
+    @Test func hyphenationDefaultsAndRoundTripsAcrossEngines() throws {
+        let legacy = try JSONDecoder().decode(ClassicReaderAppearance.self, from: Data("{}".utf8))
+        #expect(legacy.hyphenation)
+        var appearance = legacy
+        appearance.hyphenation = false
+        let restored = try JSONDecoder().decode(ClassicReaderAppearance.self, from: JSONEncoder().encode(appearance))
+        #expect(!restored.hyphenation)
+        #expect(restored.readiumPreferences.hyphens == false)
+        let foliate = try FoliateReaderPreferences(appearance: restored)
+        #expect(foliate.jsonObject["hyphenation"] as? Bool == false)
+    }
+
     @Test func paragraphIndentRoundTripsAndMapsToReadium() throws {
         var appearance = ClassicReaderAppearance()
         appearance.paragraphIndent = 1.25

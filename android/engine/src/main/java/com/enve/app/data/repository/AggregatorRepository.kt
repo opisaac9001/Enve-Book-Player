@@ -4,6 +4,8 @@ import com.enve.core.data.local.DEFAULT_ADULT_PROFILE_ID
 import com.enve.core.data.local.ProfileStorageLocations
 
 import com.enve.core.data.local.ConnectionRegistry
+import com.enve.core.data.local.pendingBookMutationAccountKey
+import com.enve.core.data.local.pendingBookMutationConnection
 import com.enve.core.data.provider.ProviderPlaybackSession
 import com.enve.core.data.local.toBook
 import com.enve.core.data.model.Book
@@ -17,10 +19,12 @@ import com.enve.core.data.model.BookSource
 import com.enve.core.data.model.Library
 import com.enve.core.data.model.ProviderConnection
 import com.enve.app.data.offline.OfflineDownloadManager
+import com.enve.app.data.offline.offlineDownloadKey
 import com.enve.app.data.provider.ActiveSourceProviderAdapter
 import com.enve.app.playback.EmbeddedChapterExtractor
 import com.enve.core.data.provider.ProviderAdapter
 import com.enve.core.data.remote.ConnectionScope
+import com.enve.core.data.util.runSuspendCatching
 import dagger.hilt.android.qualifiers.ApplicationContext
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.Dispatchers
@@ -64,6 +68,22 @@ internal fun selectConnectionForSource(
 ): ProviderConnection? = connectionId
     ?.let { id -> connections.firstOrNull { it.id == id && it.source == source && it.enabled } }
     .let { selected -> if (connectionId != null) selected else connections.firstOrNull { it.source == source && it.enabled } }
+
+internal fun selectConnectionForBookEdit(
+    source: BookSource,
+    connectionId: String?,
+    accountKey: String,
+    connections: List<ProviderConnection>,
+): Result<ProviderConnection?> {
+    val connection = connections.pendingBookMutationConnection(source.name, connectionId)
+    val bound = if (connection == null) {
+        connectionId == null && accountKey.isEmpty() && connections.none { it.source == source }
+    } else {
+        connection.enabled && connection.pendingBookMutationAccountKey() == accountKey
+    }
+    return if (bound) Result.success(connection)
+    else Result.failure(IllegalStateException("Requested provider connection is unavailable"))
+}
 
 internal fun compositeLibraryId(connectionId: String, rawId: String): String = "$connectionId::$rawId"
 
@@ -458,6 +478,7 @@ class AggregatorRepository @Inject constructor(
     suspend fun getEbookDownloadUrl(bookId: String, source: BookSource, connectionId: String? = null): String? {
         val connections = connectionRegistry.connections.first().filter { it.enabled }
         val connection = selectConnectionForSource(source, connectionId, connections)
+        if (connection == null && connectionId != null) return null
 
         if (connection != null) {
             return withConnectionContext(connection) {
@@ -476,6 +497,7 @@ class AggregatorRepository @Inject constructor(
     ): com.enve.core.data.provider.ProviderEbookResource? {
         val connections = connectionRegistry.connections.first().filter { it.enabled }
         val connection = selectConnectionForSource(source, connectionId, connections)
+        if (connection == null && connectionId != null) return null
         if (connection != null) {
             return withConnectionContext(connection) {
                 Result.success(getAdapterForSource(connection.source).getEbookResource(bookId))
@@ -542,18 +564,22 @@ class AggregatorRepository @Inject constructor(
     fun supportsPersonalRating(book: Book): Boolean =
         getAdapterForSource(book.source).supportsPersonalRating
 
-    suspend fun updatePersonalRating(book: Book, rating: Int): Result<Unit> {
-        val normalizedRating = rating.coerceIn(1, 5)
-        val result = withBookConnection(book) { it.updatePersonalRating(book.id, normalizedRating) }
-        if (result.isSuccess) {
-            bookCacheDao.updatePersonalRating(
-                bookId = book.id,
-                connectionId = book.connectionId,
-                rating = normalizedRating.toFloat(),
-                nowMs = System.currentTimeMillis(),
-            )
+    fun readStatusOptions(book: Book): List<String> =
+        getAdapterForSource(book.source).readStatusOptions
+
+    suspend fun pushBookEdit(
+        source: BookSource,
+        connectionId: String?,
+        accountKey: String,
+        edit: suspend (ProviderAdapter) -> Result<Unit>,
+    ): Result<Unit> {
+        val connection = selectConnectionForBookEdit(source, connectionId, accountKey, connectionRegistry.connections.first())
+            .getOrElse { return Result.failure(it) }
+            ?: return edit(getAdapterForSource(source))
+        return withConnectionContext(connection) {
+            selectConnectionForBookEdit(source, connection.id, accountKey, connectionRegistry.connections.first())
+                .fold(onSuccess = { edit(getAdapterForSource(source)) }, onFailure = { Result.failure(it) })
         }
-        return result
     }
 
     suspend fun deleteBook(book: Book): Result<Unit> {
@@ -745,6 +771,15 @@ class AggregatorRepository @Inject constructor(
         return withBookConnection(book) { it.fetchEbookProgress(book) }
     }
 
+    suspend fun fetchAnnotations(book: Book): Result<List<com.enve.core.data.model.ReaderAnnotation>> =
+        withBookConnection(book) { it.fetchAnnotations(book) }
+
+    suspend fun pushAnnotations(
+        book: Book,
+        annotations: List<com.enve.core.data.model.ReaderAnnotation>,
+    ): Result<com.enve.core.data.sync.AnnotationsPushResult> =
+        withBookConnection(book) { it.pushAnnotations(book, annotations) }
+
     suspend fun getComicReadingDirection(book: Book): Result<String?> {
         return withBookConnection(book) { it.getComicReadingDirection(book) }
     }
@@ -758,14 +793,15 @@ class AggregatorRepository @Inject constructor(
         pageCount: Int? = null,
         connectionId: String? = null,
         observedAt: Long = System.currentTimeMillis(),
+        persistLocalProgress: Boolean = true,
     ): Result<Unit> {
         val connections = connectionRegistry.connections.first().filter { it.enabled }
         val connection = selectConnectionForSource(source, connectionId, connections)
 
-        runCatching {
+        if (persistLocalProgress) runSuspendCatching {
             bookCacheDao.updateUnifiedProgress(
                 bookId = bookId,
-                connectionId = connection?.id,
+                connectionId = connectionId ?: connection?.id,
                 progress = percentage.coerceIn(0f, 1f),
                 currentTimeSec = -1L,
                 locatorJson = locator,
@@ -775,20 +811,8 @@ class AggregatorRepository @Inject constructor(
 
         if (!serverSync.isEnabled) return Result.success(Unit)
         val providerLocator = providerEbookLocator(locator)
-        val result = if (connection != null) {
-            withConnectionContext(connection) {
-                getAdapterForSource(connection.source).syncEbookProgressAt(
-                    bookId = bookId,
-                    percentage = percentage,
-                    locator = providerLocator,
-                    page = page,
-                    pageCount = pageCount,
-                    observedAt = observedAt,
-                )
-            }
-        } else {
-            val adapter = getAdapterForSource(source)
-            adapter.syncEbookProgressAt(
+        val push: suspend () -> Result<Unit> = {
+            getAdapterForSource(connection?.source ?: source).syncEbookProgressAt(
                 bookId = bookId,
                 percentage = percentage,
                 locator = providerLocator,
@@ -797,7 +821,11 @@ class AggregatorRepository @Inject constructor(
                 observedAt = observedAt,
             )
         }
-        return result
+        return when {
+            connection != null -> withConnectionContext(connection, push)
+            connectionId != null -> Result.failure(IllegalStateException("Requested provider connection is unavailable"))
+            else -> push()
+        }
     }
 
     suspend fun getSeries(): Result<List<com.enve.core.data.remote.dto.SeriesSummaryDto>> {
@@ -936,8 +964,9 @@ class AggregatorRepository @Inject constructor(
 
     private fun withOfflineDownloadState(book: Book): Book {
 
-        val downloaded = offlineDownloadManager.isDownloaded(book.id) ||
-            comicOfflineService.get().isDownloaded(book.id)
+        val key = book.offlineDownloadKey
+        val downloaded = offlineDownloadManager.isDownloaded(key) ||
+            comicOfflineService.get().isDownloaded(key)
         return if (downloaded && !book.isDownloaded) book.copy(isDownloaded = true) else book
     }
 }

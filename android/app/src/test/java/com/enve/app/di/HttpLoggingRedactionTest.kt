@@ -19,13 +19,20 @@ class HttpLoggingRedactionTest {
     }
 
     @Test
+    fun redactsGatewayAndArbitraryCredentialHeaders() {
+        for (name in listOf("CF-Access-Client-Secret", "X-Custom-Secret", "X-Profile-Token")) {
+            assertEquals("$name: [redacted]", redactSensitiveHttpLogMessage("$name: fixture-secret"))
+        }
+    }
+
+    @Test
     fun redacts_token_query_parameters() {
         val redacted = redactSensitiveHttpLogMessage(
             "--> GET https://plex.example/library?X-Plex-Token=secret-token&limit=50",
         )
 
         assertEquals(
-            "--> GET https://plex.example/library?X-Plex-Token=[redacted]&limit=50",
+            "--> GET [request URL]",
             redacted,
         )
         assertFalse(redacted.contains("secret-token"))

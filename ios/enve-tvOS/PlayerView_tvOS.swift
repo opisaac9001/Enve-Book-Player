@@ -320,7 +320,7 @@ struct SleepTimerSheet_tvOS: View {
                 Section("Duration") {
                     ForEach(durations, id: \.self) { minutes in
                         Button {
-                            playerVM.startSleepTimer(minutes: minutes, fadeOut: true)
+                            playerVM.startSleepTimer(minutes: minutes)
                             dismiss()
                         } label: {
                             HStack {
@@ -335,7 +335,7 @@ struct SleepTimerSheet_tvOS: View {
                 Section("Chapter-anchored") {
                     if playerVM.currentChapter != nil {
                         Button {
-                            playerVM.setSleepTimerToEndOfChapter(fadeOut: true)
+                            playerVM.setSleepTimerToEndOfChapter()
                             dismiss()
                         } label: {
                             Label("End of current chapter", systemImage: "stop.circle")
@@ -343,7 +343,7 @@ struct SleepTimerSheet_tvOS: View {
                     }
                     if nextChapterAvailable {
                         Button {
-                            playerVM.setSleepTimerToEndOfNextChapter(fadeOut: true)
+                            playerVM.setSleepTimerToEndOfNextChapter()
                             dismiss()
                         } label: {
                             Label("End of next chapter", systemImage: "forward.end.circle")

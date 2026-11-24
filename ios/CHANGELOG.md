@@ -1,5 +1,12 @@
 # Changelog
 
+## Unreleased
+
+- Browse and search Silo libraries a page at a time. Connecting a source or refreshing Home fetches recent books without waiting for a full library import.
+- Recover Plex connections and refresh server progress before resuming a book.
+- Queue offline BookOrbit edits and add smart library filters and Book Drop.
+- Respect the sleep timer’s fade preference on iOS and tvOS.
+
 ## 1.2.7 — 2026-11-13
 
 - Move native Silo connections to API v2, including profiles, downloads, progress and annotations.

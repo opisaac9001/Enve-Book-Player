@@ -15,6 +15,7 @@ import com.enve.app.data.offline.ComicOfflineService
 import com.enve.app.data.offline.OfflineDownloadManager
 import com.enve.app.data.offline.OfflineDownloadProgress
 import com.enve.app.data.offline.OfflineDownloadStatus
+import com.enve.app.data.offline.offlineDownloadKey
 import com.enve.app.data.repository.GrimmoryRepository
 import dagger.hilt.android.lifecycle.HiltViewModel
 import kotlinx.coroutines.flow.MutableStateFlow
@@ -27,6 +28,7 @@ import javax.inject.Inject
 
 data class DownloadsHubState(
     val downloadedBooks: List<Book> = emptyList(),
+    val downloadKeys: Map<String, String> = emptyMap(),
     val activeDownloads: List<OfflineDownloadProgress> = emptyList(),
     val activeComicDownloads: List<ComicDownloadProgress> = emptyList(),
     val terminalDownloads: List<OfflineDownloadProgress> = emptyList(),
@@ -39,6 +41,8 @@ data class DownloadsHubState(
     val keepNextOfflineEnabled: Boolean = false,
     val keepNextOfflineCount: Int = 1,
 )
+
+val Book.downloadEntryId: String get() = "${mediaType.name}:$uniqueKey"
 
 @HiltViewModel
 class DownloadsHubViewModel @Inject constructor(
@@ -55,7 +59,7 @@ class DownloadsHubViewModel @Inject constructor(
 
     init {
         viewModelScope.launch {
-            offlineDownloadManager.progressByBookId.collect { progressById ->
+            offlineDownloadManager.progressByDownloadKey.collect { progressById ->
                 val sorted = progressById.values
                     .sortedWith(Comparator { a, b -> NaturalSort.compare(a.title, b.title) })
                 val active = sorted.filter {
@@ -68,7 +72,7 @@ class DownloadsHubViewModel @Inject constructor(
             }
         }
         viewModelScope.launch {
-            comicOfflineService.progressByBookId.collect { progressById ->
+            comicOfflineService.progressByDownloadKey.collect { progressById ->
                 val active = progressById.values
                     .filter { it.status == ComicDownloadStatus.DOWNLOADING || it.status == ComicDownloadStatus.QUEUED }
                     .sortedWith(Comparator { a, b -> NaturalSort.compare(a.title, b.title) })
@@ -78,8 +82,8 @@ class DownloadsHubViewModel @Inject constructor(
 
         viewModelScope.launch {
             combine(
-                offlineDownloadManager.downloadedBookIds,
-                comicOfflineService.downloadedBookIds,
+                offlineDownloadManager.downloadedKeys,
+                comicOfflineService.downloadedKeys,
             ) { _, _ -> Unit }.collect { refresh() }
         }
         viewModelScope.launch {
@@ -145,106 +149,69 @@ class DownloadsHubViewModel @Inject constructor(
 
             val manifests = offlineDownloadManager.listDownloadedManifests()
             val audiobooksResult = repository.getBooks(size = 600)
-            val audiobooks = audiobooksResult.fold(
-                onSuccess = { serverBooks ->
-                    val remoteById = serverBooks.associateBy { it.id }
-                    manifests.map { manifest ->
-
-                        val remote = remoteById[manifest.bookId]
-                        offlineDownloadManager.ensureCoverCached(
-                            remote ?: Book(
-                                id = manifest.bookId,
-                                title = manifest.title,
-                                author = manifest.author,
-                                coverUrl = manifest.coverUrl,
-                                source = runCatching { BookSource.valueOf(manifest.source) }.getOrDefault(BookSource.GRIMMORY),
-                                mediaType = AppMediaType.AUDIOBOOK,
-                            )
-                        )
-                        val cover = offlineDownloadManager.localCoverUri(manifest.bookId)
-                            ?: manifest.coverUrl ?: remote?.coverUrl
-                        remote?.copy(isDownloaded = true, downloadProgress = 1f, coverUrl = cover)
-                            ?: Book(
-                                id = manifest.bookId,
-                                title = manifest.title,
-                                author = manifest.author,
-                                coverUrl = cover,
-                                source = runCatching { BookSource.valueOf(manifest.source) }.getOrDefault(BookSource.GRIMMORY),
-                                mediaType = AppMediaType.AUDIOBOOK,
-                                isDownloaded = true,
-                                downloadProgress = 1f,
-                                duration = manifest.tracks.sumOf { it.durationMs } / 1000,
-                            )
-                    }
-                },
-                onFailure = {
-                    manifests.map { manifest ->
-                        Book(
-                            id = manifest.bookId,
-                            title = manifest.title,
-                            author = manifest.author,
-                            coverUrl = offlineDownloadManager.localCoverUri(manifest.bookId) ?: manifest.coverUrl,
-                            source = runCatching { BookSource.valueOf(manifest.source) }.getOrDefault(BookSource.GRIMMORY),
-                            mediaType = AppMediaType.AUDIOBOOK,
-                            isDownloaded = true,
-                            downloadProgress = 1f,
-                            duration = manifest.tracks.sumOf { it.durationMs } / 1000,
-                        )
-                    }
-                },
-            )
-
-            val comicManifests = comicOfflineService.listDownloadedManifests()
-            val comicsFromManifests = comicManifests.map { manifest ->
-                val enriched = bookCacheDao.getById(manifest.id)?.toBook()
-                (enriched ?: manifest).copy(isDownloaded = true, downloadProgress = 1f)
+            val remoteByKey = audiobooksResult.getOrNull().orEmpty().associateBy { it.offlineDownloadKey }
+            val audiobookKeys = mutableMapOf<String, String>()
+            val audiobooks = manifests.map { manifest ->
+                val remote = remoteByKey[manifest.downloadKey]
+                val local = Book(
+                    id = manifest.bookId,
+                    title = manifest.title,
+                    author = manifest.author,
+                    coverUrl = manifest.coverUrl,
+                    source = runCatching { BookSource.valueOf(manifest.source) }.getOrDefault(BookSource.GRIMMORY),
+                    mediaType = AppMediaType.AUDIOBOOK,
+                    connectionId = manifest.connectionId,
+                    duration = manifest.tracks.sumOf { it.durationMs } / 1000,
+                )
+                if (audiobooksResult.isSuccess) offlineDownloadManager.ensureCoverCached(remote ?: local)
+                val cover = offlineDownloadManager.localCoverUri(manifest.downloadKey)
+                    ?: manifest.coverUrl ?: remote?.coverUrl
+                (remote ?: local).copy(mediaType = AppMediaType.AUDIOBOOK, isDownloaded = true, downloadProgress = 1f, coverUrl = cover)
+                    .also { audiobookKeys[it.downloadEntryId] = manifest.downloadKey }
             }
 
-            val seenIds = comicsFromManifests.mapTo(mutableSetOf()) { it.id }
-            val legacyComics = comicOfflineService.downloadedBookIds.value
-                .filterNot { it in seenIds }
-                .map { bookId ->
-                    bookCacheDao.getById(bookId)?.toBook()?.copy(isDownloaded = true, downloadProgress = 1f)
-                        ?: Book(
-                            id = bookId,
-                            title = bookId,
-                            source = BookSource.GRIMMORY,
-                            mediaType = AppMediaType.EBOOK,
-                            isDownloaded = true,
-                            downloadProgress = 1f,
-                        )
-                }
-            val comics = comicsFromManifests + legacyComics
+            val comicKeys = mutableMapOf<String, String>()
+            val comics = comicOfflineService.listDownloadedManifests().map { manifest ->
+                val enriched = bookCacheDao.getByCacheKey(manifest.uniqueKey)?.toBook()
+                (enriched ?: manifest).copy(mediaType = AppMediaType.EBOOK, isDownloaded = true, downloadProgress = 1f)
+                    .also { comicKeys[it.downloadEntryId] = manifest.offlineDownloadKey }
+            }
 
             val audiobookError = audiobooksResult.exceptionOrNull()
             _state.update {
                 it.copy(
                     isLoading = false,
                     downloadedBooks = (audiobooks + comics).sortedWith(Comparator { a, b -> NaturalSort.compare(a.title, b.title) }),
+                    downloadKeys = audiobookKeys + comicKeys,
                     error = if (audiobookError != null && audiobooks.isEmpty()) audiobookError.message else null,
                 )
             }
         }
     }
 
-    fun removeItem(bookId: String) {
-
-        offlineDownloadManager.removeDownload(bookId)
-        comicOfflineService.removeDownload(bookId)
-        _state.update { s -> s.copy(downloadedBooks = s.downloadedBooks.filterNot { it.id == bookId }) }
+    fun removeItem(entryId: String) {
+        val current = _state.value
+        val book = current.downloadedBooks.firstOrNull { it.downloadEntryId == entryId }
+        val key = current.downloadKeys[entryId] ?: entryId
+        if (book?.mediaType == AppMediaType.EBOOK) {
+            comicOfflineService.removeDownload(key)
+        } else {
+            offlineDownloadManager.removeDownload(key)
+        }
+        _state.update { s -> s.copy(downloadedBooks = s.downloadedBooks.filterNot { it.downloadEntryId == entryId }) }
     }
 
-    fun cancelActiveDownload(bookId: String) {
-        offlineDownloadManager.cancelDownload(bookId)
+    fun cancelActiveDownload(downloadKey: String) {
+        offlineDownloadManager.cancelDownload(downloadKey)
     }
 
-    fun cancelComicDownload(bookId: String) {
-        comicOfflineService.cancelDownload(bookId)
+    fun cancelComicDownload(downloadKey: String) {
+        comicOfflineService.cancelDownload(downloadKey)
     }
 
-    fun retryDownload(bookId: String) {
+    fun retryDownload(downloadKey: String) {
         val allowCellular = _state.value.downloadOnCellular
-        val queued = offlineDownloadManager.retryDownload(bookId, allowCellular)
+        val queued = offlineDownloadManager.retryDownload(downloadKey, allowCellular)
         if (!queued) {
             _state.update { it.copy(error = "Download request is no longer available.") }
         }

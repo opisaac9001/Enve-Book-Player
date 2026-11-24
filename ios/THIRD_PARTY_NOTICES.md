@@ -13,6 +13,7 @@ This inventory describes the repository state audited on 2026-08-08. Versions ar
 | FluidAudio | revision `5390df9752c8fc583596018360c5fd70d6fa6c75` | Apache-2.0 | [FluidInference/FluidAudio](https://github.com/FluidInference/FluidAudio). Also contains the separately listed FastCluster, VBx, and NeMo text-processing components. |
 | Fuzi, Readium fork | 4.0.0 | MIT | [readium/Fuzi](https://github.com/readium/Fuzi) |
 | GCDWebServer, Readium fork | 4.0.1 | BSD-3-Clause | [readium/GCDWebServer](https://github.com/readium/GCDWebServer) |
+| Google Cast iOS SDK | 4.8.6 | Google Cast SDK terms | Official dynamic binary from [Google Cast](https://developers.google.com/cast/docs/ios_sender), pinned by the local `LocalPackages/GoogleCast` wrapper. Governed by the [Google Cast SDK terms](https://developers.google.com/cast/docs/terms). Preserve its bundled open-source notices, including embedded GTMSessionFetcher components. |
 | ONNX Runtime Objective-C | 1.24.2 | MIT | [microsoft/onnxruntime](https://github.com/microsoft/onnxruntime/tree/v1.24.2). Used by QuartzNet alignment and Kokoro CPU speech synthesis. Retain the runtime's license and third-party notices in binary distributions. |
 | Pulse | 5.2.3 | MIT | [kean/Pulse](https://github.com/kean/Pulse) |
 | PulseLogHandler | 5.1.0 | MIT | [kean/PulseLogHandler](https://github.com/kean/PulseLogHandler) |
@@ -23,12 +24,15 @@ This inventory describes the repository state audited on 2026-08-08. Versions ar
 | Zip | 2.1.2 | MIT, with zlib-licensed minizip files | [marmelroy/Zip](https://github.com/marmelroy/Zip). Minizip carries copyrights for Gilles Vollant, Even Rouault, Mathias Svensson, Nathan Moinvaziri, Terry Thorsen, and Info-ZIP in its source headers. |
 | ZIPFoundation, Readium fork | 3.0.1 | MIT | [readium/ZIPFoundation](https://github.com/readium/ZIPFoundation) |
 
+The local StoryAlign ONNX Runtime package contains the Objective-C inference bindings from upstream revision b7fb7f7dea8a2469e6335d95a61b8f36d0dc83b2. The package includes the original 1.24.2 binary archive (SHA-256 `f7100a992d2a8135168c8afd831e6a58b465349101982aa58b3e11d36e600b54`), the MIT license and the runtime’s third-party notices.
+
 AMSMB2 declares Swift Atomics 1.2 or newer for its test target, and Readium declares the Swift-DocC plugin for package documentation. Neither is linked into the shipping Enve products or pinned in the application `Package.resolved` file.
 
 ## Local and vendored source
 
 | Component | Location | License | Notes |
 |---|---|---|---|
+| Liseur reader behavior | Adapted wide-content fitting; revision `1822c64b6a462e6d9285a1b43e2ec7448e4a7719` | MIT | Copyright 2026 chmouel. See `BuildSupport/Liseur/UPSTREAM.md` and `LICENSE.txt`. |
 | AMSMB2 4.0.3 | `LocalPackages/AMSMB2/` | MIT wrapper combined with LGPL-2.1-or-later libsmb2 | Exact copy of [amosavian/AMSMB2](https://github.com/amosavian/AMSMB2) commit `1726aaaf7adf63d7d1d2a0c5d1b0e635028215c0`. See its `PROVENANCE.md`. |
 | libsmb2 | `LocalPackages/AMSMB2/Dependencies/libsmb2/` | LGPL-2.1-or-later for `lib/` and `include/`; BSD-2-Clause for examples | Exact copy of [sahlberg/libsmb2](https://github.com/sahlberg/libsmb2) commit `aff9fa6ba9f41cfd3c15d184554601ec3f6d8d03`. The iOS app embeds it inside `AMSMB2.framework`. Binary distributors must preserve LGPL notices and provide the corresponding source and the practical ability to rebuild or relink with a modified compatible library. |
 | StoryAlign | `LocalPackages/StoryAlign/` | MIT | Copyright 2025-2026 Rich Waters; portions copyright 2023 Shane Friedman. |
@@ -36,7 +40,6 @@ AMSMB2 declares Swift Atomics 1.2 or newer for its test target, and Readium decl
 | RAR Swift adapter | `LocalPackages/UnrarKit/` | Project-local adapter with retained BSD-style UnrarKit notice | `Package.swift` and `RARArchive.swift` are Enve-local code rather than a vendored abbeycode/UnrarKit revision. See its `PROVENANCE.md`. |
 | UnRAR source 6.1.7, API 6.12 | `LocalPackages/UnrarKit/Sources/unrar-lib/` | UnRAR freeware license | Exact copy of the 147 portable source files in RARLAB archive `unrarsrc-6.1.7.tar.gz`, SHA-256 `de75b6136958173fdfc530d38a0145b72342cf0d3842bf7bb120d336602d88ed`, dated 2022-05-04. RARLAB distributes source archives rather than an authoritative Git history, so no commit applies. Copyright Alexander Roshal. It may be used for archive extraction but not to recreate the proprietary RAR compression algorithm. Modified redistribution must retain the paragraph required by `LocalPackages/UnrarKit/license.txt`. |
 | Foliate JS | `ThirdParty/foliate-js/` | MIT | [johnfactotum/foliate-js](https://github.com/johnfactotum/foliate-js), commit `6b11e1744346f60504b727984f7d42f0fef3ab54`. The runtime build disables publication scripts in two generated files. |
-| Liseur reader behavior | Adapted wide-content fitting; revision `1822c64b6a462e6d9285a1b43e2ec7448e4a7719` | MIT | Copyright 2026 chmouel. See `BuildSupport/Liseur/UPSTREAM.md` and `LICENSE.txt`. |
 | fflate | Pinned Foliate runtime | MIT | Copyright Arjun Barrett. The license is embedded in `FoliateRuntime.bundle/licenses/fflate-LICENSE.txt`. |
 | zip.js | Foliate runtime | BSD-3-Clause | [gildas-lormeau/zip.js](https://github.com/gildas-lormeau/zip.js), version 2.7.52. The license is embedded in `FoliateRuntime.bundle`. |
 | PDF.js | Foliate vendored source | Apache-2.0 | Copyright 2024 Mozilla Foundation. The PDF.js runtime files retain their license headers. |

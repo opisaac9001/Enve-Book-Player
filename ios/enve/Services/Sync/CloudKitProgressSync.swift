@@ -40,10 +40,10 @@ final class CloudKitProgressSync: SyncSink {
     let bookProgress: BookProgressStore
 
     init(
-        isSyncEnabled: @escaping @MainActor () -> Bool = { SyncCoordinator.shared.syncEnabled },
-        isSyncAvailable: @escaping @MainActor () -> Bool = { SyncCoordinator.shared.isCloudKitAvailable },
-        userProgress: UserProgressStore = .shared,
-        bookProgress: BookProgressStore = .shared
+        isSyncEnabled: @escaping @MainActor () -> Bool,
+        isSyncAvailable: @escaping @MainActor () -> Bool,
+        userProgress: UserProgressStore,
+        bookProgress: BookProgressStore
     ) {
         self.isSyncEnabled = isSyncEnabled
         self.isSyncAvailable = isSyncAvailable

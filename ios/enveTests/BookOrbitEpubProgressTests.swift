@@ -14,8 +14,11 @@ nonisolated private final class BookOrbitEpubProtocol: URLProtocol, @unchecked S
         guard let url = request.url else { return }
         let payload: [String: Any]
         switch url.path {
-        case "/api/v1/dashboard/widgets/currently-reading":
-            payload = ["books": [["bookId": 1, "fileId": 2, "fileFormat": "epub", "progress": 42]]]
+        case "/api/v1/dashboard/widgets/batch":
+            payload = ["items": [[
+                "type": "currently-reading", "failed": false,
+                "data": ["books": [["bookId": 1, "fileId": 2, "fileFormat": "epub", "progress": 42]]],
+            ]]]
         case "/api/v1/books/1":
             payload = ["id": 1, "title": "CFI fixture", "files": [["id": 2, "format": "epub", "role": "primary"]]]
         case "/api/v1/books/files/2/progress":

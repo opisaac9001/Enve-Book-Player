@@ -14,6 +14,7 @@ import java.time.Instant
 import java.time.LocalDateTime
 import java.time.OffsetDateTime
 import java.time.ZoneOffset
+import okhttp3.HttpUrl.Companion.toHttpUrl
 
 private const val LOOSE_LEAF_NUMBER = -100_000f
 private const val SPECIAL_VOLUME_NUMBER = 100_000f
@@ -76,6 +77,7 @@ internal fun expandKavitaSeries(
     serverUrl: String,
     fallbackLibraryId: String?,
     libraryType: Int?,
+    refreshedAt: Instant = Instant.now(),
 ): List<Book> {
     val issues = volumes
         .flatMap { volume -> volume.chapters.filter { it.pages > 0 }.map { KavitaIssue(series.id, volume, it) } }
@@ -97,7 +99,7 @@ internal fun expandKavitaSeries(
         Book(
             id = if (chapter.id == legacyChapterId) series.id.toString() else kavitaIssueBookId(series.id, issue.volume.id, chapter.id),
             title = if (single) seriesName else issue.title(seriesName, index),
-            coverUrl = "$base/api/Image/chapter-cover?chapterId=${chapter.id}",
+            coverUrl = kavitaCoverUrl(series, issue.volume, chapter, single, base, refreshedAt),
             source = BookSource.KAVITA,
             mediaType = AppMediaType.EBOOK,
             seriesName = seriesName.takeUnless { single || it.isBlank() },
@@ -117,6 +119,42 @@ internal fun expandKavitaSeries(
             lastReadTime = epochMs(chapter.lastReadingProgressUtc)?.takeIf { chapter.pagesRead > 0 } ?: 0L,
         )
     }
+}
+
+internal fun kavitaCoverUrl(
+    series: KavitaSeriesDto,
+    volume: KavitaVolumeDto,
+    chapter: KavitaChapterDto,
+    single: Boolean,
+    base: String,
+    refreshedAt: Instant,
+): String {
+    val entity: String
+    val id: Int
+    val modified: Long?
+    when {
+        single && series.coverImageLocked -> {
+            entity = "series"
+            id = series.id
+            modified = null
+        }
+        volume.chapters.size == 1 -> {
+            entity = "volume"
+            id = volume.id
+            modified = listOfNotNull(epochMs(volume.lastModifiedUtc), epochMs(chapter.lastModifiedUtc)).maxOrNull()
+        }
+        else -> {
+            entity = "chapter"
+            id = chapter.id
+            modified = epochMs(chapter.lastModifiedUtc)
+        }
+    }
+    val version = (modified?.let(Instant::ofEpochMilli) ?: refreshedAt).toString()
+    return "$base/api/image/$entity-cover".toHttpUrl().newBuilder()
+        .addQueryParameter("${entity}Id", id.toString())
+        .addQueryParameter("v", version)
+        .addQueryParameter("enveCoverRevision", "$entity:$id:$version")
+        .build().toString()
 }
 
 private val KavitaVolumeDto.isLooseLeaf: Boolean get() = minNumber == LOOSE_LEAF_NUMBER

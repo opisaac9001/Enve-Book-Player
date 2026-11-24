@@ -18,6 +18,7 @@ import kotlinx.coroutines.runBlocking
 import org.junit.After
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertNull
+import org.junit.Assert.assertTrue
 import org.junit.Test
 import org.junit.runner.RunWith
 import java.util.UUID
@@ -76,6 +77,40 @@ class CredentialVaultProfileTest {
     }
 
     @Test
+    fun vaultWhoseKeysetCannotBeDecryptedStartsEmptyWithoutAffectingOtherProfiles() {
+        val key = CredentialVault.accessTokenKey("same-connection")
+        CredentialVault(context).put(key, "owner-test-token")
+        CredentialVault.forProfile(context, "child").put(key, "child-test-token")
+        val file = context.getSharedPreferences("enve_credentials.profile.child", Context.MODE_PRIVATE)
+        val keysets = file.all.filterKeys { it.endsWith("_keyset__") }.mapValues { it.value as String }
+        assertEquals(2, keysets.size)
+        val edit = file.edit()
+        keysets.forEach { (name, hex) ->
+            edit.putString(name, hex.replaceRange(20, 21, if (hex[20] == '0') "1" else "0"))
+        }
+        assertTrue(edit.commit())
+
+        val recovered = CredentialVault.forProfile(context, "child")
+
+        assertNull(recovered.get(key))
+        assertEquals("owner-test-token", CredentialVault(context).get(key))
+        recovered.put(key, "replacement-test-token")
+        assertEquals("replacement-test-token", CredentialVault.forProfile(context, "child").get(key))
+    }
+
+    @Test
+    fun deletingAProfileVaultLeavesTheOwnerVault() {
+        val key = CredentialVault.accessTokenKey("same-connection")
+        CredentialVault(context).put(key, "owner-test-token")
+        CredentialVault.forProfile(context, "child").put(key, "child-test-token")
+
+        CredentialVault.deleteForProfile(context, "child")
+
+        assertNull(CredentialVault.forProfile(context, "child").get(key))
+        assertEquals("owner-test-token", CredentialVault(context).get(key))
+    }
+
+    @Test
     fun logoutOnlyClearsTheCapturedProfilesLogin() = runBlocking {
         val root = File(context.cacheDir, "profile-login-test-${UUID.randomUUID()}")
         val job = SupervisorJob()
@@ -120,6 +155,8 @@ class CredentialVaultProfileTest {
 
         override fun getSharedPreferences(name: String, mode: Int) =
             baseContext.getSharedPreferences(prefix + name, mode).also { names += prefix + name }
+
+        override fun deleteSharedPreferences(name: String) = baseContext.deleteSharedPreferences(prefix + name)
 
         fun clear() {
             names.forEach(baseContext::deleteSharedPreferences)

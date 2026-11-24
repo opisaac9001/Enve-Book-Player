@@ -5,7 +5,10 @@ import com.enve.core.data.local.ConnectionRegistry
 import com.enve.core.data.model.BookSource
 import com.enve.core.data.model.ProviderConnection
 import com.enve.core.data.remote.AuthHeaderContext
+import com.enve.core.data.remote.AuthCredentialScope
 import com.enve.core.data.remote.AuthHeaderStrategy
+import com.enve.core.data.remote.LoginAttempt
+import com.enve.core.data.remote.LoginAttemptScope
 import com.enve.core.data.remote.ConnectionScope
 import com.enve.core.data.remote.TokenRefreshContext
 import com.enve.core.data.remote.TokenRefreshStrategy
@@ -21,13 +24,14 @@ class OpdsAuthHeaderStrategy @Inject constructor(
 ) : AuthHeaderStrategy {
 
     override val requiresToken: Boolean = false
+    override val credentialScope: AuthCredentialScope = AuthCredentialScope.ORIGIN
 
     override fun apply(context: AuthHeaderContext): Request {
         if (context.original.header("Authorization") != null) return context.builder.build()
         val url = context.original.url.toString()
         val scoped = connectionRegistry.getScopedConnectionSync()
         val configured = if (scoped == null) connectionRegistry.getConnectionsSync() else emptyList()
-        if (!opdsCredentialsAllowed(scoped, configured, url)) return context.builder.build()
+        if (!opdsCredentialsAllowed(scoped, configured, url, LoginAttemptScope.get())) return context.builder.build()
 
         val session = ConnectionScope.getConnectionId()?.let(authStore::session)
         if (session != null && session.hasBearer) {
@@ -50,8 +54,10 @@ internal fun opdsCredentialsAllowed(
     scoped: ProviderConnection?,
     configured: List<ProviderConnection>,
     url: String,
+    login: LoginAttempt? = null,
 ): Boolean {
     if (scoped != null) return isSameOpdsOrigin(scoped.serverUrl, url)
+    if (login != null) return login.source == BookSource.OPDS && isSameOpdsOrigin(login.serverUrl, url)
     return configured.any { it.source == BookSource.OPDS && isSameOpdsOrigin(it.serverUrl, url) }
 }
 

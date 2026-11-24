@@ -291,7 +291,7 @@ final class OneDriveProvider: WholeSnapshotCatalogProvider, PlaybackSessionProvi
         return try ebooks.cacheRemoteEbook(
             tempURL: temporaryURL,
             preferredFilename: remote.name,
-            bookIdentifier: book.id
+            bookIdentifier: book.ebookStorageID
         )
     }
 

@@ -5,6 +5,7 @@ import android.content.SharedPreferences
 import com.enve.core.data.local.DEFAULT_ADULT_PROFILE_ID
 import com.enve.core.data.local.ProfileStorageLocations
 import dagger.hilt.android.qualifiers.ApplicationContext
+import com.enve.engine.podcasts.PodcastFeedUrl
 import com.enve.engine.podcasts.PodcastSubscription
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
@@ -41,6 +42,14 @@ class PodcastSubscriptionStore(private val preferences: SharedPreferences) {
     fun save(subscription: PodcastSubscription) {
         val updated = mutableSubscriptions.value.filterNot { it.feedUrl == subscription.feedUrl } + subscription
         persist(updated)
+    }
+
+    @Synchronized
+    fun saveAll(subscriptions: List<PodcastSubscription>): Int {
+        val existing = mutableSubscriptions.value.mapTo(mutableSetOf()) { PodcastFeedUrl.key(it.feedUrl) }
+        val added = subscriptions.filter { existing.add(PodcastFeedUrl.key(it.feedUrl)) }
+        if (added.isNotEmpty()) persist(mutableSubscriptions.value + added)
+        return added.size
     }
 
     @Synchronized

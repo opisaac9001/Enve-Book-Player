@@ -225,6 +225,7 @@ extension BookOrbitProvider {
         var bookId: Int?
         var search: String?
         var trashed = false
+        var hasNote = false
 
         var queryItems: [URLQueryItem] {
             var items = [
@@ -236,6 +237,7 @@ extension BookOrbitProvider {
             if let trimmed = search?.trimmingCharacters(in: .whitespacesAndNewlines), !trimmed.isEmpty {
                 items.append(URLQueryItem(name: "search", value: String(trimmed.prefix(200))))
             }
+            if hasNote { items.append(URLQueryItem(name: "hasNote", value: "true")) }
             return items
         }
     }
@@ -291,11 +293,11 @@ extension BookOrbitProvider {
     }
 
     func fetchReadingStreakWidget() async throws -> ReadingStreakWidget {
-        try await requestJSON("dashboard/widgets/reading-streak")
+        try await requestDashboardWidget("reading-streak")
     }
 
     func fetchReadingGoalWidget() async throws -> ReadingGoalWidget {
-        try await requestJSON("dashboard/widgets/reading-goal")
+        try await requestDashboardWidget("reading-goal")
     }
 
     func fetchLibraryOverviewWidget() async throws -> LibraryOverviewWidget {
@@ -303,7 +305,7 @@ extension BookOrbitProvider {
     }
 
     func fetchYearProjectionWidget() async throws -> YearProjectionWidget {
-        try await requestJSON("dashboard/widgets/year-projection")
+        try await requestDashboardWidget("year-projection")
     }
 
     func fetchReadingDnaWidget() async throws -> ReadingDnaWidget {
@@ -315,11 +317,11 @@ extension BookOrbitProvider {
     }
 
     func fetchMonthlyChallengeWidget() async throws -> MonthlyChallengeWidget {
-        try await requestJSON("dashboard/widgets/monthly-challenge")
+        try await requestDashboardWidget("monthly-challenge")
     }
 
     func fetchHighlightOfTheDayWidget() async throws -> HighlightOfTheDayWidget? {
-        try await requestOptionalJSON("dashboard/widgets/highlight-of-the-day")
+        try await requestDashboardWidget("highlight-of-the-day")
     }
 
     func fetchLongWaitWidget() async throws -> LongWaitWidget? {

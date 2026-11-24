@@ -45,6 +45,7 @@ data class KavitaSeriesDto(
     val pagesRead: Int = 0,
     val created: String? = null,
     val latestReadDate: String? = null,
+    val coverImageLocked: Boolean = false,
 )
 
 object KavitaMangaFormat {
@@ -97,6 +98,7 @@ data class KavitaVolumeDto(
     val minNumber: Float = 0f,
     val name: String? = null,
     val chapters: List<KavitaChapterDto> = emptyList(),
+    val lastModifiedUtc: String? = null,
 )
 
 @Serializable
@@ -112,6 +114,7 @@ data class KavitaChapterDto(
     val pagesRead: Int = 0,
     val lastReadingProgressUtc: String? = null,
     val createdUtc: String? = null,
+    val lastModifiedUtc: String? = null,
     val format: Int? = null,
     val files: List<KavitaMangaFileDto> = emptyList(),
 )

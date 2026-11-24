@@ -12,6 +12,8 @@ import org.junit.Assert.assertNull
 import org.junit.Assert.assertThrows
 import org.junit.Assert.assertTrue
 import org.junit.Test
+import okhttp3.HttpUrl.Companion.toHttpUrl
+import java.time.Instant
 
 class KavitaIssueCatalogTest {
     private val server = "https://kavita.test/"
@@ -50,15 +52,29 @@ class KavitaIssueCatalogTest {
         assertEquals(0f, books[1].readProgress)
         assertTrue(books[0].lastReadTime > 0L)
         assertEquals(0L, books[1].lastReadTime)
-        assertEquals(
-            listOf(
-                "https://kavita.test/api/Image/chapter-cover?chapterId=54",
-                "https://kavita.test/api/Image/chapter-cover?chapterId=55",
-            ),
-            books.map { it.coverUrl },
-        )
+        assertEquals(listOf("54", "55"), books.map { it.coverUrl!!.toHttpUrl().queryParameter("chapterId") })
+        assertTrue(books.all { it.coverUrl!!.toHttpUrl().encodedPath == "/api/image/chapter-cover" })
         assertEquals(listOf("CBX", "CBX"), books.map { it.primaryFileType })
         assertEquals(listOf("2", "2"), books.map { it.libraryId })
+    }
+
+    @Test
+    fun customStandaloneSeriesAndVolumeCoversHaveIndependentVersions() {
+        val chapter = KavitaChapterDto(id = 11, pages = 10, lastModifiedUtc = "2026-11-14T12:00:00.1234567")
+        val volume = KavitaVolumeDto(id = 7, chapters = listOf(chapter), lastModifiedUtc = "2026-11-14T12:00:00.4567890")
+        val series = KavitaSeriesDto(id = 3, name = "Book", coverImageLocked = true)
+        val now = Instant.parse("2026-11-15T00:00:00Z")
+        val custom = kavitaCoverUrl(series, volume, chapter, true, server.trimEnd('/'), now).toHttpUrl()
+        assertEquals("/api/image/series-cover", custom.encodedPath)
+        assertEquals("3", custom.queryParameter("seriesId"))
+        assertEquals("series:3:$now", custom.queryParameter("enveCoverRevision"))
+        assertNull(custom.queryParameter("apiKey"))
+        val inherited = kavitaCoverUrl(series.copy(coverImageLocked = false), volume, chapter, true, server.trimEnd('/'), now).toHttpUrl()
+        assertEquals("/api/image/volume-cover", inherited.encodedPath)
+        assertEquals("7", inherited.queryParameter("volumeId"))
+        assertEquals("2026-11-14T12:00:00.456Z", inherited.queryParameter("v"))
+        assertEquals(inherited.toString(), kavitaCoverUrl(series.copy(coverImageLocked = false), volume, chapter, true, server.trimEnd('/'), now.plusSeconds(60)))
+        assertTrue(inherited.toString() != kavitaCoverUrl(series.copy(coverImageLocked = false), volume.copy(lastModifiedUtc = "2026-11-14T12:00:00.789"), chapter, true, server.trimEnd('/'), now))
     }
 
     @Test

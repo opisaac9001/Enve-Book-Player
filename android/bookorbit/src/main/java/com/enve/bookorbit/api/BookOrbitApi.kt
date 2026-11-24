@@ -17,6 +17,15 @@ import com.enve.bookorbit.dto.BookOrbitBookDetailDto
 import com.enve.bookorbit.dto.BookOrbitBookmarkDto
 import com.enve.bookorbit.dto.BookOrbitBookmarkRequest
 import com.enve.bookorbit.dto.BookOrbitBooksPageDto
+import com.enve.bookorbit.dto.BookOrbitBookDockFinalizeDto
+import com.enve.bookorbit.dto.BookOrbitBookDockApplyFetchedDto
+import com.enve.bookorbit.dto.BookOrbitBookDockSelectionRequest
+import com.enve.bookorbit.dto.BookOrbitBookDockUpdateRequest
+import com.enve.bookorbit.dto.BookOrbitBookDockFileDto
+import com.enve.bookorbit.dto.BookOrbitBookDockSummaryDto
+import com.enve.bookorbit.dto.BookOrbitBookDockFilesPageDto
+import com.enve.bookorbit.dto.BookOrbitSmartScopeBooksRequest
+import com.enve.bookorbit.dto.BookOrbitSmartScopeDto
 import com.enve.bookorbit.dto.BookOrbitBooksPageRequest
 import com.enve.bookorbit.dto.BookOrbitCollectionBooksRequest
 import com.enve.bookorbit.dto.BookOrbitCollectionDto
@@ -51,14 +60,17 @@ import com.enve.bookorbit.dto.BookOrbitStatusRequest
 import com.enve.bookorbit.dto.BookOrbitUpdateAnnotationRequest
 import com.enve.bookorbit.dto.BookOrbitUserDto
 import com.enve.bookorbit.dto.BookOrbitYearProjectionWidgetDto
+import okhttp3.MultipartBody
 import retrofit2.Response
 import retrofit2.http.Body
 import retrofit2.http.GET
 import retrofit2.http.Header
 import retrofit2.http.HTTP
+import retrofit2.http.Multipart
 import retrofit2.http.PATCH
 import retrofit2.http.POST
 import retrofit2.http.PUT
+import retrofit2.http.Part
 import retrofit2.http.Path
 import retrofit2.http.Query
 import retrofit2.http.Url
@@ -332,4 +344,55 @@ interface BookOrbitApi {
         @Query("origins") origins: String? = null,
         @Query("hasNote") hasNote: Boolean? = null,
     ): Response<okhttp3.ResponseBody>
+
+    @GET("api/v1/smart-scopes")
+    suspend fun smartScopes(): Response<List<BookOrbitSmartScopeDto>>
+
+    @POST("api/v1/smart-scopes/{scopeId}/books/query")
+    suspend fun smartScopeBooks(
+        @Path("scopeId") scopeId: Int,
+        @Body request: BookOrbitSmartScopeBooksRequest,
+    ): Response<BookOrbitBooksPageDto>
+
+    @GET("api/v1/book-dock/files")
+    suspend fun bookDockFiles(
+        @Query("page") page: Int,
+        @Query("limit") limit: Int,
+        @Query("status") status: String? = null,
+        @Query("search") search: String? = null,
+        @Query("sort") sort: String = "createdAt",
+        @Query("order") order: String = "desc",
+    ): Response<BookOrbitBookDockFilesPageDto>
+
+    @GET("api/v1/book-dock/summary")
+    suspend fun bookDockSummary(): Response<BookOrbitBookDockSummaryDto>
+
+    @GET("api/v1/book-dock/files/{fileId}")
+    suspend fun bookDockFile(@Path("fileId") fileId: Int): Response<BookOrbitBookDockFileDto>
+
+    @Multipart
+    @POST("api/v1/book-dock/upload")
+    suspend fun uploadBookDockFile(
+        @Part file: MultipartBody.Part,
+        @Query("libraryId") libraryId: Int? = null,
+    ): Response<BookOrbitBookDockFileDto>
+
+    @PATCH("api/v1/book-dock/files/{fileId}")
+    suspend fun updateBookDockFile(
+        @Path("fileId") fileId: Int,
+        @Body request: BookOrbitBookDockUpdateRequest,
+    ): Response<BookOrbitBookDockFileDto>
+
+    @POST("api/v1/book-dock/files/apply-fetched")
+    suspend fun applyFetchedBookDockMetadata(
+        @Body request: BookOrbitBookDockSelectionRequest,
+    ): Response<BookOrbitBookDockApplyFetchedDto>
+
+    @POST("api/v1/book-dock/files/discard")
+    suspend fun discardBookDockFiles(@Body request: BookOrbitBookDockSelectionRequest): Response<Unit>
+
+    @POST("api/v1/book-dock/finalize")
+    suspend fun finalizeBookDockFiles(
+        @Body request: BookOrbitBookDockSelectionRequest,
+    ): Response<BookOrbitBookDockFinalizeDto>
 }

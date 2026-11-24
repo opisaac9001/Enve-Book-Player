@@ -119,10 +119,10 @@ class Azw3SupportTest {
                         val path = request.split(' ')[1]
                         requests += path
                         val content = path == "/api/v1/books/$id/content?bookType=AZW3"
-                        val detail = path == "/api/v1/app/books/$id"
+                        val detail = path.substringBefore('?') == "/api/v1/books/$id"
                         val body = when {
                             content -> fixtureBytes
-                            detail -> """{"id":$id,"title":"AZW3 fixture","primaryFile":{"id":777,"bookType":"AZW3","fileName":"fixture.azw3"}}""".toByteArray()
+                            detail -> """{"id":$id,"metadata":{"title":"AZW3 fixture"},"primaryFile":{"id":777,"bookType":"AZW3","fileName":"fixture.azw3"}}""".toByteArray()
                             else -> "[]".toByteArray()
                         }
                         val mediaType = if (content) "application/vnd.amazon.mobi8-ebook" else "application/json"

@@ -2,11 +2,13 @@ package com.enve.app.ui.screens
 
 import android.content.Context
 import android.view.KeyEvent
+import android.view.View
 import androidx.lifecycle.ViewModelProvider
 import androidx.test.core.app.ActivityScenario
 import androidx.test.core.app.ApplicationProvider
 import androidx.test.ext.junit.runners.AndroidJUnit4
 import com.enve.app.MainActivity
+import com.enve.app.R
 import com.enve.app.profiles.ProfileActivityBinding
 import com.enve.app.viewmodel.ReaderViewModel
 import com.enve.core.data.model.BookSource
@@ -21,7 +23,7 @@ import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.runBlocking
 import kotlinx.coroutines.withContext
-import kotlinx.coroutines.withTimeout
+import kotlinx.coroutines.withTimeoutOrNull
 import org.readium.r2.navigator.epub.EpubNavigatorFragment
 import org.junit.Assert.assertTrue
 import org.junit.Test
@@ -59,26 +61,40 @@ class VolumePageTurningTest {
                     withContext(Dispatchers.Main) {
                         vm.updatePreferences(original.copy(volumeButtonNavigation = true, scroll = false))
                     }
-                    delay(1_000)
+                    await({ "The reader loading cover did not dismiss for $engine" }) {
+                        var ready = false
+                        scenario.onActivity {
+                            ready = it.findViewById<View>(R.id.loading_container).visibility == View.GONE
+                        }
+                        ready
+                    }
                     var navigator: EpubNavigatorFragment? = null
                     scenario.onActivity {
                         navigator = it.supportFragmentManager.findFragmentByTag("epub_nav") as? EpubNavigatorFragment
                     }
-                    fun progression(): Double = navigator?.currentLocator?.value?.locations?.progression
-                        ?: vm.state.value.progressPct.toDouble()
+                    fun progression(): Double {
+                        if (engine == ReaderEngineKind.FOLIATE) return vm.state.value.progressPct / 100.0
+                        val locator = checkNotNull(navigator).currentLocator.value
+                        val chapter = when (val href = locator.href.toString().substringAfterLast('/')) {
+                            "one.xhtml" -> 0
+                            "two.xhtml" -> 1
+                            else -> error("Unexpected fixture chapter: $href")
+                        }
+                        return (chapter + (locator.locations.progression ?: 0.0)) / 2.0
+                    }
                     val initial = progression()
                     scenario.onActivity {
                         assertTrue(it.dispatchKeyEvent(KeyEvent(KeyEvent.ACTION_DOWN, KeyEvent.KEYCODE_VOLUME_DOWN)))
                         assertTrue(it.dispatchKeyEvent(KeyEvent(KeyEvent.ACTION_UP, KeyEvent.KEYCODE_VOLUME_DOWN)))
                     }
-                    await { progression() > initial }
+                    await({ "Volume down did not advance $engine: $initial -> ${progression()}" }) { progression() > initial }
                     delay(600)
                     val next = progression()
                     scenario.onActivity {
                         assertTrue(it.dispatchKeyEvent(KeyEvent(KeyEvent.ACTION_DOWN, KeyEvent.KEYCODE_VOLUME_UP)))
                         assertTrue(it.dispatchKeyEvent(KeyEvent(KeyEvent.ACTION_UP, KeyEvent.KEYCODE_VOLUME_UP)))
                     }
-                    await { progression() < next }
+                    await({ "Volume up did not go back in $engine: $next -> ${progression()}" }) { progression() < next }
                 } finally {
                     withContext(Dispatchers.Main) { vm.updatePreferences(original); vm.flushPreferences() }
                 }
@@ -88,8 +104,11 @@ class VolumePageTurningTest {
         }
     }
 
-    private suspend fun await(predicate: () -> Boolean) = withTimeout(30_000) {
-        while (!predicate()) delay(100)
+    private suspend fun await(message: () -> String = { "Reader did not become ready" }, predicate: () -> Boolean) {
+        check(withTimeoutOrNull(30_000) {
+            while (!predicate()) delay(100)
+            true
+        } == true, message)
     }
 
     private fun writeBook(file: File) {

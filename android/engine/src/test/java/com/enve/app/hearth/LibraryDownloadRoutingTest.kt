@@ -10,6 +10,13 @@ import org.junit.Test
 class LibraryDownloadRoutingTest {
 
     @Test
+    fun `podcast episodes use audio downloads but show containers do not`() {
+        val show = Book(id = "show", title = "Show", source = BookSource.AUDIOBOOKSHELF, mediaType = AppMediaType.PODCAST)
+        assertFalse(show.usesOfflineAudioDownload())
+        assertTrue(show.copy(id = "episode", episodeId = "guid", podcastEnclosureUrl = "https://example.com/audio.mp3").usesOfflineAudioDownload())
+    }
+
+    @Test
     fun `storyteller readaloud ebook uses its single file package`() {
         val book = Book(
             id = "seamage",

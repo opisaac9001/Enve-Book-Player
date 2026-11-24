@@ -16,31 +16,28 @@ internal object ReaderCachedSource {
     }
 
     fun matches(file: File, sha256: String): Boolean = try {
-        val digest = MessageDigest.getInstance("SHA-256")
-        file.inputStream().use { input ->
-            val buffer = ByteArray(32768)
-            var count = input.read(buffer)
-            while (count >= 0) {
-                digest.update(buffer, 0, count)
-                count = input.read(buffer)
-            }
-        }
-        digest.digest().joinToString("") { "%02x".format(it) }.equals(sha256, ignoreCase = true)
+        file.sha256().equals(sha256, ignoreCase = true)
     } catch (_: java.io.IOException) { false }
 
+    private fun safePart(value: String) = value.replace(Regex("[^a-zA-Z0-9_-]"), "_")
+
+    fun filename(bookId: String, format: EbookSourceFormat, providerFileId: String?): String {
+        val suffix = if (format == EbookSourceFormat.READALOUD) "readaloud" else providerFileId?.let(::safePart)
+        return listOfNotNull(safePart(bookId), suffix?.takeIf { it.isNotBlank() }, format.extension).joinToString(".")
+    }
+
     fun providerFileId(file: File, bookId: String, format: EbookSourceFormat): String? {
-        val name = bookId.replace(Regex("[^a-zA-Z0-9_-]"), "_")
+        val name = safePart(bookId)
         if (!file.name.startsWith("$name.") || !file.name.endsWith(".${format.extension}")) return null
         return file.name.removePrefix("$name.").removeSuffix(".${format.extension}")
             .takeIf { file.name != "$name.${format.extension}" && it != "readaloud" }
     }
 
     fun find(directory: File, bookId: String, format: EbookSourceFormat, providerFileId: String? = null): File? {
-        val name = bookId.replace(Regex("[^a-zA-Z0-9_-]"), "_")
-        val discriminator = providerFileId?.replace(Regex("[^a-zA-Z0-9_-]"), "_")?.takeIf { it.isNotBlank() }
-        val exact = if (format == EbookSourceFormat.READALOUD) "$name.readaloud.${format.extension}"
-            else discriminator?.let { "$name.$it.${format.extension}" }
-        val candidates = if (exact != null) listOf(File(directory, exact)) else {
+        val name = safePart(bookId)
+        val candidates = if (format == EbookSourceFormat.READALOUD || !providerFileId.isNullOrEmpty()) {
+            listOf(File(directory, filename(bookId, format, providerFileId)))
+        } else {
             val pattern = Regex("^${Regex.escape(name)}(?:\\.[a-zA-Z0-9_-]+)?\\.${Regex.escape(format.extension)}$")
             directory.listFiles().orEmpty().filter { pattern.matches(it.name) && !it.name.contains(".readaloud.") }
         }

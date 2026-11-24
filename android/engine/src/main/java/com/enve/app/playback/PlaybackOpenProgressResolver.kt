@@ -8,6 +8,9 @@ import com.enve.core.data.local.toBook
 import com.enve.core.data.model.Book
 import com.enve.core.data.model.AppMediaType
 import com.enve.core.data.model.BookSource
+import com.enve.core.data.remote.ConnectionScope
+import kotlinx.coroutines.withContext
+import kotlin.coroutines.EmptyCoroutineContext
 import com.enve.core.data.util.resolveAudiobookPositionSeconds
 import com.enve.core.data.sync.AudiobookCheckpointOrder
 import kotlinx.coroutines.CancellationException
@@ -140,6 +143,12 @@ class PlaybackOpenProgressResolver internal constructor(
                 }
             }
         }
+    }
+
+    suspend fun resolveResumePositionMs(book: Book, state: PlaybackState): Long? {
+        if (state.isPlaying || state.isBuffering) return null
+        val connection = book.connectionId?.let(ConnectionScope::asContextElement) ?: EmptyCoroutineContext
+        return withContext(connection) { resolveStartSeconds(book.forAudioPlayback()) * 1000L }
     }
 
     fun shouldHoldPush(book: Book): Boolean = heldBookKey == book.uniqueKey

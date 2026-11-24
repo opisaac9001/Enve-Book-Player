@@ -12,6 +12,7 @@ import com.enve.core.data.local.FamilyProfileRole
 import com.enve.core.data.local.FamilyProfileStore
 import org.junit.After
 import org.junit.Assert.assertEquals
+import org.junit.Assert.assertFalse
 import org.junit.Assert.assertThrows
 import org.junit.Assert.assertTrue
 import org.junit.Test
@@ -110,6 +111,29 @@ class FamilyProfileStoreTest {
         assertTrue(restored.hasAdultPin)
     }
 
+    @Test
+    fun storeWhoseKeysetCannotBeDecryptedStartsWithTheDefaultAdult() {
+        val context = context()
+        val store = FamilyProfileStore(context)
+        store.setAdultPin("291746")
+        store.addChild("Alex")
+        val file = context.getSharedPreferences("family_profiles.secure", Context.MODE_PRIVATE)
+        val keysets = file.all.filterKeys { it.endsWith("_keyset__") }.mapValues { it.value as String }
+        assertEquals(2, keysets.size)
+        val edit = file.edit()
+        keysets.forEach { (key, hex) ->
+            edit.putString(key, hex.replaceRange(20, 21, if (hex[20] == '0') "1" else "0"))
+        }
+        assertTrue(edit.commit())
+
+        val recovered = FamilyProfileStore(context)
+
+        assertEquals(listOf(DEFAULT_ADULT_PROFILE_ID), recovered.profiles.value.map { it.id })
+        assertFalse(recovered.hasAdultPin)
+        recovered.setAdultPin("638152")
+        assertEquals(AdultPinResult.Accepted, FamilyProfileStore(context).verifyAdultPin("638152"))
+    }
+
     private fun context(): ProfileTestContext =
         ProfileTestContext(ApplicationProvider.getApplicationContext()).also(contexts::add)
 
@@ -121,6 +145,8 @@ class FamilyProfileStoreTest {
 
         override fun getSharedPreferences(name: String, mode: Int) =
             baseContext.getSharedPreferences(prefix + name, mode).also { names += prefix + name }
+
+        override fun deleteSharedPreferences(name: String) = baseContext.deleteSharedPreferences(prefix + name)
 
         fun clear() {
             names.forEach(baseContext::deleteSharedPreferences)

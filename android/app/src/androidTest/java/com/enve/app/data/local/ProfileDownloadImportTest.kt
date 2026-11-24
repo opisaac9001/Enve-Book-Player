@@ -8,6 +8,7 @@ import com.enve.app.data.offline.ComicOfflineStorage
 import com.enve.app.data.offline.OfflineAudioManifest
 import com.enve.app.data.offline.OfflineAudioStorage
 import com.enve.app.data.offline.OfflineAudioTrackManifest
+import com.enve.app.data.offline.offlineDownloadKey
 import com.enve.core.data.local.DEFAULT_ADULT_PROFILE_ID
 import com.enve.core.data.local.ProfileStorageLocations
 import com.enve.core.data.model.AppMediaType
@@ -132,15 +133,16 @@ class ProfileDownloadImportTest {
             opdsAcquisitionUrl = "https://example.invalid/file?token=test-secret",
             podcastEnclosureUrl = "https://example.invalid/audio?token=test-secret",
         )
-        val temp = owner.createTempFile("42", "epub")
+        val sourceKey = sourceBook.offlineDownloadKey
+        val temp = owner.createTempFile(sourceKey, "epub")
         temp.writeText("ebook bytes")
         val sourceFile = owner.commit(temp)
         owner.saveManifest(sourceBook)
         val childLocations = locations("child-one")
         val child = ComicOfflineStorage(childLocations)
 
-        val imported = child.importCompletedDownload(owner, "42")
-        val childFile = child.getDownloadedFile(imported.id)!!
+        val imported = child.importCompletedDownload(owner, sourceKey)
+        val childFile = child.getDownloadedFile(imported.offlineDownloadKey)!!
         assertNotEquals(sourceBook.id, imported.id)
         assertEquals(BookSource.LOCAL, imported.source)
         assertNull(imported.connectionId)
@@ -160,19 +162,19 @@ class ProfileDownloadImportTest {
         assertTrue(Files.isSymbolicLink(childFile.toPath()))
         assertEquals(sourceFile.canonicalFile, childFile.canonicalFile)
         assertEquals("ebook bytes", childFile.readText())
-        assertEquals(imported, ComicOfflineStorage(childLocations).importCompletedDownload(owner, "42"))
+        assertEquals(imported, ComicOfflineStorage(childLocations).importCompletedDownload(owner, sourceKey))
         val receipt = File(childFile.parentFile, ".import-receipt.json").readText()
         val metadata = File(childFile.parentFile, "book.json").readText()
         assertFalse(receipt.contains("test-secret") || receipt.contains("owner-account") || receipt.contains("private locator"))
         assertFalse(metadata.contains("test-secret") || metadata.contains("owner-account") || metadata.contains("private locator"))
 
-        val replacement = owner.createTempFile("42", "epub")
+        val replacement = owner.createTempFile(sourceKey, "epub")
         replacement.writeText("replacement ebook")
         owner.commit(replacement)
-        assertEquals("replacement ebook", owner.getDownloadedFile("42")!!.readText())
+        assertEquals("replacement ebook", owner.getDownloadedFile(sourceKey)!!.readText())
         assertEquals("ebook bytes", childFile.readText())
-        child.removeDownload(imported.id)
-        assertTrue(owner.isDownloaded("42"))
+        child.removeDownload(imported.offlineDownloadKey)
+        assertTrue(owner.isDownloaded(sourceKey))
         assertEquals("replacement ebook", sourceFile.readText())
     }
 
@@ -230,13 +232,14 @@ class ProfileDownloadImportTest {
     fun comicImportRejectsPartsAndSymlinksWithoutDestinationManifest() {
         val owner = ComicOfflineStorage(locations(DEFAULT_ADULT_PROFILE_ID))
         val child = ComicOfflineStorage(locations("child-one"))
-        owner.saveManifest(Book(id = "42", title = "Owner ebook", mediaType = AppMediaType.EBOOK))
-        val temp = owner.createTempFile("42", "epub").also { it.writeText("unfinished") }
-        expectFailure { child.importCompletedDownload(owner, "42") }
+        val ownerBook = Book(id = "42", title = "Owner ebook", mediaType = AppMediaType.EBOOK)
+        owner.saveManifest(ownerBook)
+        val temp = owner.createTempFile(ownerBook.offlineDownloadKey, "epub").also { it.writeText("unfinished") }
+        expectFailure { child.importCompletedDownload(owner, ownerBook.offlineDownloadKey) }
         assertTrue(child.listManifests().isEmpty())
         val outside = File(root, "outside.epub").also { it.writeText("outside bytes") }
         Files.createSymbolicLink(File(temp.parentFile, "book.epub").toPath(), outside.toPath())
-        expectFailure { child.importCompletedDownload(owner, "42") }
+        expectFailure { child.importCompletedDownload(owner, ownerBook.offlineDownloadKey) }
         assertTrue(child.listManifests().isEmpty())
         assertEquals("outside bytes", outside.readText())
     }
@@ -356,9 +359,40 @@ class ProfileDownloadImportTest {
         val child = OfflineAudioStorage(locations("child-one"))
         expectFailure { child.importCompletedDownload(owner, "42") { error("Parent authorization expired") } }
         assertTrue(child.listManifests().isEmpty())
-        assertNull(child.importedBookId(DEFAULT_ADULT_PROFILE_ID, "42"))
+        assertNull(child.importedBookId(owner, "42"))
         assertTrue(owner.isDownloaded("42"))
         assertEquals("audio bytes", source.readText())
+    }
+
+    @Test
+    fun legacyRawIdReceiptIsReusedOnlyWhenTheSourceDirectoryProvesIt() {
+        val ownerLocations = locations(DEFAULT_ADULT_PROFILE_ID)
+        val owner = OfflineAudioStorage(ownerLocations)
+        completedAudio(owner)
+        val child = OfflineAudioStorage(locations("child-one"))
+        val earlier = child.importCompletedDownload(owner, "42")
+        val legacyManifest = File(ownerLocations.filesDirectory, "offline-audio/42/manifest.json")
+        legacyManifest.writeText(legacyManifest.readText().replace("\"downloadKey\":\"42\"", "\"downloadKey\":\"\""))
+        val reopenedOwner = OfflineAudioStorage(ownerLocations)
+        val recoveredKey = reopenedOwner.listManifests().single().downloadKey
+
+        assertNotEquals("42", recoveredKey)
+        assertEquals(earlier.bookId, child.importedBookId(reopenedOwner, recoveredKey))
+        assertEquals(earlier, child.importCompletedDownload(reopenedOwner, recoveredKey))
+        assertEquals(1, child.listManifests().size)
+
+        val scoped = Book(id = "42", title = "Scoped", source = BookSource.GRIMMORY, connectionId = "owner-account")
+        val track = reopenedOwner.createTrackFinalFile(scoped.offlineDownloadKey, 0, "mp3").also { it.writeText("scoped bytes") }
+        reopenedOwner.saveManifest(OfflineAudioManifest(
+            bookId = "42",
+            title = "Scoped",
+            source = BookSource.GRIMMORY.name,
+            downloadedAtEpochMs = 1L,
+            tracks = listOf(OfflineAudioTrackManifest(index = 0, relativePath = reopenedOwner.relativePath(track), bytes = track.length())),
+            connectionId = "owner-account",
+            downloadKey = scoped.offlineDownloadKey,
+        ))
+        assertNull(child.importedBookId(reopenedOwner, scoped.offlineDownloadKey))
     }
 
     @Test
@@ -366,7 +400,8 @@ class ProfileDownloadImportTest {
         val owner = ComicOfflineStorage(locations(DEFAULT_ADULT_PROFILE_ID))
         val child = ComicOfflineStorage(locations("child-one"))
         for ((id, audioReference) in listOf("internal" to "audio.mp3", "external" to "https://example.invalid/audio.mp3")) {
-            val temp = owner.createTempFile(id, "epub")
+            val book = Book(id = id, title = id, source = BookSource.GRIMMORY, mediaType = AppMediaType.EBOOK)
+            val temp = owner.createTempFile(book.offlineDownloadKey, "epub")
             java.util.zip.ZipOutputStream(temp.outputStream()).use { zip ->
                 val entries = mapOf(
                     "META-INF/container.xml" to "<container><rootfiles><rootfile full-path=\"content.opf\"/></rootfiles></container>",
@@ -382,8 +417,8 @@ class ProfileDownloadImportTest {
                 }
             }
             owner.commit(temp)
-            owner.saveManifest(Book(id = id, title = id, source = BookSource.GRIMMORY, mediaType = AppMediaType.EBOOK))
-            val imported = child.importCompletedDownload(owner, id)
+            owner.saveManifest(book)
+            val imported = child.importCompletedDownload(owner, book.offlineDownloadKey)
             assertEquals(id == "internal", imported.readAlongAvailable)
             assertFalse(imported.hasAudio)
         }
@@ -399,6 +434,7 @@ class ProfileDownloadImportTest {
             source = BookSource.GRIMMORY.name,
             downloadedAtEpochMs = 1L,
             tracks = listOf(OfflineAudioTrackManifest(index = 0, relativePath = storage.relativePath(track), bytes = track.length())),
+            downloadKey = "42",
         ))
         return track
     }

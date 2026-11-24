@@ -56,6 +56,9 @@ Several sections need setup that a bare device cannot provide: a live server wit
 - [ ] Remove the last sort with ×, dismiss and reopen the library; it stays removed and the default recent order applies
 - [ ] Reset filters and sorting clears content filters while keeping the selected source and library
 - [ ] Source, Library, Shelves, Filter & Sort and More remain reachable in Paper, OLED, large text, landscape and e-ink mode
+- [ ] Window 840 dp or wider: choosing a book opens its details beside the list; scroll position, search, filters and selection stay; Back clears the detail; Read and Listen still open full screen
+- [ ] Resize or rotate across 840 dp with a book open: the list keeps its state and the same book stays shown
+- [ ] With a BookOrbit source: More offers smart scopes, Book Drop and highlights; Add offers "Add books to BookOrbit"
 
 ### Grimmory catalog import recovery
 
@@ -83,6 +86,8 @@ Use a synthetic local fixture for destructive catalog scenarios, never a custome
 - [ ] Description expands and collapses; the details grid is populated
 - [ ] The in-series shelf appears for series books and re-navigates
 - [ ] Listen or Read starts playback or reading
+- [ ] BookOrbit: rate and change reading status offline; the book shows "Waiting to sync", keeps the value after a library refresh and an app restart, and syncs after reconnecting or returning to the app
+- [ ] BookOrbit: with the source signed out, an edit reads "Not synced" with Retry and Discard and is not resent on every reconnect
 
 ## Player
 
@@ -192,6 +197,10 @@ Run these checks through a compatible vehicle or the supported Desktop Head Unit
 - [ ] Two accounts on the same host route to the correct server — no cross-connection bleed
 - [ ] Disabling a connection hides its books; re-enabling restores them
 - [ ] Removing a connection removes its books and credentials
+- [ ] BookOrbit smart scopes: saved scopes list by name and count; selecting one pages its books with the server's total; search resets the list; a failed refresh keeps the list with Try again
+- [ ] BookOrbit Book Drop: an account without Library Dock access sees an explicit message; import a file, edit details, choose library and folder, use fetched details, add to library, and discard with confirmation
+- [ ] BookOrbit Book Drop: adding several files where one is a duplicate reports "Added N of M" and names the file left behind
+- [ ] BookOrbit highlights: "Only with notes" narrows the list and the count, and resets with search, book and Trash
 
 ## Journal
 

@@ -68,6 +68,7 @@ struct SourcesProviderFormScreen: View {
     ) {
         self.capability = capability
         self.onAdded = onAdded
+        _urlScheme = State(initialValue: capability.catalogSetup == .calibre ? .http : .https)
         _webdavPreset = State(initialValue: initialPreset ?? .generic)
         _authMethod = State(
             initialValue: initialPreset?.preferredAuthMethod ?? (capability.providerType == .torbox ? .token : .usernamePassword)
@@ -78,7 +79,7 @@ struct SourcesProviderFormScreen: View {
             _urlScheme = State(initialValue: scheme)
             _serverURL = State(initialValue: host)
         }
-        _connectionName = State(initialValue: capability.providerType == .torbox ? capability.displayName : "")
+        _connectionName = State(initialValue: capability.providerType == .torbox || capability.catalogSetup == .calibre ? capability.displayName : "")
         _pendingAutoAuth = State(initialValue: autoStartAuth)
     }
 
@@ -89,6 +90,7 @@ struct SourcesProviderFormScreen: View {
                     header
                     if capability.supportsWebDAVPresets { presetCard }
                     serverCard
+                    if capability.catalogSetup == .calibre { calibreHelp }
                     if availableAuthMethods.count > 1 { authMethodPicker }
                     credentialCard
                     if let statusMessage {
@@ -261,6 +263,26 @@ struct SourcesProviderFormScreen: View {
                 disabled: presetLocksURL
             )
             SourcesField(label: "Name", text: $connectionName, placeholder: capability.displayName + " (optional)")
+        }
+    }
+
+    private var calibreHelp: some View {
+        SourcesCard {
+            Overline("Your Calibre library")
+            Text("On your computer, choose Connect/share → Start Content server in Calibre. Enter the server address shown there, with /opds at the end.")
+                .font(.hearthBody)
+                .foregroundStyle(hearth.text)
+                .fixedSize(horizontal: false, vertical: true)
+            Text("Keep the computer running and reachable. Leave the sign-in fields empty if your server does not require an account. For a reverse proxy or Calibre-Web, enter its complete OPDS address.")
+                .font(.hearthCaption)
+                .foregroundStyle(hearth.textSecondary)
+                .fixedSize(horizontal: false, vertical: true)
+            Text("Browse, search, and download books. Changes to Calibre metadata and reading progress are not synchronized.")
+                .font(.hearthCaption)
+                .foregroundStyle(hearth.textSecondary)
+            Link("Calibre setup guide", destination: URL(string: "https://manual.calibre-ebook.com/server.html")!)
+                .font(.hearthCaption)
+                .foregroundStyle(hearth.ember)
         }
     }
 
@@ -550,7 +572,8 @@ struct SourcesProviderFormScreen: View {
             }
         }
         guard !trimmed.isEmpty else { return trimmed }
-        return urlScheme.rawValue + trimmed
+        let address = urlScheme.rawValue + trimmed
+        return capability.catalogSetup?.catalogURL(from: address) ?? address
     }
 
     private var urlPlaceholder: String {

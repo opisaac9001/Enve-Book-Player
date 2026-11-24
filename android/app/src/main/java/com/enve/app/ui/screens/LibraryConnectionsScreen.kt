@@ -81,6 +81,7 @@ fun LibraryConnectionsScreen(
     authViewModel: AuthViewModel,
     onBack: () -> Unit = {},
     onNavigateToServiceLogin: (BookSource, String?) -> Unit = { _, _ -> },
+    onCalibreConnect: (String) -> Unit = {},
     onSourceChange: (BookSource) -> Unit = {},
     onServerUrlChange: (String) -> Unit = {},
     onUsernameChange: (String) -> Unit = {},
@@ -100,6 +101,7 @@ fun LibraryConnectionsScreen(
     val context = LocalContext.current
     val connections by authViewModel.listConnections().collectAsState(initial = emptyList())
     val wearState by wearProvisioningViewModel.state.collectAsStateWithLifecycle()
+    var showCalibre by remember { mutableStateOf(false) }
     var showPlexHomeUserSheet by remember { mutableStateOf(false) }
     var watchLinkConnection by remember { mutableStateOf<ProviderConnection?>(null) }
     var watchLinkPassword by remember { mutableStateOf("") }
@@ -131,6 +133,9 @@ fun LibraryConnectionsScreen(
         ConnectionOption(BookSource.KOMGA, "Komga", iconRes = R.drawable.ic_komga, tint = Color(0xFF6C7AE0), supported = true),
         ConnectionOption(BookSource.KAVITA, "Kavita", iconRes = R.drawable.ic_kavita, tint = Color(0xFF4CAF7D), supported = true),
         ConnectionOption(BookSource.BOOKORBIT, "BookOrbit", iconRes = R.drawable.ic_bookorbit, tint = Color(0xFF4F8BFF), supported = true),
+        ConnectionOption(null, "Calibre", iconVector = Icons.Default.Dns, tint = colors.accent, supported = true) {
+            showCalibre = true
+        },
         ConnectionOption(BookSource.OPDS, "OPDS", iconRes = R.drawable.ic_opds, tint = Color(0xFF26A69A), supported = true),
     )
 
@@ -239,6 +244,16 @@ fun LibraryConnectionsScreen(
                 modifier = Modifier.padding(horizontal = DS.Spacing.LG.scaled(metrics)),
             )
         }
+    }
+
+    if (showCalibre) {
+        CalibreConnectionDialog(
+            onDismiss = { showCalibre = false },
+            onConnect = { url ->
+                showCalibre = false
+                onCalibreConnect(url)
+            },
+        )
     }
 
     if (showPlexHomeUserSheet) {

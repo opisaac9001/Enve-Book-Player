@@ -11,6 +11,9 @@ import com.enve.core.data.model.Library
 import com.enve.core.data.model.ProviderConnection
 import com.enve.core.data.model.ReadStatus
 import com.enve.core.data.model.ReaderAnnotation
+import com.enve.core.data.provider.RemoteCatalogRequest
+import com.enve.core.data.provider.RemoteCatalogPage
+import com.enve.core.data.provider.RemoteCatalogFilterOptions
 import com.enve.core.data.provider.ProviderEbookResource
 import com.enve.core.data.provider.ProviderPlaybackSession
 import com.enve.core.data.remote.ConnectionScope
@@ -207,7 +210,7 @@ class SiloRepository @Inject constructor(
 
     suspend fun getContinueReading(): Result<List<Book>> = getContinue(AppMediaType.EBOOK)
 
-    private suspend fun getContinue(mediaType: AppMediaType): Result<List<Book>> = runSuspendCatching {
+    internal suspend fun getContinue(mediaType: AppMediaType? = null): Result<List<Book>> = runSuspendCatching {
         val profileId = ensureProfile()
         getLibraries().getOrThrow()
             .flatMap { library ->
@@ -216,14 +219,25 @@ class SiloRepository @Inject constructor(
                 }.associate { it.mediaItemId to (siloInstantMillis(it.updatedAt) ?: 0L) }
                 val newest = newestItems(profileId, library.id, MAX_PAGE_SIZE)
                     .mapNotNull { item -> bookFromCatalogItem(item, library.id) }
-                val inProgress = recency.keys
-                    .filter { id -> newest.none { it.id == id } }
-                    .mapNotNull { id -> runSuspendCatching { getBook(id, library.id).getOrThrow() }.getOrNull() }
-                (newest + inProgress).map { book -> recency[book.id]?.let { book.copy(lastReadTime = it) } ?: book }
+                val inProgress = recency.keys.mapNotNull { id ->
+                    itemDetail(id, forceRefresh = true).toBook(library.id)?.let { detail ->
+                        detail.copy(language = detail.language ?: newest.firstOrNull { it.id == id }?.language)
+                    }
+                }
+                (inProgress + newest).map { book -> recency[book.id]?.let { book.copy(lastReadTime = it) } ?: book }
             }
-            .filter { it.mediaType == mediaType && it.readProgress in 0.001f..0.999f }
+            .filter { (mediaType == null || it.mediaType == mediaType) && it.readProgress in 0.001f..0.999f }
             .distinctBy { it.id }
             .sortedByDescending { it.lastReadTime }
+            .map { summary ->
+                getBook(summary.id, summary.libraryId).getOrThrow().let { detail ->
+                    detail.copy(
+                        language = detail.language ?: summary.language,
+                        categories = detail.categories.ifEmpty { summary.categories },
+                        lastReadTime = summary.lastReadTime,
+                    )
+                }
+            }
     }
 
     private suspend fun newestItems(profileId: String, libraryId: String, count: Int): List<SiloCatalogItemDto> =
@@ -588,9 +602,44 @@ class SiloRepository @Inject constructor(
         installations.clear()
     }
 
-    private suspend fun bookFromCatalogItem(item: SiloCatalogItemDto, libraryId: String): Book? {
-        if (!item.type.equals("audiobook", true) && !item.type.equals("ebook", true)) return null
-        return itemDetail(item.contentId).toBook(libraryId, fallbackPosterUrl = item.posterUrl)
+    suspend fun fetchRemoteCatalogPage(libraryId: String, request: RemoteCatalogRequest, cursor: String?, limit: Int): RemoteCatalogPage {
+        val page = api.remoteCatalogPage(ensureProfile(), libraryId, request, cursor, limit)
+        return RemoteCatalogPage(page.items.mapNotNull { bookFromCatalogItem(it, libraryId) }, page.page?.nextCursor)
+    }
+
+    suspend fun fetchRemoteCatalogFilterOptions(libraryId: String, mediaType: AppMediaType?, search: String): RemoteCatalogFilterOptions =
+        api.remoteCatalogFilterOptions(ensureProfile(), libraryId, mediaType, search)
+
+    private fun bookFromCatalogItem(item: SiloCatalogItemDto, libraryId: String): Book? {
+        val audio = item.type.equals("audiobook", true)
+        if (!audio && !item.type.equals("ebook", true)) return null
+        require(item.title.isNotBlank()) { "Silo returned an incomplete catalog card" }
+        val duration = (item.durationSeconds ?: item.runtime?.times(60.0) ?: 0.0).roundToLong().coerceAtLeast(0)
+        val progress = item.sortMetrics?.progressRatio?.coerceIn(0f, 1f) ?: 0f
+        return Book(
+            id = item.contentId,
+            title = item.title,
+            author = item.sortMetrics?.author,
+            narrator = item.sortMetrics?.narrator,
+            description = item.overview,
+            coverUrl = coverUrl(item.posterUrl),
+            duration = if (audio) duration else 0,
+            currentTime = if (audio) (progress * duration).toLong() else 0,
+            isFinished = item.userState?.played == true,
+            source = BookSource.SILO,
+            mediaType = if (audio) AppMediaType.AUDIOBOOK else AppMediaType.EBOOK,
+            readStatus = if (item.userState?.played == true) ReadStatus.COMPLETED else ReadStatus.UNREAD,
+            seriesName = item.sortMetrics?.seriesName,
+            language = item.originalLanguage,
+            categories = item.genres,
+            libraryId = libraryId,
+            connectionId = currentConnection()?.id,
+            addedOn = siloInstantMillis(item.addedAt) ?: 0,
+            readProgress = progress,
+            epubProgress = if (audio) null else progress,
+            hasAudio = audio,
+            hasEbook = !audio,
+        )
     }
 
     private suspend fun itemDetail(id: String, forceRefresh: Boolean = false): SiloItemDetailDto {
@@ -694,6 +743,7 @@ class SiloRepository @Inject constructor(
             publisher = audiobook?.publisher ?: ebook?.publisher,
             publishedDate = year?.toString(),
             categories = genres.orEmpty(),
+            language = originalLanguage,
             primaryFileType = ebookFormat(version),
             libraryId = fallbackLibraryId,
             connectionId = currentConnection()?.id,

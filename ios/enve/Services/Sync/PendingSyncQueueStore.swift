@@ -19,6 +19,27 @@ struct DownloadedProgressBaseline: Codable, Equatable, Sendable {
     }
 }
 
+/// Messages are fixed, user-facing copy; raw provider errors can carry URLs or tokens and are never stored.
+struct PendingSyncFailure: Codable, Equatable {
+    enum Category: String, Codable {
+        case transient
+        case authentication
+        case conflict
+    }
+
+    let category: Category
+    let message: String
+    let occurredAt: TimeInterval
+}
+
+enum PendingSyncDeliveryStatus: Equatable {
+    case waiting
+    case retrying(lastFailure: PendingSyncFailure, nextAttempt: Date?)
+    case authentication
+    case conflict
+    case validation(message: String)
+}
+
 struct PendingServerSync: Codable, Equatable {
     let stableId: String
     let sourceRaw: String
@@ -35,6 +56,7 @@ struct PendingServerSync: Codable, Equatable {
     var retryCount: Int = 0
     var nextRetryAfter: TimeInterval = 0
     var validationFailureMessage: String?
+    var lastFailure: PendingSyncFailure?
 
     init(
         stableId: String,
@@ -51,7 +73,8 @@ struct PendingServerSync: Codable, Equatable {
         downloadedBaseline: DownloadedProgressBaseline? = nil,
         retryCount: Int = 0,
         nextRetryAfter: TimeInterval = 0,
-        validationFailureMessage: String? = nil
+        validationFailureMessage: String? = nil,
+        lastFailure: PendingSyncFailure? = nil
     ) {
         self.stableId = stableId
         self.sourceRaw = sourceRaw
@@ -68,6 +91,7 @@ struct PendingServerSync: Codable, Equatable {
         self.retryCount = retryCount
         self.nextRetryAfter = nextRetryAfter
         self.validationFailureMessage = validationFailureMessage
+        self.lastFailure = lastFailure
     }
 
     var source: Book.BookSource? {
@@ -80,6 +104,27 @@ struct PendingServerSync: Codable, Equatable {
 
     var backoffDelay: TimeInterval {
         min(pow(2.0, Double(retryCount)) * 5, 900)
+    }
+
+    var isSuspended: Bool {
+        nextRetryAfter == Date.distantFuture.timeIntervalSince1970
+    }
+
+    func deliveryStatus(at now: Date = Date()) -> PendingSyncDeliveryStatus {
+        if let validationFailureMessage { return .validation(message: validationFailureMessage) }
+        if lastFailure?.category == .conflict { return .conflict }
+        if isSuspended { return .authentication }
+        guard let lastFailure else { return .waiting }
+        let nextAttempt = Date(timeIntervalSince1970: nextRetryAfter)
+        return .retrying(lastFailure: lastFailure, nextAttempt: nextAttempt > now ? nextAttempt : nil)
+    }
+
+    /// Delivery bookkeeping changes while a checkpoint waits; only the progress payload identifies it.
+    func isSameCheckpoint(as other: PendingServerSync) -> Bool {
+        stableId == other.stableId && sourceRaw == other.sourceRaw && backendId == other.backendId
+            && serverItemId == other.serverItemId && position == other.position && duration == other.duration
+            && updatedAt == other.updatedAt && domainRaw == other.domainRaw && progress == other.progress
+            && locator == other.locator && isFinished == other.isFinished
     }
 }
 
@@ -151,38 +196,59 @@ final class PendingSyncQueueStore {
         return entries.filter { $0.value.nextRetryAfter <= nowTs }
     }
 
-    func markRetry(stableId: String, maxRetries: Int = 10, at now: Date = Date()) {
+    /// Transient failures never expire the checkpoint; only the delay is capped by `backoffDelay`.
+    func markRetry(stableId: String, failure: PendingSyncFailure? = nil, at now: Date = Date()) {
         guard var entry = entries[stableId] else { return }
-        if entry.retryCount >= maxRetries, entry.downloadedBaseline == nil {
-            entries.removeValue(forKey: stableId)
-        } else {
-            entry.retryCount = min(entry.retryCount + 1, maxRetries)
-            entry.nextRetryAfter = now.timeIntervalSince1970 + entry.backoffDelay
-            entries[stableId] = entry
-        }
+        entry.retryCount = min(entry.retryCount + 1, 10)
+        entry.nextRetryAfter = now.timeIntervalSince1970 + entry.backoffDelay
+        if let failure { entry.lastFailure = failure }
+        entries[stableId] = entry
         persist()
     }
 
-    func suspend(stableId: String, validationFailureMessage: String? = nil) {
+    func suspend(stableId: String, validationFailureMessage: String? = nil, failure: PendingSyncFailure? = nil) {
         guard var entry = entries[stableId] else { return }
         entry.nextRetryAfter = Date.distantFuture.timeIntervalSince1970
         entry.validationFailureMessage = validationFailureMessage
+        if let failure { entry.lastFailure = failure }
         entries[stableId] = entry
         persist()
     }
 
     func resumeSuspended() {
-        let suspendedRetryDate = Date.distantFuture.timeIntervalSince1970
         var changed = false
-        for (stableId, var entry) in entries
-        where entry.nextRetryAfter == suspendedRetryDate && entry.validationFailureMessage == nil {
+        for (stableId, var entry) in entries where entry.isSuspended && entry.validationFailureMessage == nil {
             entry.nextRetryAfter = 0
+            entry.lastFailure = nil
             entries[stableId] = entry
             changed = true
         }
         if changed {
             persist()
         }
+    }
+
+    /// Returns false when `selected` was replaced by a newer checkpoint or already delivered.
+    @discardableResult
+    func retryNow(_ selected: PendingServerSync) -> Bool {
+        guard var entry = entries[selected.stableId], entry.isSameCheckpoint(as: selected),
+            entry.validationFailureMessage == nil
+        else { return false }
+        entry.retryCount = 0
+        entry.nextRetryAfter = 0
+        entries[selected.stableId] = entry
+        persist()
+        return true
+    }
+
+    /// Conflicted checkpoints stay queued so the downloaded baseline survives until the user picks a side.
+    @discardableResult
+    func discard(_ selected: PendingServerSync) -> Bool {
+        guard let entry = entries[selected.stableId], entry.isSameCheckpoint(as: selected),
+            entry.lastFailure?.category != .conflict
+        else { return false }
+        remove(stableId: selected.stableId)
+        return true
     }
 
     private func load() {

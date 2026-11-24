@@ -13,10 +13,13 @@ final class ProviderSyncSink: SyncSink {
 
     private let providerResolver: any LibraryProviderResolving
 
+    private let storytellerPositions: () -> StorytellerPositionSyncService
+
     private let pendingSync: PendingSyncQueueStore?
 
-    init(providerResolver: any LibraryProviderResolving, pendingSync: PendingSyncQueueStore? = nil) {
+    init(providerResolver: any LibraryProviderResolving, storytellerPositions: @escaping () -> StorytellerPositionSyncService, pendingSync: PendingSyncQueueStore? = nil) {
         self.providerResolver = providerResolver
+        self.storytellerPositions = storytellerPositions
         self.pendingSync = pendingSync
     }
 
@@ -37,7 +40,7 @@ final class ProviderSyncSink: SyncSink {
         if domain.usesEbookProgress {
             if book.isStorytellerReadAloud {
                 guard let storyteller = provider as? StorytellerProvider,
-                    let authoritative = await StorytellerPositionSyncService.shared.authoritativePosition(
+                    let authoritative = await storytellerPositions().authoritativePosition(
                         for: book,
                         through: storyteller
                     )
@@ -96,20 +99,20 @@ final class ProviderSyncSink: SyncSink {
                 let storyteller = provider as? StorytellerProvider
             {
                 if update.isFinished {
-                    try await StorytellerPositionSyncService.shared.finish(
+                    try await storytellerPositions().finish(
                         book: update.book,
                         observedAt: update.book.lastUpdate,
                         through: storyteller
                     )
                 } else if update.progress <= 0.001 {
-                    try await StorytellerPositionSyncService.shared.reset(
+                    try await storytellerPositions().reset(
                         book: update.book,
                         observedAt: update.book.lastUpdate,
                         through: storyteller
                     )
                 } else {
                     guard let locator else { throw ProviderError.invalidResponse }
-                    try await StorytellerPositionSyncService.shared.submit(
+                    try await storytellerPositions().submit(
                         book: update.book,
                         locatorJSON: locator,
                         observedAt: update.book.lastUpdate,

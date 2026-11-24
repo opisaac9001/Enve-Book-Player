@@ -20,31 +20,37 @@ object ProgressResolutionPolicy {
         localUpdatedAt: Long?,
         remote: SyncSnapshot,
         localLocatorJson: String? = null,
+        localPositionMs: Long? = null,
     ): Decision {
-        val localPct = localPercentage.coerceIn(0f, 1f)
-        val remotePct = remote.percentage.coerceIn(0f, 1f)
+        val positionsAvailable = localPositionMs != null && remote.positionMs != null
+        val localValue = if (positionsAvailable) localPositionMs.coerceAtLeast(0L).toDouble()
+            else localPercentage.coerceIn(0f, 1f).toDouble()
+        val remoteValue = if (positionsAvailable) remote.positionMs!!.coerceAtLeast(0L).toDouble()
+            else remote.percentage.coerceIn(0f, 1f).toDouble()
+        val zeroTolerance = if (positionsAvailable) 0.0 else ZERO_EPSILON.toDouble()
+        val equalTolerance = if (positionsAvailable) 1_000.0 else EQUAL_TOLERANCE.toDouble()
 
-        if (localPct <= ZERO_EPSILON && remotePct <= ZERO_EPSILON) return Decision.NONE
-        if (localPct <= ZERO_EPSILON) return Decision.PULL
-        if (remotePct <= ZERO_EPSILON) return Decision.PUSH
-        if (kotlin.math.abs(remotePct - localPct) < EQUAL_TOLERANCE) {
+        if (localValue <= zeroTolerance && remoteValue <= zeroTolerance) return Decision.NONE
+        if (localValue <= zeroTolerance) return Decision.PULL
+        if (remoteValue <= zeroTolerance) return Decision.PUSH
+        if (kotlin.math.abs(remoteValue - localValue) < equalTolerance) {
             return sentenceDecision(localLocatorJson, localUpdatedAt, remote) ?: Decision.NONE
         }
 
         val remoteUpdatedAt = remote.updatedAt
         if (remoteUpdatedAt == null || localUpdatedAt == null) {
-            return if (remotePct > localPct) Decision.PULL else Decision.PUSH
+            return if (remoteValue > localValue) Decision.PULL else Decision.PUSH
         }
 
         val localIsNewer = localUpdatedAt > remoteUpdatedAt + SKEW_MS
         val remoteIsNewer = remoteUpdatedAt > localUpdatedAt + SKEW_MS
 
-        if (remoteIsNewer && remotePct >= localPct) return Decision.PULL
-        if (localIsNewer && localPct >= remotePct) return Decision.PUSH
+        if (remoteIsNewer && remoteValue >= localValue) return Decision.PULL
+        if (localIsNewer && localValue >= remoteValue) return Decision.PUSH
 
         if (remoteIsNewer || localIsNewer) return Decision.CONFLICT
 
-        return if (remotePct > localPct) Decision.PULL else Decision.PUSH
+        return if (remoteValue > localValue) Decision.PULL else Decision.PUSH
     }
 
     private fun sentenceDecision(localLocatorJson: String?, localUpdatedAt: Long?, remote: SyncSnapshot): Decision? {

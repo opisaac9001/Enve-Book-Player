@@ -40,10 +40,11 @@ class AudiobookshelfProgressSyncStrategy @Inject constructor(
         for (connection in connections) {
             val books = try {
                 withContext(ConnectionScope.asContextElement(connection.id)) {
-                    val localBooks = bookCacheDao.getBySourceAndConnection(
-                        BookSource.AUDIOBOOKSHELF.name, connection.id,
-                    ).map { it.toBook() }
-                    val updated = repository.getProgressForBooks(localBooks)
+                    val updated = repository.getProgressForBooks { itemIds ->
+                        itemIds.map { "${connection.id}:$it" }.chunked(CACHE_LOOKUP_SIZE)
+                            .flatMap { bookCacheDao.getByCacheKeys(it) }
+                            .map { it.toBook() }
+                    }
                     val discovered = repository.getBooksInProgress(allowCachedFallback = false).getOrThrow()
                         .map { book ->
                             val rawLibraryId = book.libraryId
@@ -93,5 +94,6 @@ class AudiobookshelfProgressSyncStrategy @Inject constructor(
 
     private companion object {
         const val MIN_SYNC_INTERVAL_MS = 60_000L
+        const val CACHE_LOOKUP_SIZE = 500
     }
 }

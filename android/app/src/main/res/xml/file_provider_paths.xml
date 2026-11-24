@@ -2,4 +2,8 @@
 <paths>
     <files-path name="crashes" path="crashes/" />
     <cache-path name="listening-position" path="listening-position-share/" />
+    <cache-path name="reading-recaps" path="reading-recap-share/" />
+    <cache-path name="annotation-exports" path="annotation-exports/" />
+    <cache-path name="audiobook-clips" path="audiobook-clip-share/" />
+    <cache-path name="profile-audiobook-clips" path="profiles/" />
 </paths>

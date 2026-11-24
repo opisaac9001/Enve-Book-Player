@@ -485,9 +485,10 @@ private fun PremiumAchievementsSection(achievements: List<Achievement>) {
                         ),
                     contentAlignment = Alignment.Center,
                 ) {
-                    Text(
-                        text = achievement.icon,
-                        fontSize = 22.sp,
+                    Icon(
+                        imageVector = achievement.icon,
+                        contentDescription = null,
+                        modifier = Modifier.size(22.dp),
                     )
                 }
                 Spacer(Modifier.width(DS.Spacing.MD))

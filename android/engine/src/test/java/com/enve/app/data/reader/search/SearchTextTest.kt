@@ -7,7 +7,7 @@ import org.junit.Test
 class SearchTextTest {
     @Test
     fun indexNormalizationMatchesMappedNormalization() {
-        listOf("cafe\u0301", "Élan  Vital", "İstanbul", "한글", "東京", "😀 🐈", "\n\t Alpha\u00a0beta").forEach {
+        listOf("cafe\u0301", "Élan  Vital", "İstanbul", "한글", "東京", "\uD83D\uDE00 \uD83D\uDC08", "\n\t Alpha\u00a0beta").forEach {
             assertEquals(SearchText.normalize(it).value, SearchText.fold(it))
         }
     }

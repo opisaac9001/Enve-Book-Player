@@ -185,12 +185,12 @@ class EbookSearchServiceTest {
 
     @Test
     fun preservesSupplementaryCharactersAndWholeWordsAcrossChunkBoundaries() = runBlocking {
-        val body = "a".repeat(3599) + "😀 tail " + "b".repeat(391) + "😀 marker " + "z".repeat(500)
+        val body = "a".repeat(3599) + "\uD83D\uDE00 tail " + "b".repeat(391) + "\uD83D\uDE00 marker " + "z".repeat(500)
         val file = fixture("<p>$body</p>")
         val publication = open(file)
-        val symbols = service.search(publication, file, "😀", false, 100).last()
+        val symbols = service.search(publication, file, "\uD83D\uDE00", false, 100).last()
         assertEquals(2, symbols.results.size)
-        assertTrue(symbols.results.all { it.text.highlight == "😀" })
+        assertTrue(symbols.results.all { it.text.highlight == "\uD83D\uDE00" })
         assertEquals(1, service.search(publication, file, "marker", true, 100).last().results.size)
         assertTrue(service.search(publication, file, "bbbb", true, 100).last().results.isEmpty())
     }

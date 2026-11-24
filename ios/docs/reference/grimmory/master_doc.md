@@ -6,7 +6,7 @@ This document compiles the reverse-engineered API endpoints from the remainder o
 > [!IMPORTANT]
 > **Media & Streaming**: Endpoints for covers, thumbnails, and audio streams **require** `?token=<TOKEN>` as a query parameter. They currently reject the Bearer token in the header.
 
-## 🗂️ 1. Shelves & Organization
+## 1. Shelves & Organization
 ### Standard Shelves
 * **List Shelves:** `GET /api/v1/shelves`
 * **Create Shelf:** `POST /api/v1/shelves`
@@ -22,7 +22,7 @@ This document compiles the reverse-engineered API endpoints from the remainder o
 
 ---
 
-## ⚡ 2. Book & Author Core 
+## 2. Book & Author Core
 ### Books
 * **Get Books:** `GET /api/v1/books`
 * **Download Book ZIP/File:** `GET /api/v1/books/{id}/download-all`
@@ -41,7 +41,7 @@ This document compiles the reverse-engineered API endpoints from the remainder o
 
 ---
 
-## 📡 3. OPDS Integrations
+## 3. OPDS Integrations
 OPDS catalog endpoints for use with standard E-reader software (Moon+ Reader, FBReader, etc).
 
 * **Root Navigation Feed:** `GET /api/v1/opds`
@@ -53,7 +53,7 @@ OPDS catalog endpoints for use with standard E-reader software (Moon+ Reader, FB
 
 ---
 
-## 🔄 4. External Hardware Syncing (Koreader, Kobo, Komga)
+## 4. External Hardware Syncing (Koreader, Kobo, Komga)
 ### Koreader
 * **Authorize:** `GET /api/koreader/users/auth`
 * **Get Progress:** `GET /api/koreader/syncs/progress/{bookHash}`
@@ -74,7 +74,7 @@ OPDS catalog endpoints for use with standard E-reader software (Moon+ Reader, FB
 
 ---
 
-## ☁️ 5. Social & Tool Integrations
+## 5. Social & Tool Integrations
 ### Hardcover & Bookdrop
 * **Get Hardcover Settings:** `GET /api/v1/hardcover-sync-settings`
 * **List Bookdrop Imports:** `GET /api/v1/bookdrop/files`

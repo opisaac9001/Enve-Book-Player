@@ -3,6 +3,7 @@ import SwiftUI
 struct JournalReadingStatsScreen: View {
     @Environment(\.hearth) private var hearth
     @Environment(\.mantelInset) private var mantelInset
+    @Environment(\.profileSession) private var profileSession
 
     @Environment(JournalReadingStatsModel.self) private var model
     @State private var loaded = false
@@ -12,6 +13,13 @@ struct JournalReadingStatsScreen: View {
         ScrollView {
             VStack(alignment: .leading, spacing: 24) {
                 JournalScreenHeader(overline: "The reading ledger", title: "Reading")
+
+                if loaded {
+                    JournalReadingGoalCard(
+                        store: (profileSession ?? .owner).readingGoal,
+                        dailySeconds: model.snapshot.dailySecondsRead
+                    )
+                }
 
                 if !loaded {
                     JournalLoadingNote(text: "Counting the pages…")

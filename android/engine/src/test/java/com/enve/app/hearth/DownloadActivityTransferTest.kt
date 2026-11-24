@@ -52,6 +52,7 @@ class DownloadActivityTransferTest {
         completedTracks: Int,
         totalTracks: Int,
     ) = OfflineDownloadProgress(
+        downloadKey = "dl-book",
         bookId = "book",
         title = "Book",
         status = status,

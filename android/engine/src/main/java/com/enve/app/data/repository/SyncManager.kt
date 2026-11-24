@@ -52,7 +52,7 @@ class SyncManager @Inject constructor(
                 val queued = pendingProgressDao.get(bookId, queueTarget.source.name, queueTarget.connectionKey)
                 if (queued != null && queued.createdAt <= requestStartedAt) {
                     pendingProgressDao.deleteIfUnchanged(
-                        bookId, queued.source, queued.connectionKey, queued.createdAt, queued.percentage,
+                        bookId, queued.source, queued.connectionKey, queued.createdAt, queued.percentage, queued.mediaType, queued.isFinished,
                     )
                 }
             } else {

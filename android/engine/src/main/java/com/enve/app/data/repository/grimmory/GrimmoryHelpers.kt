@@ -15,6 +15,7 @@ import com.enve.app.data.remote.dto.BookFileDto
 import com.enve.app.data.remote.dto.BookSummaryDto
 import com.enve.app.data.remote.dto.EbookProgressObjectDto
 import com.enve.app.data.remote.dto.GrimmoryAppBookProgressDto
+import com.enve.app.data.remote.dto.GrimmoryKoreaderProgressDto
 import com.enve.app.data.remote.dto.LibraryDto
 import com.enve.app.data.remote.dto.LegacyBookloreBookDto
 import com.enve.core.data.sync.SyncSnapshot
@@ -70,7 +71,68 @@ internal fun LegacyBookloreBookDto.catalogReadProgress(): Float? = readProgress 
     "PDF" -> pdfProgress?.percentage
     "CBX" -> cbxProgress?.percentage
     else -> epubProgress?.percentage
+} ?: koreaderProgress?.percentage ?: koboProgress?.percentage
+
+internal fun LegacyBookloreBookDto.toCatalogSummary(fallbackLibraryId: String?): BookSummaryDto =
+    toBookSummaryDto(fallbackLibraryId).withFormatInventory(this)
+
+internal fun LegacyBookloreBookDto.toBookDetailDto(): BookDetailDto {
+    val files = listOfNotNull(primaryFile?.copy(isPrimary = true)) + alternativeFormats.orEmpty()
+    val koreaderFraction = koreaderProgress?.percentage?.div(100f)
+    return BookDetailDto(
+        id = id,
+        title = listOfNotNull(title, metadata?.title, name).firstOrNull { it.isNotBlank() }.orEmpty(),
+        subtitle = metadata?.subtitle,
+        authors = metadata?.authors,
+        description = metadata?.description,
+        categories = metadata?.categories,
+        publisher = metadata?.publisher,
+        publishedDate = metadata?.publishedDate,
+        pageCount = metadata?.pageCount,
+        isbn13 = metadata?.isbn13,
+        language = metadata?.language,
+        goodreadsRating = metadata?.goodreadsRating,
+        goodreadsReviewCount = metadata?.goodreadsReviewCount,
+        libraryId = libraryId,
+        libraryName = libraryName,
+        thumbnailUrl = metadata?.thumbnailUrl,
+        readStatus = readStatus,
+        personalRating = personalRating,
+        seriesName = metadata?.seriesName,
+        seriesNumber = metadata?.seriesNumber,
+        addedOn = addedOn,
+        lastReadTime = lastReadTime,
+        dateFinished = dateFinished,
+        readProgress = koreaderFraction
+            ?: koboProgress?.percentage
+            ?: epubProgress?.percentage
+            ?: pdfProgress?.percentage
+            ?: cbxProgress?.percentage,
+        primaryFileType = primaryFile?.bookType,
+        shelves = shelves,
+        fileTypes = files.mapNotNull { it.bookType },
+        files = files,
+        primaryFile = primaryFile,
+        audiobookProgress = audiobookProgress,
+        epubProgress = epubProgress,
+        pdfProgress = pdfProgress,
+        cbxProgress = cbxProgress,
+        koreaderProgress = koreaderFraction?.let { GrimmoryKoreaderProgressDto(percentage = it) },
+        coverUpdatedOn = metadata?.coverUpdatedOn,
+        audiobookCoverUpdatedOn = metadata?.audiobookCoverUpdatedOn,
+    )
 }
+
+internal fun BookDetailDto.toProgressDto() = GrimmoryAppBookProgressDto(
+    readProgress = readProgress,
+    readStatus = readStatus,
+    lastReadTime = lastReadTime,
+    epubProgress = epubProgress,
+    pdfProgress = pdfProgress,
+    cbxProgress = cbxProgress,
+    audiobookProgress = audiobookProgress,
+    koreaderProgress = koreaderProgress,
+)
 
 internal fun BookFileDto.resolvedType(): String? = bookType ?: fileExtension
 
@@ -253,8 +315,6 @@ internal fun LibraryDto.toLibrary() = Library(
     bookCount = bookCount ?: 0,
 )
 
-internal fun BookSummaryDto.listProgress() = GrimmoryListProgress(id, readProgress, lastReadTime.orEmpty())
-
 internal fun BookSummaryDto.toBook(serverUrl: String, token: String?, progressFraction: Float): Book {
     val effectivePrimaryFileType = primaryFile?.bookType ?: primaryFileType
     val mediaType = effectivePrimaryFileType.toMediaType()
@@ -432,8 +492,8 @@ internal fun grimmoryAudiobookProgressSnapshot(
 internal fun grimmoryEbookProgressSnapshot(
     body: GrimmoryAppBookProgressDto,
     updatedAtMs: Long?,
+    audioProgressPresent: Boolean = body.audiobookProgress != null,
 ): SyncSnapshot? {
-    val audioProgressPresent = body.audiobookProgress != null
     val globalRead = body.readStatus.equals("READ", ignoreCase = true)
     val epubProgress = body.epubProgress
     val formatPct = grimmoryPercentFraction(epubProgress?.percentage)
@@ -640,7 +700,7 @@ internal suspend fun resolveAmbiguousAudiobookTitles(
                 val rawBookId = book.id.grimmoryServerBookId()
 
                 val detail = if (needsTitle) {
-                    runSuspendCatching { api.getBookDetail(rawBookId) }.getOrNull()?.body()
+                    runSuspendCatching { api.getBook(rawBookId, withDescription = false) }.getOrNull()?.body()?.toBookDetailDto()
                 } else null
 
                 val resolvedTitle = cachedTitle?.takeIf { it.isNotBlank() }

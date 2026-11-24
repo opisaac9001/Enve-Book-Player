@@ -384,8 +384,8 @@ final class DownloadsEngine {
             await service.deleteDownload(book: book)
             NotificationCenter.default.post(name: .bookStoreDidChange, object: nil)
         } else if usesReaderDownload(book) {
-            try? importer.deleteRemoteEbookArtifacts(forBookId: book.id)
-            importer.removeReadaloudCache(forBookId: book.id, stableId: book.stableId)
+            try? importer.deleteRemoteEbookArtifacts(for: book)
+            importer.removeReadaloudCache(forBookId: book.ebookStorageID, stableId: book.stableId)
             if let url = appState.bookInMemory(uniqueId: book.uniqueId)?.ebookFileURL {
                 let managed =
                     Self.isContained(url, in: importer.serverEbooksRoot)

@@ -237,6 +237,7 @@ struct FoliateReaderPreferences {
     let scroll: Bool
     let publisherStyles: Bool
     let justified: Bool
+    let hyphenation: Bool
     let wordSpacing: Double
     let letterSpacing: Double
     let bionic: Bool
@@ -260,6 +261,7 @@ struct FoliateReaderPreferences {
         scroll = appearance.scrollEnabled
         publisherStyles = appearance.theme == .eink ? false : appearance.publisherStyles
         justified = appearance.justifiedText
+        hyphenation = appearance.hyphenation
         wordSpacing = appearance.wordSpacing
         letterSpacing = appearance.letterSpacing
         bionic = appearance.bionicReading
@@ -337,6 +339,7 @@ struct FoliateReaderPreferences {
             "scroll": scroll,
             "publisherStyles": publisherStyles,
             "justified": justified,
+            "hyphenation": hyphenation,
             "wordSpacing": wordSpacing,
             "letterSpacing": letterSpacing,
             "bionic": bionic,

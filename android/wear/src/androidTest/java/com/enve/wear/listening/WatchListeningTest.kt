@@ -287,12 +287,16 @@ class WatchListeningTest {
             server.start()
             val vault = CredentialVault(context)
             var pushed: String? = null
+            var browse: okhttp3.HttpUrl? = null
             server.dispatcher = object : Dispatcher() {
                 override fun dispatch(request: RecordedRequest): MockResponse {
                     if (request.getHeader("Authorization") != "Bearer grimmory-token") return MockResponse().setResponseCode(401)
                     return when {
                         request.path == "/api/v1/libraries" -> MockResponse().setBody("""[{"id":7,"name":"Audio"}]""")
-                        request.path!!.startsWith("/api/v1/app/books?") -> MockResponse().setBody("""{"content":[{"id":42,"title":"Grimmory test","authors":["Enve"],"primaryFileType":"M4B"}],"hasNext":false}""")
+                        request.requestUrl?.encodedPath == "/api/v1/books/page" -> {
+                            browse = request.requestUrl
+                            MockResponse().setBody("""{"content":[{"id":42,"metadata":{"title":"Grimmory test","authors":["Enve"]},"primaryFile":{"id":9,"bookType":"AUDIOBOOK"}}],"page":{"number":0,"size":30,"totalElements":1,"totalPages":1}}""")
+                        }
                         request.path == "/api/v1/audiobooks/42/info" -> MockResponse().setBody("""{"bookId":"42","bookFileId":"9","title":"Grimmory test","author":"Enve","durationMs":240000,"tracks":[{"index":0,"durationMs":120000,"cumulativeStartMs":0},{"index":1,"durationMs":120000,"cumulativeStartMs":120000}],"chapters":[{"index":0,"title":"First","startTimeMs":0,"endTimeMs":120000}]}""")
                         request.path == "/api/v1/app/books/42/progress" -> MockResponse().setBody("""{"audiobookProgress":{"positionMs":30000,"trackIndex":1,"percentage":62.5,"updatedAt":"1970-01-01T00:00:00.500Z"}}""")
                         request.path == "/api/v1/books/progress" -> {
@@ -319,7 +323,10 @@ class WatchListeningTest {
             assertEquals("Audio", api.libraries(account).single().name)
             val listed = api.books(account, "7", 0)
             assertEquals("Grimmory test", listed.books.single().title)
+            assertEquals("Enve", listed.books.single().author)
             assertFalse(listed.hasMore)
+            assertEquals(listOf("library:7", "file_type:AUDIOBOOK"), checkNotNull(browse).queryParameterValues("facet"))
+            assertEquals("-addedOn", browse!!.queryParameter("sort"))
             val download = api.download(account, "42")
             assertEquals(2, download.files.size)
             assertEquals(240_000L, download.book.durationMs)

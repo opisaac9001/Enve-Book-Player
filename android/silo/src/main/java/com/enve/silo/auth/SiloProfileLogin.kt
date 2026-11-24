@@ -37,7 +37,8 @@ class SiloProfileLogin @Inject constructor(
     fun choose(choice: SiloProfileChoice?) { selection?.complete(choice) }
 
     suspend fun prepare(serverUrl: String, headers: Map<String, String>, existingId: String?): String {
-        val token = vault.get(CredentialVault.KEY_ACCESS_TOKEN)?.takeIf { it.isNotBlank() }
+        val attempt = com.enve.core.data.remote.LoginAttemptScope.get()
+        val token = (if (attempt != null) attempt.accessToken else vault.get(CredentialVault.KEY_ACCESS_TOKEN))?.takeIf { it.isNotBlank() }
             ?: error("Sign in to Silo first.")
         val base = serverUrl.trimEnd('/')
         val account = json.decodeFromString<com.enve.silo.dto.SiloUserDto>(request(base + "/api/v2/account/me", token, headers))

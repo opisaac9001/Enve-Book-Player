@@ -1,12 +1,14 @@
 package com.enve.app.data.local
 
 import android.content.Context
+import androidx.room.Room
 import androidx.datastore.preferences.core.PreferenceDataStoreFactory
 import androidx.test.core.app.ApplicationProvider
 import androidx.test.ext.junit.runners.AndroidJUnit4
 import com.enve.app.data.offline.resolvers.SiloTrackResolver
 import com.enve.core.auth.CredentialVault
 import com.enve.core.data.local.ConnectionRegistry
+import com.enve.core.data.local.PendingProgressPush
 import com.enve.core.data.model.AudioTrack
 import com.enve.core.data.model.Book
 import com.enve.core.data.model.BookSource
@@ -18,6 +20,7 @@ import com.enve.silo.SiloCatalogCursors
 import com.enve.silo.SiloPlaybackInstallations
 import com.enve.silo.SiloRepository
 import com.enve.silo.api.SiloApi
+import com.enve.silo.sync.SiloSyncStrategy
 import java.io.File
 import java.util.UUID
 import java.util.concurrent.CopyOnWriteArrayList
@@ -46,9 +49,11 @@ class SiloV2RepositoryTest {
         val vault = CredentialVault.forProfile(context, profile)
         val registry = ConnectionRegistry(PreferenceDataStoreFactory.create(scope = CoroutineScope(job + Dispatchers.IO)) {
             File(root, "connections.preferences_pb")
-        })
+        }, vault)
         val server = MockWebServer()
         val requests = CopyOnWriteArrayList<RecordedRequest>()
+        val resumePosition = java.util.concurrent.atomic.AtomicInteger(0)
+        val failProgress = java.util.concurrent.atomic.AtomicBoolean(false)
         val installation = "11111111-1111-4111-8111-111111111111"
         val session = "22222222-2222-4222-8222-222222222222"
         fun response(body: String) = MockResponse().setHeader("Content-Type", "application/json").setBody(body)
@@ -63,7 +68,9 @@ class SiloV2RepositoryTest {
                     "/api/v2/catalog" -> if (url.queryParameter("cursor") == null) {
                         response("""{"items":[],"page":{"next_cursor":"next","has_more":true}}""")
                     } else response("""{"items":[{"content_id":"audio:opaque","title":"Book","type":"audiobook"}],"page":{"has_more":false}}""")
-                    "/api/v2/catalog/items/audio:opaque" -> response("""{"content_id":"audio:opaque","title":"Book","type":"audiobook","versions":[{"file_id":"file-opaque","file_name":"audio.m4b","container":"m4b","duration":90}]}""")
+                    "/api/v2/progress" -> if (failProgress.get()) MockResponse().setResponseCode(503) else
+                        response("""{"items":[{"media_item_id":"audio:opaque","updated_at":"2026-02-02T00:00:00Z"}]}""")
+                    "/api/v2/catalog/items/audio:opaque" -> response("""{"content_id":"audio:opaque","title":"Book","type":"audiobook","user_data":{"position_seconds":${resumePosition.get()},"duration_seconds":90},"versions":[{"file_id":"file-opaque","file_name":"audio.m4b","container":"m4b","duration":90}]}""")
                     "/api/v2/playback/capabilities" -> response("""{"state":"available","allowed":true,"installation_id":"$installation","protocol_versions":[3],"features":["sequenced_progress_v1"]}""")
                     "/api/v2/playback/start" -> response("""{"protocol_version":3,"outcome":"playable","session_id":"$session","playback_plan":{"protocol_version":3,"plan_id":"p","delivery":"original_http","stream":{"url":"/api/v2/stream/$session","protocol":"http_progressive"},"timeline":{"source_start_seconds":0,"player_start_seconds":0,"timeline_offset_seconds":0},"source":{"media_file_id":"file-opaque","duration_seconds":90},"requested_media_file_id":"file-opaque","effective_media_file_id":"file-opaque"}}""")
                     "/api/v2/direct-download", "/api/v2/stream/$session" -> MockResponse().setResponseCode(206).setHeader("Content-Range", "bytes 2-5/8").setBody("cdef")
@@ -131,6 +138,43 @@ class SiloV2RepositoryTest {
             assertEquals(replay[0].body.clone().readUtf8(), replay[1].body.clone().readUtf8())
             assertTrue(replay[0].body.clone().readUtf8().contains("2026-01-02T03:04:05.000Z"))
             assertEquals("bytes=2-5", requests.single { it.requestUrl?.encodedPath == "/api/v2/stream/$session" }.getHeader("Range"))
+
+            val database = Room.inMemoryDatabaseBuilder(context, ReaderDatabase::class.java).build()
+            try {
+                val dao = database.bookCacheDao()
+                val strategy = SiloSyncStrategy(repository, dao, registry)
+                val cacheKey = "fixture:audio:opaque"
+                resumePosition.set(18)
+                assertEquals(1, strategy.sync(true, false).pulled)
+                assertEquals(18L, dao.getByCacheKey(cacheKey)?.currentTime)
+
+                val local = checkNotNull(dao.getByCacheKey(cacheKey)).copy(
+                    currentTime = 45, readProgress = 0.5f, isDownloaded = true, lastReadTime = 1,
+                )
+                dao.upsert(listOf(local))
+                database.pendingProgressPushDao().upsert(PendingProgressPush(
+                    bookId = local.id, source = local.source, connectionKey = "fixture",
+                    mediaType = local.mediaType, percentage = 0.5f, isFinished = false, createdAt = 2,
+                ))
+                resumePosition.set(22)
+                assertEquals(0, strategy.sync(true, false).pulled)
+                assertEquals(local, dao.getByCacheKey(cacheKey))
+                database.pendingProgressPushDao().delete(local.id, local.source, "fixture")
+                assertEquals(1, strategy.sync(true, false).pulled)
+                assertEquals(22L, dao.getByCacheKey(cacheKey)?.currentTime)
+                assertTrue(dao.getByCacheKey(cacheKey)?.isDownloaded == true)
+
+                failProgress.set(true)
+                val freshStrategy = SiloSyncStrategy(repository, dao, registry)
+                assertEquals(listOf("Silo"), freshStrategy.sync(false, false).failedBackends)
+                failProgress.set(false)
+                resumePosition.set(29)
+                val beforeRetry = requests.size
+                assertTrue(freshStrategy.sync(false, false).failedBackends.isEmpty())
+                assertTrue(requests.drop(beforeRetry).any { it.requestUrl?.encodedPath == "/api/v2/progress" })
+            } finally {
+                database.close()
+            }
         } finally {
             server.shutdown()
             job.cancelAndJoin()

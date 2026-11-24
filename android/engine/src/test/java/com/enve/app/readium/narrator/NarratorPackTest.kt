@@ -17,7 +17,7 @@ class NarratorPackTest {
             NarratorPack.KOKORO.assets.downloads.map { it.name }.toSet(),
         )
         assertEquals(128_774_318L, NarratorPack.SUPERTONIC.downloadBytes)
-        assertEquals(98_336_520L + 958_542L, NarratorPack.POCKET.downloadBytes)
+        assertEquals(98_337_865L + 958_542L, NarratorPack.POCKET.downloadBytes)
     }
 
     @Test

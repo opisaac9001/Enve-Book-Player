@@ -1,5 +1,13 @@
 package com.enve.app.viewmodel
 
+import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.filled.AutoStories
+import androidx.compose.material.icons.filled.CheckCircle
+import androidx.compose.material.icons.filled.Headphones
+import androidx.compose.material.icons.filled.LocalFireDepartment
+import androidx.compose.material.icons.filled.Timer
+import androidx.compose.material.icons.filled.WorkspacePremium
+import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
 import com.enve.core.data.model.AppMediaType
@@ -42,7 +50,7 @@ data class Achievement(
     val id: String,
     val name: String,
     val description: String,
-    val icon: String,
+    val icon: ImageVector,
     val isUnlocked: Boolean,
     val progress: Float = 0f,
 )
@@ -179,12 +187,12 @@ class StatsViewModel @Inject constructor(
         val session25 = (sessions / 25f).coerceIn(0f, 1f)
 
         return listOf(
-            Achievement("first_hour", "First Hour", "Listen/read for 1 hour", "⏱️", hour1 >= 1f, hour1),
-            Achievement("ten_hours", "Dedicated Listener", "Reach 10 total hours", "🎧", hour10 >= 1f, hour10),
-            Achievement("fifty_hours", "Bookworm", "Reach 50 total hours", "📚", hour50 >= 1f, hour50),
-            Achievement("five_finished", "Completionist", "Finish 5 books", "✅", finished5 >= 1f, finished5),
-            Achievement("ten_finished", "Voracious Reader", "Finish 10 books", "🏆", finished10 >= 1f, finished10),
-            Achievement("session_starter", "Session Starter", "Complete 25 sessions", "🔥", session25 >= 1f, session25),
+            Achievement("first_hour", "First Hour", "Listen/read for 1 hour", Icons.Filled.Timer, hour1 >= 1f, hour1),
+            Achievement("ten_hours", "Dedicated Listener", "Reach 10 total hours", Icons.Filled.Headphones, hour10 >= 1f, hour10),
+            Achievement("fifty_hours", "Bookworm", "Reach 50 total hours", Icons.Filled.AutoStories, hour50 >= 1f, hour50),
+            Achievement("five_finished", "Completionist", "Finish 5 books", Icons.Filled.CheckCircle, finished5 >= 1f, finished5),
+            Achievement("ten_finished", "Voracious Reader", "Finish 10 books", Icons.Filled.WorkspacePremium, finished10 >= 1f, finished10),
+            Achievement("session_starter", "Session Starter", "Complete 25 sessions", Icons.Filled.LocalFireDepartment, session25 >= 1f, session25),
         )
     }
 }

@@ -115,7 +115,58 @@ data class SiloCatalogItemDto(
     @SerialName("content_id") val contentId: String,
     val type: String,
     @SerialName("poster_url") val posterUrl: String? = null,
+    val title: String = "",
+    val overview: String? = null,
+    val runtime: Int? = null,
+    @SerialName("duration_seconds") val durationSeconds: Double? = null,
+    val genres: List<String> = emptyList(),
+    @SerialName("original_language") val originalLanguage: String? = null,
+    @SerialName("added_at") val addedAt: String? = null,
+    @SerialName("user_state") val userState: SiloProgressStateDto? = null,
+    @SerialName("sort_metrics") val sortMetrics: SiloCatalogSortMetrics? = null,
 )
+
+@Serializable
+data class SiloCatalogSortMetrics(
+    val author: String? = null,
+    val narrator: String? = null,
+    @SerialName("series_name") val seriesName: String? = null,
+    @SerialName("progress_ratio") val progressRatio: Float? = null,
+)
+
+@Serializable
+data class SiloCatalogQueryRequest(
+    @SerialName("library_id") val libraryId: String,
+    val type: String?,
+    val q: String?,
+    val sort: String,
+    val order: String,
+    val limit: Int,
+    val cursor: String?,
+    val groups: List<SiloCatalogQueryGroup>,
+    val source: String = "query",
+    @SerialName("skip_total") val skipTotal: Boolean = true,
+    val match: String = "all",
+)
+
+@Serializable
+data class SiloCatalogQueryGroup(val rules: List<SiloCatalogQueryRule>, val match: String = "any")
+
+@Serializable
+data class SiloCatalogQueryRule(val field: String, val value: String, val op: String = "is")
+
+@Serializable
+data class SiloCatalogSearchCapabilities(@SerialName("facet_value_search") val facetValueSearch: Boolean = false)
+
+@Serializable
+data class SiloFacetValuesResponse(
+    val values: List<SiloFacetValue> = emptyList(),
+    @SerialName("values_has_more") val valuesHasMore: Boolean = false,
+)
+
+@Serializable
+data class SiloFacetValue(val value: String, val count: Long = 0)
+
 
 @Serializable
 data class SiloItemDetailDto(
@@ -126,6 +177,7 @@ data class SiloItemDetailDto(
     val overview: String? = null,
     @SerialName("runtime") val runtimeMinutes: Int? = null,
     val genres: List<String>? = null,
+    @SerialName("original_language") val originalLanguage: String? = null,
     @SerialName("poster_url") val posterUrl: String? = null,
     @SerialName("series_title") val seriesTitle: String? = null,
     @SerialName("user_data") val userData: SiloProgressStateDto? = null,

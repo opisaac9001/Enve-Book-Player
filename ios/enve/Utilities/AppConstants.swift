@@ -54,7 +54,6 @@ enum AppConstants {
     }
 
     enum SleepTimer {
-        static let fadeWindowSeconds: TimeInterval = 30
         static let fadeMinScale: Double = 0.03
         static let fadeCurveExponent: Double = 1.8
         static let snoozeDurationMinutes: Int = 5

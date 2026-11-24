@@ -146,7 +146,12 @@ var capabilities: ProviderCapabilities { get }              // default []
 | **Real-Debrid** | preset URL `https://api.real-debrid.com/rest/1.0`; API token only | type forced to `.realdebrid` (`ValidatedConnectionLoginDelegate.inferredProviderType` / `verifyAndAdd`); `RealDebridProvider.validateConnection()` | then `CloudFolderBrowserView` root-folder picker → `rootPath` |
 | **SMB** | `SourcesSMBScreen` (hostname, port, share, username, password, folder path) | `SMBLibraryService.shared.saveSource(source, password:)` + `scanLibrary(source, mode: .quick)`; persisted via `ServerConfigStore` SMB keys | not a `ServerConnection`; separate `SMBLibrarySource` list |
 | **Files / iCloud** | document pickers (file / book / folder / multiple books) | `RemoteImportService.shared.importFromFilesApp(urls:audioSelectionMode:)` + `LocalLibraryStorageStore`/`LocalLibraryService.scanLibrary` | |
+
 | **Google Drive / Dropbox / iCloud as cloud source** | `CloudSourceConnectionView(provider:)` with `GoogleDriveProvider` / `DropboxProvider` / `iCloudDriveProvider` | OAuth via provider object | |
+
+Calibre is an OPDS setup preset in Add Source. It defaults to HTTP for the local Content server and appends `/opds` to a bare server address, preserving explicit catalog and reverse-proxy paths. It uses the existing OPDS authentication, browsing, search, and acquisition flow; it does not synchronize Calibre metadata or reading progress.
+
+Files, Mail, and Safari can offer Open in Enve for the document types declared in `Configuration/Info.plist`. `AppRootView` routes incoming file URLs into `IncomingBookImportScreen`, waits for profile bootstrap, and imports a local copy through `SourcesEngine.importFiles`. The active profile owns the saved books. App-owned Inbox copies are staged before import to avoid a second ingestion by the folder watcher; external originals are left intact. The result screen offers opening an imported book or returning to the library.
 
 ### Common save path (all server providers)
 `SourceConnectionView.verifyAndAdd()` / `handleUnifiedSuccess(connection:)` (AddLibrarySourceView.swift lines 1663–2095):
@@ -213,6 +218,12 @@ Reads `progressSync.isSyncing/lastSyncDate/isCloudKitAvailable/syncEnabled/pendi
 - Separate per-connection Booklore↔KOReader credentials live in `SourceDetailScreen` (koreader* fields) backed by `BookloreKoreaderSink`.
 
 ---
+
+### Readwise — `enve/Screens/Settings/ReadwiseScreen.swift`
+- Available per profile from Settings and the reader's Export sheet. An access token is validated against Readwise's `/api/v2/auth/` endpoint and stored in that profile's `SharedKeychainStore`; it is never saved to preferences.
+- `ReadwiseExportService` sends only on an explicit action. `ReadwiseClient` sends highlight text, notes, chapter name, title, author, creation date, and a reading-order location. Cover URLs, private server URLs, and EPUB locators are omitted. Redirects are rejected.
+- Each confirmed remote ID and payload hash is saved before continuing. Retry skips unchanged confirmed highlights; edited text and notes update the stored remote ID. Interrupted creation can recover Readwise's deduplicated highlight ID. HTTP 429 displays the server's retry delay; no automatic background retry runs.
+- Disconnect removes local credentials and export tracking only. It does not delete anything from Readwise. This is a manual export integration, not bidirectional sync.
 
 ### Invariants worth preserving verbatim
 - `ProviderType` raw values and the `booklore`/`grimmory` decode aliasing; `ServerConnection` CodingKeys and the encode-strips-secrets/decode-hydrates keychain dance; UserDefaults key `"enve_server_connections"`.

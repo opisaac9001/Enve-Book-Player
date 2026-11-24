@@ -91,28 +91,28 @@ private final class ProgressSinkSpy: SyncSink {
 }
 
 @MainActor
-private struct CoordinatorFixture {
+private final class CoordinatorFixture {
     let coordinator: SyncCoordinator
     let worker: RecentlyPlayedWorkerSpy
-    let queue: PendingSyncQueueStore
     let log: SyncEventLog
-    let suiteName: String
-    private let defaults: UserDefaults
+    private let profile: SyncTestProfile
 
-    init() {
+    var session: ProfileSession { profile.session }
+    var queue: PendingSyncQueueStore { session.pendingSync }
+
+    init() throws {
         log = SyncEventLog()
         worker = RecentlyPlayedWorkerSpy(log: log)
-        suiteName = "SyncCoordinatorRecentlyPlayedTests.\(UUID().uuidString)"
-        defaults = UserDefaults(suiteName: suiteName)!
-        defaults.removePersistentDomain(forName: suiteName)
-        queue = PendingSyncQueueStore(defaults: defaults, storageKey: "queue")
+        profile = try SyncTestProfile()
+        let session = profile.session
         coordinator = SyncCoordinator(
             providerResolver: InertProviderResolver(),
             pendingSyncFlusher: PendingSyncQueueFlusher(
-                store: queue,
+                store: session.pendingSync,
                 transport: FlushRecordingTransport(log: log)
             ),
-            recentlyPlayedSync: worker
+            recentlyPlayedSync: worker,
+            profileSession: session
         )
     }
 
@@ -130,20 +130,19 @@ private struct CoordinatorFixture {
         )
     }
 
-    func tearDown() {
-        defaults.removePersistentDomain(forName: suiteName)
+    func tearDown() async {
+        await coordinator.retire()
+        await profile.tearDown()
     }
 }
 
 @MainActor
 struct SyncCoordinatorRecentlyPlayedTests {
     @Test func immediateAudiobookPushCancelsOlderDebounce() async throws {
-        let fixture = CoordinatorFixture()
-        defer { fixture.tearDown() }
+        let fixture = try CoordinatorFixture()
         let book = Book(id: UUID().uuidString, title: "Debounce", source: .booklore)
         let sink = ProgressSinkSpy(bookId: book.stableId)
-        PluginRegistry.shared.register(sink: sink)
-        defer { PluginRegistry.shared.unregister(sinkId: sink.id) }
+        fixture.session.registry.register(sink: sink)
         await fixture.coordinator.pushAudiobookProgress(
             book: book, position: 10, sessionId: nil, isFinished: false, timeListened: 0
         )
@@ -152,12 +151,11 @@ struct SyncCoordinatorRecentlyPlayedTests {
         )
         try await Task.sleep(for: .milliseconds(2200))
         #expect(sink.positions == [20])
-        await fixture.coordinator.retire()
+        await fixture.tearDown()
     }
 
-    @Test func cancellingOneSubscriberKeepsTheOtherRegistered() async {
-        let fixture = CoordinatorFixture()
-        defer { fixture.tearDown() }
+    @Test func cancellingOneSubscriberKeepsTheOtherRegistered() async throws {
+        let fixture = try CoordinatorFixture()
         let book = Book(id: UUID().uuidString, title: "Subscriptions", source: .booklore)
         let first = fixture.coordinator.subscribe(book: book)
         let second = fixture.coordinator.subscribe(book: book)
@@ -172,11 +170,11 @@ struct SyncCoordinatorRecentlyPlayedTests {
             if case .pullStarted(let id) = event { received = id == book.stableId }
         }
         #expect(received)
+        await fixture.tearDown()
     }
 
-    @Test func disablingICloudDoesNotDisableOtherProgressDestinations() async {
-        let fixture = CoordinatorFixture()
-        defer { fixture.tearDown() }
+    @Test func disablingICloudDoesNotDisableOtherProgressDestinations() async throws {
+        let fixture = try CoordinatorFixture()
         let book = Book(
             id: "grimmory-progress",
             title: "Grimmory Progress",
@@ -185,8 +183,7 @@ struct SyncCoordinatorRecentlyPlayedTests {
             ebookProgress: 0.42
         )
         let sink = ProgressSinkSpy(bookId: book.stableId)
-        PluginRegistry.shared.register(sink: sink)
-        defer { PluginRegistry.shared.unregister(sinkId: sink.id) }
+        fixture.session.registry.register(sink: sink)
         fixture.coordinator.setSyncEnabled(false)
 
         await fixture.coordinator.pullOnOpen(book: book, domain: .ebook)
@@ -194,11 +191,11 @@ struct SyncCoordinatorRecentlyPlayedTests {
 
         #expect(sink.pullCount == 1)
         #expect(sink.pushCount == 1)
+        await fixture.tearDown()
     }
 
-    @Test func launchPullRunsBeforePendingUploads() async {
-        let fixture = CoordinatorFixture()
-        defer { fixture.tearDown() }
+    @Test func launchPullRunsBeforePendingUploads() async throws {
+        let fixture = try CoordinatorFixture()
         fixture.enqueue("queued")
 
         let result = await fixture.coordinator.runRecentlyPlayedSync(trigger: .appLaunch)
@@ -206,11 +203,11 @@ struct SyncCoordinatorRecentlyPlayedTests {
         #expect(fixture.log.events == ["worker", "flush:queued"])
         #expect(fixture.worker.triggers == [.appLaunch])
         #expect(result.wasCancelled == false)
+        await fixture.tearDown()
     }
 
-    @Test func reentrantRunIsRejectedWithoutFlushingOrRunningWorker() async {
-        let fixture = CoordinatorFixture()
-        defer { fixture.tearDown() }
+    @Test func reentrantRunIsRejectedWithoutFlushingOrRunningWorker() async throws {
+        let fixture = try CoordinatorFixture()
         fixture.enqueue("first")
         fixture.worker.waitsForRelease = true
         let coordinator = fixture.coordinator
@@ -233,11 +230,11 @@ struct SyncCoordinatorRecentlyPlayedTests {
 
         fixture.worker.releaseOldest()
         _ = await inFlight.value
+        await fixture.tearDown()
     }
 
-    @Test func isSyncingIsHeldForTheDurationOfASuccessfulRun() async {
-        let fixture = CoordinatorFixture()
-        defer { fixture.tearDown() }
+    @Test func isSyncingIsHeldForTheDurationOfASuccessfulRun() async throws {
+        let fixture = try CoordinatorFixture()
         fixture.worker.waitsForRelease = true
         let coordinator = fixture.coordinator
 
@@ -256,22 +253,22 @@ struct SyncCoordinatorRecentlyPlayedTests {
 
         #expect(fixture.coordinator.isSyncing == false)
         #expect(fixture.coordinator.lastSyncDate != nil)
+        await fixture.tearDown()
     }
 
-    @Test func isSyncingResetsWhenTheWorkerReportsCancellation() async {
-        let fixture = CoordinatorFixture()
-        defer { fixture.tearDown() }
+    @Test func isSyncingResetsWhenTheWorkerReportsCancellation() async throws {
+        let fixture = try CoordinatorFixture()
         fixture.worker.result = .cancelled
 
         let result = await fixture.coordinator.runRecentlyPlayedSync(trigger: .appLaunch)
 
         #expect(result.wasCancelled)
         #expect(fixture.coordinator.isSyncing == false)
+        await fixture.tearDown()
     }
 
-    @Test func isSyncingResetsWhenTheWorkerReportsBackendFailures() async {
-        let fixture = CoordinatorFixture()
-        defer { fixture.tearDown() }
+    @Test func isSyncingResetsWhenTheWorkerReportsBackendFailures() async throws {
+        let fixture = try CoordinatorFixture()
         fixture.worker.result = ServerStatusSyncResult(
             attemptedBackendCount: 1,
             pulledItemCount: 0,
@@ -284,11 +281,11 @@ struct SyncCoordinatorRecentlyPlayedTests {
 
         #expect(result.hasFailures)
         #expect(fixture.coordinator.isSyncing == false)
+        await fixture.tearDown()
     }
 
-    @Test func supersededRunDoesNotClearTheNewerRunsSyncState() async {
-        let fixture = CoordinatorFixture()
-        defer { fixture.tearDown() }
+    @Test func supersededRunDoesNotClearTheNewerRunsSyncState() async throws {
+        let fixture = try CoordinatorFixture()
         fixture.worker.waitsForRelease = true
         let coordinator = fixture.coordinator
 
@@ -314,5 +311,6 @@ struct SyncCoordinatorRecentlyPlayedTests {
         fixture.worker.releaseOldest()
         _ = await newer.value
         #expect(fixture.coordinator.isSyncing == false)
+        await fixture.tearDown()
     }
 }

@@ -38,7 +38,7 @@ struct AddSourceScreen: View {
                         title: "Media servers",
                         providers: [
                             .audiobookshelf, .plex, .jellyfin, .emby, .grimmory,
-                            .storyteller, .silo, .komga, .kavita, .bookOrbit, .opds,
+                            .storyteller, .silo, .komga, .kavita, .bookOrbit, .calibre, .opds,
                         ],
                         width: HearthAdaptive.contentWidth(for: geo.size.width, maximum: 980)
                     )
@@ -98,7 +98,7 @@ struct AddSourceScreen: View {
 
 enum AddSourceProvider: String, CaseIterable, Identifiable {
     case audiobookshelf, plex, jellyfin, emby, grimmory, storyteller, silo
-    case komga, kavita, bookOrbit, opds
+    case komga, kavita, bookOrbit, calibre, opds
     case webdav, torbox, premiumize, realdebrid, smb
     case googleDrive, dropbox, oneDrive, icloudDrive
     case files
@@ -118,6 +118,7 @@ enum AddSourceProvider: String, CaseIterable, Identifiable {
         case .komga: "Komga"
         case .kavita: "Kavita"
         case .bookOrbit: "BookOrbit"
+        case .calibre: "Calibre"
         case .opds: "OPDS"
         case .webdav: "WebDAV"
         case .torbox: "TorBox"
@@ -145,6 +146,7 @@ enum AddSourceProvider: String, CaseIterable, Identifiable {
         case .komga: ProviderType.komga.assetIconName
         case .kavita: ProviderType.kavita.assetIconName
         case .bookOrbit: ProviderType.bookOrbit.assetIconName
+        case .calibre: nil
         case .opds: ProviderType.opds.assetIconName
         case .webdav: UnifiedWebDAVPreset.generic.assetIconName
         case .torbox: ProviderType.torbox.assetIconName
@@ -163,6 +165,7 @@ enum AddSourceProvider: String, CaseIterable, Identifiable {
         case .dropbox: "shippingbox.fill"
         case .oneDrive: "cloud.fill"
         case .icloudDrive: "icloud"
+        case .calibre: "books.vertical"
         case .files: "folder"
         case .webLink: "link"
         case .grimmory: ProviderType.booklore.iconName
@@ -182,6 +185,7 @@ enum AddSourceProvider: String, CaseIterable, Identifiable {
         case .komga: .komga
         case .kavita: .kavita
         case .bookOrbit: .bookOrbit
+        case .calibre: .calibre
         case .opds: .opds
         case .webdav, .premiumize, .realdebrid: .webdav
         case .torbox: .torbox

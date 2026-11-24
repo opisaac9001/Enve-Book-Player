@@ -46,6 +46,7 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
@@ -67,18 +68,18 @@ import java.util.Date
 fun BookOrbitHighlightsScreen(
     onBack: () -> Unit,
     onOpenBook: (Book) -> Unit,
+    initialAccountId: String? = null,
 ) {
     val vm: BookOrbitHighlightsViewModel = profileViewModel()
+    LaunchedEffect(initialAccountId) { initialAccountId?.let(vm::selectAccount) }
     val accounts by vm.accounts.collectAsStateWithLifecycle()
     val accountId by vm.activeAccountId.collectAsStateWithLifecycle()
     val state by vm.state.collectAsStateWithLifecycle()
-    val items by vm.items.collectAsStateWithLifecycle()
+    val list by vm.list.collectAsStateWithLifecycle()
     val stats by vm.stats.collectAsStateWithLifecycle()
     val books by vm.books.collectAsStateWithLifecycle()
     val query by vm.query.collectAsStateWithLifecycle()
     val searchInput by vm.searchInput.collectAsStateWithLifecycle()
-    val hasMore by vm.hasMore.collectAsStateWithLifecycle()
-    val loadingMore by vm.loadingMore.collectAsStateWithLifecycle()
     val notice by vm.notice.collectAsStateWithLifecycle()
     val palette = Hearth.palette
     val context = LocalContext.current
@@ -137,22 +138,20 @@ fun BookOrbitHighlightsScreen(
                         body = "The server didn't answer. Check that the source is online and try again.",
                         onRetry = vm::retry,
                     )
-                    is BookOrbitLoad.Ready -> if (items.isEmpty()) {
+                    is BookOrbitLoad.Ready -> if (list.items.isEmpty()) {
                         BookOrbitPlaceholder(
                             headline = if (query.trashed) "Trash is empty" else "No highlights match",
-                            body = if (query.trashed) {
-                                "Highlights you remove land here until you delete them for good."
-                            } else {
-                                "Try a different search, or clear the filters above."
+                            body = when {
+                                query.trashed -> "Highlights you remove land here until you delete them for good."
+                                query.notesOnly -> "No highlight here carries a note. Turn off Only with notes to see the rest."
+                                else -> "Try a different search, or clear the filters above."
                             },
                         )
                     } else {
                         HighlightList(
-                            items = items,
+                            list = list,
                             trashed = query.trashed,
                             summary = "${stats.total} highlights · ${stats.books} books · ${stats.withNotes} with notes",
-                            hasMore = hasMore,
-                            loadingMore = loadingMore,
                             onLoadMore = vm::loadMore,
                             onOpenBook = { bookId -> scope.launch { vm.openBook(bookId)?.let(onOpenBook) } },
                             onTrash = vm::trash,
@@ -279,7 +278,14 @@ private fun FilterRow(
     ) {
         item { HearthChip("Library", !trashed, onClick = { onTrashedChange(false) }) }
         item { HearthChip("Trash", trashed, onClick = { onTrashedChange(true) }) }
-        item { HearthChip("With notes", notesOnly, onClick = { onNotesOnlyChange(!notesOnly) }) }
+        item {
+            HearthChip(
+                "Only with notes",
+                notesOnly,
+                onClick = { onNotesOnlyChange(!notesOnly) },
+                modifier = Modifier.testTag("bookorbit-highlights-notes-only"),
+            )
+        }
         item { HearthChip("All books", selectedBookId == null, onClick = { onSelectBook(null) }) }
         items(books, key = { it.bookId }) { facet ->
             HearthChip(
@@ -293,11 +299,9 @@ private fun FilterRow(
 
 @Composable
 private fun HighlightList(
-    items: List<BookOrbitHighlight>,
+    list: BookOrbitPagedList<BookOrbitHighlight>,
     trashed: Boolean,
     summary: String,
-    hasMore: Boolean,
-    loadingMore: Boolean,
     onLoadMore: () -> Unit,
     onOpenBook: (Int) -> Unit,
     onTrash: (BookOrbitHighlight) -> Unit,
@@ -311,13 +315,14 @@ private fun HighlightList(
             last >= listState.layoutInfo.totalItemsCount - 4
         }
     }
-    LaunchedEffect(nearEnd, hasMore) {
-        if (nearEnd && hasMore) onLoadMore()
+    val autoLoad = list.canLoadMore && list.failure == null
+    LaunchedEffect(nearEnd, autoLoad, list.items.size) {
+        if (nearEnd && autoLoad) onLoadMore()
     }
 
     LazyColumn(
         state = listState,
-        modifier = Modifier.fillMaxSize(),
+        modifier = Modifier.fillMaxSize().testTag("bookorbit-highlights-list"),
         contentPadding = PaddingValues(
             start = Hearth.Spacing.XL,
             top = Hearth.Spacing.S,
@@ -329,7 +334,7 @@ private fun HighlightList(
         item {
             Text(summary, style = HearthText.Caption, color = Hearth.palette.textTertiary)
         }
-        items(items, key = { it.id }) { highlight ->
+        items(list.items, key = { it.id }) { highlight ->
             HighlightCard(
                 highlight = highlight,
                 trashed = trashed,
@@ -339,8 +344,13 @@ private fun HighlightList(
                 onDeleteForever = onDeleteForever,
             )
         }
-        if (loadingMore) {
-            item { BookOrbitLoadingBlock() }
+        item {
+            BookOrbitPageFooter(
+                list = list,
+                noun = "highlights",
+                onLoadMore = onLoadMore,
+                tag = "bookorbit-highlights-more",
+            )
         }
     }
 }

@@ -10,23 +10,34 @@ final class BookOrbitMarginaliaModel {
     private(set) var total = 0
     private(set) var withNotes = 0
     private(set) var bookCount = 0
+    private(set) var isReloading = false
     private(set) var isLoadingMore = false
+    private(set) var loadMoreError: String?
     private(set) var trashed = false
+    private(set) var onlyWithNotes = false
     private(set) var bookId: Int?
 
     var search = ""
     var actionMessage: String?
 
-    @ObservationIgnored private var reloadTask: Task<Void, Never>?
+    @ObservationIgnored private(set) var reloadTask: Task<Void, Never>?
+    @ObservationIgnored private var source: (any BookOrbitMarginaliaSource)?
     private var connectionId: UUID?
     private var page = 1
     private var exhausted = false
+    private var generation = 0
 
-    private var provider: BookOrbitProvider? {
-        connectionId.flatMap { BookOrbitAccess.provider($0) }
+    private var provider: (any BookOrbitMarginaliaSource)? {
+        if let source { return source }
+        guard let connectionId else { return nil }
+        return BookOrbitAccess.provider(connectionId)
     }
 
-    var canLoadMore: Bool { !exhausted && state == .ready }
+    init(source: (any BookOrbitMarginaliaSource)? = nil) {
+        self.source = source
+    }
+
+    var canLoadMore: Bool { !isReloading && !exhausted && state == .ready }
 
     func bind(connectionId: UUID?) {
         self.connectionId = connectionId ?? BookOrbitAccess.connections.first?.id
@@ -35,26 +46,39 @@ final class BookOrbitMarginaliaModel {
     func select(bookId newBookId: Int?) {
         guard newBookId != bookId else { return }
         bookId = newBookId
-        reloadTask?.cancel()
-        reloadTask = Task { await performReload() }
+        startReload()
     }
 
     func select(trashed showTrashed: Bool) {
         guard showTrashed != trashed else { return }
         trashed = showTrashed
         bookId = nil
-        reloadTask?.cancel()
-        reloadTask = Task { await performReload() }
+        startReload()
+    }
+
+    func select(onlyWithNotes enabled: Bool) {
+        guard enabled != onlyWithNotes else { return }
+        onlyWithNotes = enabled
+        startReload()
     }
 
     func reload() async {
-        reloadTask?.cancel()
-        let task = Task { await performReload() }
-        reloadTask = task
-        await task.value
+        await startReload().value
     }
 
-    private func performReload() async {
+    @discardableResult
+    private func startReload() -> Task<Void, Never> {
+        generation += 1
+        isReloading = true
+        reloadTask?.cancel()
+        let requested = generation
+        let task = Task { await performReload(requested) }
+        reloadTask = task
+        return task
+    }
+
+    private func performReload(_ requested: Int) async {
+        defer { if requested == generation { isReloading = false } }
         guard let provider else {
             state = .unavailable
             return
@@ -62,9 +86,10 @@ final class BookOrbitMarginaliaModel {
 
         page = 1
         exhausted = false
+        loadMoreError = nil
         do {
             let response = try await provider.fetchAnnotations(query())
-            guard !Task.isCancelled else { return }
+            guard requested == generation, !Task.isCancelled else { return }
             items = response.items
             total = response.total
             withNotes = response.stats.withNotes
@@ -72,33 +97,42 @@ final class BookOrbitMarginaliaModel {
             exhausted = response.items.count >= response.total || response.items.isEmpty
             state = .ready
             await resolveBooks(response.items)
-            facets = (try? await provider.fetchAnnotationBooks(trashed: trashed, search: nil)) ?? []
+            let fetchedFacets = (try? await provider.fetchAnnotationBooks(trashed: trashed, search: nil)) ?? []
+            guard requested == generation, !Task.isCancelled else { return }
+            facets = fetchedFacets
         } catch BookOrbitProvider.FeatureError.unavailable {
+            guard requested == generation, !Task.isCancelled else { return }
             state = .unavailable
         } catch {
-            guard !Task.isCancelled else { return }
+            guard requested == generation, !Task.isCancelled else { return }
             state = .failed(BookOrbitAccess.message(for: error))
         }
     }
 
-    func loadMore() async {
-        guard let provider, canLoadMore, !isLoadingMore else { return }
+    /// `retry` is the explicit button; scrolling never re-requests a page that just failed.
+    func loadMore(retry: Bool = false) async {
+        guard let provider, canLoadMore, !isLoadingMore, retry || loadMoreError == nil else { return }
         isLoadingMore = true
+        loadMoreError = nil
         defer { isLoadingMore = false }
 
-        page += 1
-        guard let response = try? await provider.fetchAnnotations(query()) else {
-            page -= 1
-            exhausted = true
-            return
+        let requested = generation
+        var next = query()
+        next.page = page + 1
+        do {
+            let response = try await provider.fetchAnnotations(next)
+            guard requested == generation, !Task.isCancelled else { return }
+            page = next.page
+            let known = Set(items.map(\.id))
+            let fresh = response.items.filter { !known.contains($0.id) }
+            items.append(contentsOf: fresh)
+            total = response.total
+            exhausted = fresh.isEmpty || items.count >= response.total
+            await resolveBooks(fresh)
+        } catch {
+            guard requested == generation, !Task.isCancelled, !(error is CancellationError), (error as? URLError)?.code != .cancelled else { return }
+            loadMoreError = BookOrbitAccess.message(for: error)
         }
-        guard !Task.isCancelled else { return }
-        let known = Set(items.map(\.id))
-        let fresh = response.items.filter { !known.contains($0.id) }
-        items.append(contentsOf: fresh)
-        total = response.total
-        exhausted = fresh.isEmpty || items.count >= response.total
-        await resolveBooks(fresh)
     }
 
     func trash(_ item: BookOrbitProvider.AnnotationHubItem) async {
@@ -129,7 +163,7 @@ final class BookOrbitMarginaliaModel {
 
     private func mutate(
         _ item: BookOrbitProvider.AnnotationHubItem,
-        _ action: (BookOrbitProvider) async throws -> Void
+        _ action: (any BookOrbitMarginaliaSource) async throws -> Void
     ) async -> Bool {
         guard let provider else { return false }
         do {
@@ -149,7 +183,8 @@ final class BookOrbitMarginaliaModel {
             pageSize: 50,
             bookId: bookId,
             search: search,
-            trashed: trashed
+            trashed: trashed,
+            hasNote: onlyWithNotes
         )
     }
 
@@ -161,3 +196,15 @@ final class BookOrbitMarginaliaModel {
         books.merge(resolved) { current, _ in current }
     }
 }
+
+@MainActor
+protocol BookOrbitMarginaliaSource: AnyObject {
+    func fetchAnnotations(_ query: BookOrbitProvider.AnnotationHubQuery) async throws -> BookOrbitProvider.AnnotationHubPage
+    func fetchAnnotationBooks(trashed: Bool, search: String?) async throws -> [BookOrbitProvider.AnnotationHubBookFacet]
+    func trashAnnotations(ids: [Int]) async throws
+    func restoreAnnotations(ids: [Int]) async throws
+    func purgeAnnotation(id: Int) async throws
+    func exportAnnotations(_ query: BookOrbitProvider.AnnotationHubQuery, format: String) async throws -> URL
+}
+
+extension BookOrbitProvider: BookOrbitMarginaliaSource {}

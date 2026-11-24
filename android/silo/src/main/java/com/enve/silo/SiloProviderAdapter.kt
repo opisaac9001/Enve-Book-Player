@@ -7,6 +7,11 @@ import com.enve.core.data.model.Chapter
 import com.enve.core.data.model.Library
 import com.enve.core.data.model.ReaderAnnotation
 import com.enve.core.data.provider.PlaybackReportEvent
+import com.enve.core.data.provider.RemoteCatalogBrowsingProvider
+import com.enve.core.data.provider.RemoteCatalogRequest
+import com.enve.core.data.provider.RemoteCatalogPage
+import com.enve.core.data.provider.RemoteCatalogFilterOptions
+import com.enve.core.data.model.AppMediaType
 import com.enve.core.data.provider.ProviderAdapter
 import com.enve.core.data.provider.ProviderEbookResource
 import com.enve.core.data.provider.ProviderPlaybackSession
@@ -19,9 +24,25 @@ import javax.inject.Singleton
 @Singleton
 class SiloProviderAdapter @Inject constructor(
     private val repository: SiloRepository,
-) : ProviderAdapter {
+) : ProviderAdapter, RemoteCatalogBrowsingProvider {
     override val source: BookSource = BookSource.SILO
     override val syncCapability: SyncCapability = SyncCapability.FULL
+
+    override suspend fun fetchRemoteCatalogPage(libraryId: String, request: RemoteCatalogRequest, cursor: String?, limit: Int): RemoteCatalogPage =
+        repository.fetchRemoteCatalogPage(libraryId, request, cursor, limit)
+
+    override suspend fun fetchRemoteCatalogFilterOptions(libraryId: String, mediaType: AppMediaType?, search: String): RemoteCatalogFilterOptions =
+        repository.fetchRemoteCatalogFilterOptions(libraryId, mediaType, search)
+
+    override suspend fun fetchRemoteCatalogDetail(book: Book): Book {
+        val detail = repository.getBook(book.id, book.libraryId?.substringAfter("::")).getOrThrow()
+        return detail.copy(
+            language = detail.language ?: book.language,
+            categories = detail.categories.ifEmpty { book.categories },
+            libraryId = book.libraryId,
+            connectionId = book.connectionId,
+        )
+    }
 
     override suspend fun getLibraries(): Result<List<Library>> = repository.getLibraries()
 

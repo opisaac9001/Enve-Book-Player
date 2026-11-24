@@ -27,9 +27,9 @@ class AutoArtworkCache @Inject constructor(
     private val imageLoader: ImageLoader,
     private val locations: com.enve.core.data.local.ProfileStorageLocations = com.enve.core.data.local.ProfileStorageLocations.forProfile(context, com.enve.core.data.local.DEFAULT_ADULT_PROFILE_ID),
 ) {
-    suspend fun uriFor(bookId: String, cacheKey: String, coverUrl: String?): Uri? =
+    suspend fun uriFor(downloadKey: String?, cacheKey: String, coverUrl: String?): Uri? =
         withContext(Dispatchers.IO) {
-            val source = sourceFor(bookId, coverUrl) ?: return@withContext null
+            val source = sourceFor(downloadKey, coverUrl) ?: return@withContext null
             val artwork = artworkFile(cacheKey, source)
             if (!artwork.isFile) {
                 val sourceUri = Uri.parse(source)
@@ -67,14 +67,14 @@ class AutoArtworkCache @Inject constructor(
             AutoArtworkProvider.uriFor(context, artwork.name, locations.profileId)
         }
 
-    fun cachedUriFor(bookId: String, cacheKey: String, coverUrl: String?): Uri? {
-        val source = sourceFor(bookId, coverUrl) ?: return null
+    fun cachedUriFor(downloadKey: String?, cacheKey: String, coverUrl: String?): Uri? {
+        val source = sourceFor(downloadKey, coverUrl) ?: return null
         val artwork = artworkFile(cacheKey, source)
         return artwork.takeIf(File::isFile)?.let { AutoArtworkProvider.uriFor(context, it.name, locations.profileId) }
     }
 
-    private fun sourceFor(bookId: String, coverUrl: String?): String? =
-        offlineDownloadManager.localCoverUri(bookId)
+    private fun sourceFor(downloadKey: String?, coverUrl: String?): String? =
+        downloadKey?.let(offlineDownloadManager::localCoverUri)
             ?: coverUrl?.takeIf { it.isNotBlank() }
 
     private fun artworkFile(cacheKey: String, source: String): File {

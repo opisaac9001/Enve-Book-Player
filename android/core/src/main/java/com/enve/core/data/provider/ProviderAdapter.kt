@@ -48,6 +48,7 @@ interface ProviderAdapter {
     val supportsMetadataUpdate: Boolean get() = false
     val supportsLibraryMetadataRefresh: Boolean get() = false
     val supportsPersonalRating: Boolean get() = false
+    val readStatusOptions: List<String> get() = emptyList()
     val annotationsAreAuthoritative: Boolean get() = false
 
     suspend fun getLibraries(): Result<List<Library>>

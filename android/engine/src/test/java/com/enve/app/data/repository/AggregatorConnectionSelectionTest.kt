@@ -6,6 +6,7 @@ import com.enve.core.data.model.BookSource
 import com.enve.core.data.model.ProviderConnection
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertNull
+import org.junit.Assert.assertTrue
 import org.junit.Test
 
 class AggregatorConnectionSelectionTest {
@@ -70,6 +71,38 @@ class AggregatorConnectionSelectionTest {
         assertNull(selectConnectionForSource(BookSource.AUDIOBOOKSHELF, a.id, listOf(a, b)))
         assertNull(selectConnectionForSource(BookSource.AUDIOBOOKSHELF, a.id, listOf(b)))
         assertEquals(b, selectConnectionForSource(BookSource.AUDIOBOOKSHELF, null, listOf(a, b)))
+    }
+
+    @Test
+    fun bookEditIsDispatchedOnlyToTheAccountItWasMadeOn() {
+        val source = BookSource.BOOKORBIT
+        val account = "http://localhost|tester"
+        val a = connection("a", source)
+        val b = connection("b", source).copy(username = "other")
+
+        assertEquals(a, selectConnectionForBookEdit(source, a.id, account, listOf(a, b)).getOrThrow())
+        assertTrue(selectConnectionForBookEdit(source, a.id, account, listOf(a.copy(username = "other"), b)).isFailure)
+        assertTrue(selectConnectionForBookEdit(source, a.id, account, listOf(a.copy(serverUrl = "http://elsewhere"), b)).isFailure)
+        assertTrue(selectConnectionForBookEdit(source, a.id, account, listOf(a.copy(enabled = false), b)).isFailure)
+        assertTrue(selectConnectionForBookEdit(source, a.id, account, listOf(b)).isFailure)
+        assertTrue(selectConnectionForBookEdit(source, a.id, account, emptyList()).isFailure)
+    }
+
+    @Test
+    fun bookEditWithoutConnectionIdNeverFallsBackToADifferentAccount() {
+        val source = BookSource.BOOKORBIT
+        val a = connection("a", source)
+        val other = connection("abs", BookSource.AUDIOBOOKSHELF)
+
+        assertNull(selectConnectionForBookEdit(source, null, "", listOf(other)).getOrThrow())
+        assertTrue(selectConnectionForBookEdit(source, null, "", listOf(a)).isFailure)
+        assertTrue(selectConnectionForBookEdit(source, null, "http://localhost|tester", emptyList()).isFailure)
+        assertEquals(a, selectConnectionForBookEdit(source, null, "http://localhost|tester", listOf(a, other)).getOrThrow())
+        assertTrue(
+            selectConnectionForBookEdit(
+                source, null, "http://localhost|tester", listOf(a, connection("b", source)),
+            ).isFailure,
+        )
     }
 
     private fun connection(id: String, source: BookSource) = ProviderConnection(

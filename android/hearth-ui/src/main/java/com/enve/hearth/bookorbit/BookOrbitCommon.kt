@@ -24,16 +24,20 @@ import androidx.compose.material.icons.automirrored.outlined.ArrowBack
 import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.Icon
 import androidx.compose.material3.Text
+import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import com.enve.engine.bookorbit.BookOrbitAccount
+import com.enve.engine.bookorbit.BookOrbitFailureReason
+import com.enve.engine.bookorbit.BookOrbitToolException
 import com.enve.hearth.design.EmberButton
 import com.enve.hearth.design.Hearth
 import com.enve.hearth.design.HearthChip
@@ -55,6 +59,30 @@ internal suspend fun <T : Any> loadBookOrbit(block: suspend () -> T?): BookOrbit
     throw e
 } catch (_: Exception) {
     BookOrbitLoad.Failed
+}
+
+internal fun Throwable.bookOrbitReason(): BookOrbitFailureReason =
+    (this as? BookOrbitToolException)?.reason ?: BookOrbitFailureReason.UNREACHABLE
+
+internal fun BookOrbitFailureReason.headline(): String = when (this) {
+    BookOrbitFailureReason.UNAUTHORIZED -> "Sign in to BookOrbit again"
+    BookOrbitFailureReason.FORBIDDEN -> "Your account can't open this"
+    BookOrbitFailureReason.UNSUPPORTED -> "Not available on this server"
+    BookOrbitFailureReason.REJECTED -> "BookOrbit refused the request"
+    BookOrbitFailureReason.UNREACHABLE -> "Couldn't reach BookOrbit"
+}
+
+internal fun BookOrbitFailureReason.explanation(): String = when (this) {
+    BookOrbitFailureReason.UNAUTHORIZED -> "This source's sign-in has expired. Sign in again from Sources, then retry."
+    BookOrbitFailureReason.FORBIDDEN -> "The server answered, but this BookOrbit account lacks the permission it needs. Ask the server admin."
+    BookOrbitFailureReason.UNSUPPORTED -> "This BookOrbit server runs a build without this feature."
+    BookOrbitFailureReason.REJECTED -> "The server didn't accept the request. Refresh and try again."
+    BookOrbitFailureReason.UNREACHABLE -> "The server didn't answer. Check that the source is online and try again."
+}
+
+internal fun bookOrbitActionFailure(action: String, error: Throwable): String {
+    val detail = (error as? BookOrbitToolException)?.serverMessage ?: error.bookOrbitReason().explanation()
+    return "Couldn't $action. $detail"
 }
 
 @Composable
@@ -148,6 +176,54 @@ fun BookOrbitLoadingBlock() {
             Text("Loading…", style = HearthText.Body, color = Hearth.palette.textSecondary)
         } else {
             CircularProgressIndicator(color = Hearth.palette.ember, modifier = Modifier.size(28.dp))
+        }
+    }
+}
+
+@Composable
+fun <T> BookOrbitPageFooter(
+    list: BookOrbitPagedList<T>,
+    noun: String,
+    onLoadMore: () -> Unit,
+    tag: String,
+) {
+    val palette = Hearth.palette
+    when {
+        list.loadingMore -> BookOrbitLoadingBlock()
+        list.failure == BookOrbitPageFailure.NEXT_PAGE -> Column(
+            Modifier.fillMaxWidth().padding(vertical = Hearth.Spacing.M),
+            horizontalAlignment = Alignment.CenterHorizontally,
+        ) {
+            Text("Couldn't load more $noun.", style = HearthText.Caption, color = palette.statusError)
+            TextButton(onClick = onLoadMore, modifier = Modifier.testTag("$tag-retry")) {
+                Text("Try again", style = HearthText.Label, color = palette.ember)
+            }
+        }
+        list.hasMore -> Box(Modifier.fillMaxWidth(), contentAlignment = Alignment.Center) {
+            TextButton(onClick = onLoadMore, enabled = list.canLoadMore, modifier = Modifier.testTag(tag)) {
+                Text("Load more", style = HearthText.Label, color = palette.ember)
+            }
+        }
+    }
+}
+
+@Composable
+fun BookOrbitInlineError(
+    message: String,
+    onRetry: () -> Unit,
+    tag: String,
+) {
+    val palette = Hearth.palette
+    Row(
+        Modifier
+            .fillMaxWidth()
+            .padding(horizontal = Hearth.Spacing.XL, vertical = Hearth.Spacing.XS)
+            .testTag(tag),
+        verticalAlignment = Alignment.CenterVertically,
+    ) {
+        Text(message, style = HearthText.Caption, color = palette.statusError, modifier = Modifier.weight(1f))
+        TextButton(onClick = onRetry, modifier = Modifier.testTag("$tag-retry")) {
+            Text("Try again", style = HearthText.Label, color = palette.ember)
         }
     }
 }

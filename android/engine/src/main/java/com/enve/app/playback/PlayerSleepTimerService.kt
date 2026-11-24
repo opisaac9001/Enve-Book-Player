@@ -31,6 +31,7 @@ class PlayerSleepTimerService @Inject constructor() {
         val totalSeconds = seconds.coerceAtLeast(0L)
         return scope.launch {
             var remaining = totalSeconds
+            var fading = false
             onTick(remaining)
 
             while (remaining > 0 && isActive) {
@@ -39,7 +40,11 @@ class PlayerSleepTimerService @Inject constructor() {
                 onTick(remaining)
 
                 if (isFadeEnabled() && remaining in 1..30) {
+                    fading = true
                     onFade((remaining.toFloat() / 30f).coerceIn(0f, 1f))
+                } else if (fading && remaining > 0) {
+                    fading = false
+                    onFade(1f)
                 }
             }
 

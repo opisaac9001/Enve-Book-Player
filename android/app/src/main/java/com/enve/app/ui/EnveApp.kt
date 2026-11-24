@@ -69,8 +69,10 @@ object Routes {
     const val HIDDEN_BOOKS = "settings/hiddenBooks"
     const val DOWNLOADS = "settings/downloads"
     const val STORAGE = "settings/storage"
+    const val SETTINGS_BACKUP = "settings/backup"
     const val SYNC_CLOUD = "settings/syncCloud"
     const val KOREADER_HUB = "settings/koreaderHub"
+    const val READWISE = "settings/readwise"
     const val OBSIDIAN_SYNC = "settings/obsidianSync"
     const val VOCABULARY_HUB = "settings/vocabulary"
     const val VOCABULARY_STUDY = "settings/vocabulary/study"
@@ -120,7 +122,7 @@ fun EnveApp(
         val rootView = LocalView.current
 
         val reportIssue: () -> Unit = {
-            val mailTo = Uri.parse("mailto:support@enveapp.io")
+            val mailTo = Uri.parse("mailto:enve.audiobook@gmail.com")
             val intent = Intent(Intent.ACTION_SENDTO, mailTo).apply {
                 putExtra(Intent.EXTRA_SUBJECT, "Enve Android Issue Report")
                 putExtra(
@@ -221,6 +223,7 @@ fun EnveApp(
             composable(Routes.ANNOTATIONS) {
                 com.enve.app.ui.screens.AnnotationsScreen(
                     onBack = goBack,
+                    onSendToReadwise = { navController.navigate(Routes.READWISE) },
                 )
             }
 
@@ -367,6 +370,9 @@ fun EnveApp(
                     onBack = goBack,
                     onNavigateToServiceLogin = { source, connectionId ->
                         navController.navigate(Routes.serviceLogin(source, connectionId))
+                    },
+                    onCalibreConnect = { url ->
+                        navController.navigate(Routes.serviceLogin(source = BookSource.OPDS, prefillUrl = url))
                     },
                     onSourceChange = { authViewModel.setSelectedSource(it) },
                     onServerUrlChange = { authViewModel.updateServerUrl(it) },
@@ -598,6 +604,8 @@ fun EnveApp(
                     onSaveKoreaderCredentials = { syncCenterViewModel.saveKoreaderCredentials() },
                     onTestKoreaderAuth = { syncCenterViewModel.testKoreaderAuth() },
                     onClearKoreaderCredentials = { syncCenterViewModel.clearKoreaderCredentials() },
+                    onRetryPending = { syncCenterViewModel.retryPending(it) },
+                    onDiscardPending = { syncCenterViewModel.discardPending(it) },
                 )
             }
 
@@ -605,6 +613,15 @@ fun EnveApp(
                 KOReaderHubScreen(onBack = goBack)
             }
 
+            composable(Routes.SETTINGS_BACKUP) {
+                com.enve.hearth.settings.SettingsBackupScreen(onBack = goBack)
+            }
+            composable(Routes.READWISE) {
+                com.enve.hearth.readwise.HearthReadwiseScreen(
+                    scope = com.enve.engine.readwise.ReadwiseExportScope.AllBooks,
+                    onBack = goBack,
+                )
+            }
             composable(Routes.OBSIDIAN_SYNC) {
                 ObsidianSyncScreen(onBack = goBack)
             }

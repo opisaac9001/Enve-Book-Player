@@ -35,6 +35,7 @@ import com.enve.core.data.model.Library
 import com.enve.core.data.model.ProviderConnection
 import com.enve.core.data.model.ReadStatus
 import com.enve.core.data.model.ReaderAnnotation
+import com.enve.core.data.provider.ProviderMutationException
 import com.enve.core.data.provider.ProviderPlaybackSession
 import com.enve.core.data.provider.ProviderEbookResource
 import com.enve.core.data.sync.SyncSnapshot
@@ -474,13 +475,17 @@ class BookOrbitRepository @Inject constructor(
             else -> "unread"
         }
         val response = api.updateStatus(id, BookOrbitStatusRequest(mapped))
-        if (!response.isSuccessful) error(bookOrbitHttpMessage("BookOrbit read status update failed", response))
+        if (!response.isSuccessful) {
+            throw ProviderMutationException(response.code(), bookOrbitHttpMessage("BookOrbit read status update failed", response))
+        }
     }
 
     suspend fun updatePersonalRating(bookId: String, rating: Int): Result<Unit> = runSuspendCatching {
         val id = bookId.toIntOrNull() ?: error("Invalid BookOrbit book id")
         val response = api.updateRating(id, BookOrbitRatingRequest(rating.coerceIn(1, 5)))
-        if (!response.isSuccessful) error(bookOrbitHttpMessage("BookOrbit rating update failed", response))
+        if (!response.isSuccessful) {
+            throw ProviderMutationException(response.code(), bookOrbitHttpMessage("BookOrbit rating update failed", response))
+        }
     }
 
     suspend fun pushAnnotations(
@@ -681,6 +686,8 @@ class BookOrbitRepository @Inject constructor(
         if (!response.isSuccessful) error(bookOrbitHttpMessage("BookOrbit books failed", response))
         return response.body() ?: BookOrbitBooksPageDto()
     }
+
+    internal fun book(card: BookOrbitBookCardDto): Book = card.toBook(libraryId = null)
 
     private fun BookOrbitBookCardDto.toBook(libraryId: String?): Book {
         val audioFiles = files.filter { it.isContent && it.isAudio }

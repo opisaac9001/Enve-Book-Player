@@ -6,6 +6,7 @@ import androidx.test.core.app.ApplicationProvider
 import androidx.test.ext.junit.runners.AndroidJUnit4
 import androidx.test.platform.app.InstrumentationRegistry
 import com.enve.app.MainActivity
+import com.enve.app.data.offline.offlineDownloadKey
 import com.enve.app.profiles.ProfileSwitchCoordinator
 import com.enve.core.auth.CredentialVault
 import com.enve.core.data.local.FamilyProfileRole
@@ -75,21 +76,21 @@ class SiloOfflineRecoveryTest {
                 state.put("book", audio.uniqueKey)
                 component.library().download(audio)
                 if (config.optBoolean("background_download")) {
-                    waitUntil { (component.downloads().progressByBookId.value[audio.id]?.downloadedBytes ?: 0) > 262_144 }
-                    assertFalse(component.downloads().isDownloaded(audio.id))
+                    waitUntil { (component.downloads().progressByDownloadKey.value[audio.offlineDownloadKey]?.downloadedBytes ?: 0) > 262_144 }
+                    assertFalse(component.downloads().isDownloaded(audio.offlineDownloadKey))
                     component.downloads().pauseAllAndAwait()
-                    assertFalse(component.downloads().isDownloaded(audio.id))
+                    assertFalse(component.downloads().isDownloaded(audio.offlineDownloadKey))
                     InstrumentationRegistry.getInstrumentation().uiAutomation.executeShellCommand("input keyevent KEYCODE_HOME").close()
                     val refresh = component.vault().get(CredentialVault.refreshTokenKey(connectionId))
                     component.vault().put(CredentialVault.accessTokenKey(connectionId), "expired-download-verification-token")
                     component.downloads().resumeDownloads()
-                    withTimeout(180_000) { while (!component.downloads().isDownloaded(audio.id)) delay(200) }
+                    withTimeout(180_000) { while (!component.downloads().isDownloaded(audio.offlineDownloadKey)) delay(200) }
                     assertNotEquals(refresh, component.vault().get(CredentialVault.refreshTokenKey(connectionId)))
                     assertNotEquals("expired-download-verification-token", component.vault().get(CredentialVault.accessTokenKey(connectionId)))
                 } else {
-                    waitUntil { component.downloads().isDownloaded(audio.id) }
+                    waitUntil { component.downloads().isDownloaded(audio.offlineDownloadKey) }
                 }
-                val localTracks = component.downloads().localTracks(audio.id).orEmpty()
+                val localTracks = component.downloads().localTracks(audio.offlineDownloadKey).orEmpty()
                 assertTrue(localTracks.isNotEmpty())
                 if (config.has("audio_sha256")) {
                     val localFile = File(java.net.URI(localTracks.single().uri))
@@ -111,7 +112,7 @@ class SiloOfflineRecoveryTest {
                     return@use
                 }
                 val audio = checkNotNull(component.bookCacheDao().getByCacheKey(state.getString("book"))).toBook()
-                assertTrue(component.downloads().isDownloaded(audio.id))
+                assertTrue(component.downloads().isDownloaded(audio.offlineDownloadKey))
                 assertTrue(component.serverSync().isEnabled)
                 val pending = component.database().pendingProgressPushDao()
                 if (phase == "offline") {

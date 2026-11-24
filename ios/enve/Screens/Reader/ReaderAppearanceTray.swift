@@ -1,16 +1,14 @@
 import Combine
 import SwiftUI
-import UniformTypeIdentifiers
 
 struct ReaderAppearanceTray: View {
     @ObservedObject var model: ClassicReaderModel
 
     @Environment(\.hearth) private var hearth
     @Environment(\.dismiss) private var dismiss
+    @ScaledMetric(relativeTo: .body) private var fontPreviewSize: CGFloat = 17
     private let fontLibrary = ReaderFontLibrary.shared
-    @State private var installingFontId: String?
-    @State private var showingFontImporter = false
-    @State private var fontError: String?
+    @State private var showingFontBrowser = false
 
     var body: some View {
         ScrollView {
@@ -45,26 +43,8 @@ struct ReaderAppearanceTray: View {
         .background(hearth.bg)
         .hearthPresentationBackground()
         .onAppear { fontLibrary.loadInstalledFonts() }
-        .fileImporter(isPresented: $showingFontImporter, allowedContentTypes: [.font]) { result in
-            do {
-                let url = try result.get()
-                let installed = try fontLibrary.importFontFile(from: url)
-                model.appearance.customFontFamilyName = installed.familyName
-                model.appearance.usesCustomFont = true
-            } catch {
-                fontError = error.localizedDescription
-            }
-        }
-        .alert(
-            "That font wouldn't come in.",
-            isPresented: Binding(
-                get: { fontError != nil },
-                set: { if !$0 { fontError = nil } }
-            )
-        ) {
-            Button("All right", role: .cancel) {}
-        } message: {
-            Text(fontError ?? "")
+        .sheet(isPresented: $showingFontBrowser) {
+            ReaderFontBrowser(model: model)
         }
     }
 
@@ -196,6 +176,8 @@ struct ReaderAppearanceTray: View {
             fontPicker
 
             fontLibrarySection
+        } else {
+            pageTurnControls
         }
     }
 
@@ -245,6 +227,13 @@ struct ReaderAppearanceTray: View {
                 isOn: Binding(
                     get: { model.appearance.justifiedText },
                     set: { model.appearance.justifiedText = $0 }
+                )
+            )
+            readerToggle(
+                "Hyphenation",
+                isOn: Binding(
+                    get: { model.appearance.hyphenation },
+                    set: { model.appearance.hyphenation = $0 }
                 )
             )
             readerToggle(
@@ -362,6 +351,34 @@ struct ReaderAppearanceTray: View {
                     }
                 }
             }
+            if !scrollEnabled {
+                pageTurnControls
+            }
+        }
+    }
+
+    @ViewBuilder
+    private var pageTurnControls: some View {
+        switch model.state {
+        case .readyEPUB, .readyFoliate, .readyPDF:
+            VStack(alignment: .leading, spacing: 12) {
+                Overline("Page turn")
+                HStack(spacing: 8) {
+                    ForEach(ReaderPageTurnAnimation.allCases) { animation in
+                        HearthChip(title: animation.label, isSelected: model.appearance.pageTurnAnimation == animation) {
+                            PlatformHaptics.selection()
+                            model.appearance.pageTurnAnimation = animation
+                        }
+                        .accessibilityIdentifier("reader-page-turn-\(animation.rawValue)")
+                    }
+                }
+                Text("Curl animates edge taps and page controls. Ebook swipes keep their usual motion. Reduce Motion turns curl off.")
+                    .font(.hearthCaption)
+                    .foregroundStyle(hearth.textSecondary)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
+        default:
+            EmptyView()
         }
     }
 
@@ -447,7 +464,8 @@ struct ReaderAppearanceTray: View {
                 ForEach(installedFamilies) { family in
                     fontRow(
                         label: family.displayName,
-                        font: .custom(family.familyName, size: 17),
+                        font: fontLibrary.previewFont(for: family, size: fontPreviewSize)
+                            ?? .hearthUI(15, weight: .medium),
                         isSelected: model.appearance.usesCustomFont
                             && model.appearance.customFontFamilyName == family.familyName
                     ) {
@@ -472,30 +490,29 @@ struct ReaderAppearanceTray: View {
     }
 
     private var fontLibrarySection: some View {
-        VStack(alignment: .leading, spacing: 12) {
-            Overline("Font library")
-            VStack(spacing: 0) {
-                ForEach(ReaderFontLibrary.GoogleFontFamily.allCases, id: \.id) { family in
-                    googleFontRow(family)
+        Button {
+            showingFontBrowser = true
+        } label: {
+            HStack(spacing: 10) {
+                Image(systemName: "textformat")
+                    .font(.hearthUI(14, weight: .medium))
+                    .foregroundStyle(hearth.ember)
+                VStack(alignment: .leading, spacing: 3) {
+                    Text("Browse fonts")
+                        .font(.hearthUI(15, weight: .medium))
+                        .foregroundStyle(hearth.text)
+                    Text("Download from Google Fonts or bring in your own.")
+                        .font(.hearthCaption)
+                        .foregroundStyle(hearth.textSecondary)
                 }
-                Button {
-                    showingFontImporter = true
-                } label: {
-                    HStack(spacing: 10) {
-                        Image(systemName: "square.and.arrow.down")
-                            .font(.hearthUI(14, weight: .medium))
-                            .foregroundStyle(hearth.ember)
-                        Text("Bring in a .ttf or .otf")
-                            .font(.hearthUI(15, weight: .medium))
-                            .foregroundStyle(hearth.text)
-                        Spacer()
-                    }
-                    .padding(.horizontal, 16)
-                    .padding(.vertical, 13)
-                    .contentShape(Rectangle())
-                }
-                .buttonStyle(PressableStyle())
+                Spacer()
+                Image(systemName: "chevron.right")
+                    .font(.hearthUI(12, weight: .semibold))
+                    .foregroundStyle(hearth.textTertiary)
             }
+            .padding(.horizontal, 16)
+            .padding(.vertical, 13)
+            .contentShape(Rectangle())
             .background {
                 RoundedRectangle(cornerRadius: Hearth.radiusCover, style: .continuous)
                     .fill(hearth.bgElevated)
@@ -505,50 +522,8 @@ struct ReaderAppearanceTray: View {
                     }
             }
         }
-    }
-
-    private func googleFontRow(_ family: ReaderFontLibrary.GoogleFontFamily) -> some View {
-        let installed = fontLibrary.fontFamily(named: family.familyName) != nil
-        return Button {
-            guard !installed, installingFontId == nil else { return }
-            installingFontId = family.id
-            Task {
-                defer { installingFontId = nil }
-                do {
-                    let font = try await fontLibrary.installGoogleFont(family)
-                    model.appearance.customFontFamilyName = font.familyName
-                    model.appearance.usesCustomFont = true
-                    PlatformHaptics.impact(.light)
-                } catch {
-                    fontError = error.localizedDescription
-                }
-            }
-        } label: {
-            HStack {
-                Text(family.displayName)
-                    .font(installed ? .custom(family.familyName, size: 16) : .hearthUI(15, weight: .medium))
-                    .foregroundStyle(hearth.text)
-                Spacer()
-                if installed {
-                    Text("On hand")
-                        .font(.hearthCaption)
-                        .foregroundStyle(hearth.textSecondary)
-                } else if installingFontId == family.id {
-                    ProgressView()
-                        .controlSize(.small)
-                        .tint(hearth.ember)
-                } else {
-                    Text("Fetch")
-                        .font(.hearthUI(13, weight: .semibold))
-                        .foregroundStyle(hearth.ember)
-                }
-            }
-            .padding(.horizontal, 16)
-            .padding(.vertical, 13)
-            .contentShape(Rectangle())
-        }
         .buttonStyle(PressableStyle())
-        .disabled(installed)
+        .accessibilityIdentifier("reader-font-browser")
     }
 
     private func fontRow(label: String, font: Font, isSelected: Bool, action: @escaping () -> Void) -> some View {

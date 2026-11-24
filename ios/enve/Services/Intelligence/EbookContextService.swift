@@ -110,7 +110,7 @@ final class EbookContextService {
             ?? book
 
         if currentBook.epub3Features?.hasMediaOverlay == true,
-            let cached = LocalEbookImporter.shared.cachedReadaloudEpub(forBookId: currentBook.id)
+            let cached = LocalEbookImporter.shared.cachedReadaloudEpub(forBookId: currentBook.ebookStorageID)
         {
             return cached
         }
@@ -121,11 +121,7 @@ final class EbookContextService {
             return narrated
         }
 
-        if let local = LocalEbookImporter.shared.resolveExistingLocalEbookURL(
-            bookIdentifier: currentBook.id,
-            ebookFileURL: currentBook.ebookFileURL,
-            filePath: currentBook.filePath
-        ) {
+        if let local = LocalEbookImporter.shared.resolveExistingLocalEbookURL(for: currentBook) {
             return local
         }
 

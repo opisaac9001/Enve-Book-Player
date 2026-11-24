@@ -11,12 +11,10 @@ final class BookMatchingService {
     private(set) var lastMatchDate: Date?
     private(set) var matchedBooksCount = 0
 
-    @ObservationIgnored private let cloudKit = CloudKitProgressSync.shared
-    @ObservationIgnored private let storageService = StorageService()
 
     private init() {}
 
-    func findCloudProgress(for book: Book) async -> PlaybackStateRecord? {
+    func findCloudProgress(for book: Book, cloudKit: CloudKitProgressSync) async -> PlaybackStateRecord? {
         guard book.mediaType == .audiobook else { return nil }
         let identity = CanonicalBookIdentity(from: book)
         let contentHash = CloudBookContentIdentity.hash(for: book)

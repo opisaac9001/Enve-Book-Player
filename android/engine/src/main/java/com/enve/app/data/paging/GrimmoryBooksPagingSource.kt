@@ -19,11 +19,6 @@ class GrimmoryBooksPagingSource(
         val dir: String = "desc",
         val status: ReadStatus? = null,
         val search: String? = null,
-        val fileType: String? = null,
-        val authors: String? = null,
-        val language: String? = null,
-        val minRating: Int? = null,
-        val maxRating: Int? = null,
     )
 
     override suspend fun load(params: LoadParams<Int>): LoadResult<Int, BookSummary> {
@@ -38,11 +33,6 @@ class GrimmoryBooksPagingSource(
             dir = this.params.dir,
             status = this.params.status,
             search = this.params.search,
-            fileType = this.params.fileType,
-            authors = this.params.authors,
-            language = this.params.language,
-            minRating = this.params.minRating,
-            maxRating = this.params.maxRating,
         ).fold(
             onSuccess = { result ->
                 LoadResult.Page(

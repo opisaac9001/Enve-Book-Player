@@ -1,3 +1,4 @@
+import Combine
 import Foundation
 #if canImport(WebKit)
 import WebKit
@@ -46,6 +47,7 @@ final class ProfileSession {
     let rejectedContent: RejectedContentStore
     let authenticationFailures: AuthenticationFailureStore
     let pendingSync: PendingSyncQueueStore
+    let pendingBookEdits: PendingBookEditStore
     private let providerProgressQueue = PerBookSerialQueue()
     let readerArtifacts: ReaderArtifactsStore
     let bookProgress: BookProgressStore
@@ -93,6 +95,13 @@ final class ProfileSession {
     private(set) var isRetired = false
     private(set) var allowsSystemAccess = false
     private var hasSystemAccessAuthority = false
+
+    lazy var ebookSystem = EbookSystemService(books: bookStore, lastOpened: lastOpened) { [weak self] in
+        guard let self else { return false }
+        return EbookSystemService.permittedSession === self
+    }
+
+    lazy var readingGoal = ReadingGoalStore(defaults: defaults)
 
     private var didCreateNetworkSession = false
     lazy var networkSession: URLSession = {
@@ -208,7 +217,7 @@ final class ProfileSession {
     lazy var journalReading = JournalReadingStatsModel(profileSession: self)
     lazy var journalHub = JournalHubModel(profileSession: self, journal: engine.journal, providerConnections: providerConnections)
     lazy var journalLibraryStats = JournalLibraryStatsModel(library: bookStore)
-    lazy var journalInsights = JournalInsightsModel(library: bookStore)
+    lazy var journalInsights = JournalInsightsModel(library: bookStore, history: historyStore, progressCache: bookProgress)
     lazy var achievements = EnveAchievementsModel(journal: engine.journal, books: bookStore, history: historyStore)
     lazy var libraryModel = LibraryModel(profileSession: self)
     #endif
@@ -222,6 +231,11 @@ final class ProfileSession {
     lazy var ebookChapters = EbookChapterSyncService(importer: ebooks)
     lazy var ebookLinks = EbookLinkStore(library: appState.libraryCache, repository: bookStore, books: bookStore)
     lazy var annotationSync = AnnotationSyncService(defaults: defaults, providerResolver: providerConnections, readerArtifacts: readerArtifacts)
+    private var didCreateReadwise = false
+    lazy var readwise: ReadwiseExportService = {
+        didCreateReadwise = true
+        return ReadwiseExportService(keychain: keychain, defaults: defaults)
+    }()
     private var didCreateProgress = false
     lazy var progress: UserProgressStore = {
         didCreateProgress = true
@@ -255,6 +269,28 @@ final class ProfileSession {
         defaults: defaults, profileSession: self
     )
     }()
+    private var didCreateBookEdits = false
+    lazy var bookEdits: PendingBookEditQueue = {
+        didCreateBookEdits = true
+        let queue = PendingBookEditQueue(
+            store: pendingBookEdits,
+            transport: ProviderPendingBookEditTransport(
+                providerResolver: providerConnections,
+                bookLookup: { [bookStore] in await bookStore.book(uniqueId: $0) },
+                serialQueue: providerProgressQueue
+            ),
+            connection: { [providerConnections] id in providerConnections.connections.first { $0.id == id } },
+            isEnabled: { [unowned self] in !isRetired && serverSyncEnabled }
+        )
+        // Providers without a mapping overlay can have a refresh restore the old rating while the edit waits.
+        queue.onAcknowledged = { [appState] edit in
+            guard case .rating(let rating) = edit.value,
+                appState.mutateBook(uniqueId: edit.key.uniqueId, { $0.personalRating = Double(rating) }) != nil
+            else { return }
+            appState.allBooksChanged.send(())
+        }
+        return queue
+    }()
     private var didCreateSync = false
     lazy var sync: SyncCoordinator = {
         didCreateSync = true
@@ -263,6 +299,7 @@ final class ProfileSession {
         pendingSyncFlusher: PendingSyncQueueFlusher(
             store: pendingSync,
             transport: ProviderPendingSyncTransport(providerResolver: providerConnections,
+                storytellerPositions: { [unowned self] in playback.storytellerPositions },
                 bookLookup: { [bookStore] in await bookStore.book(stableId: $0) },
                 pendingSync: pendingSync, serialQueue: providerProgressQueue,
                 isDownloaded: { [localStorage] in localStorage.isAudiobookDownloaded($0) },
@@ -313,6 +350,7 @@ final class ProfileSession {
         self.authenticationFailures = authenticationFailures
         let pendingSync = PendingSyncQueueStore(defaults: defaults)
         self.pendingSync = pendingSync
+        pendingBookEdits = PendingBookEditStore(defaults: defaults)
         let registry = profile.id == FamilyProfile.ownerID && suppliedStorage == nil ? PluginRegistry.shared : PluginRegistry()
         self.registry = registry
         providerConnections = ProviderConnectionStore(
@@ -407,6 +445,8 @@ final class ProfileSession {
         appState.start()
         sessionManager.start()
         sync.startAppIntegration()
+        bookEdits.start()
+        Task { await bookEdits.flush() }
     }
 
     func retire() async {
@@ -424,6 +464,10 @@ final class ProfileSession {
     }
 
     private func performRetirement() async {
+        #if os(iOS) && canImport(GoogleCast)
+        if didCreatePlayback { await playback.cast.retire() }
+        #endif
+        if didCreateReadwise { readwise.retire() }
         #if os(iOS)
         if didCreateWidgetBridge { await widgetBridge.retire() }
         if didCreateWatchBridge { await watchBridge.retire() }
@@ -433,6 +477,7 @@ final class ProfileSession {
         await passageAlignmentStorage?.retire()
         #endif
         await autoSaver.retire()
+        if didCreateBookEdits { await bookEdits.retire() }
         if didCreateCloudProgress { await cloudProgress.retire() }
         if didCreateKoreaderSink { koreaderSink.retire() }
         sessionManager.retire()
@@ -472,6 +517,7 @@ final class ProfileSession {
         #if os(iOS)
         guard isOwner, !isRetired else { revokeSystemAccess(); return }
         allowsSystemAccess = true
+        EbookSpotlightIndex.shared.refresh()
         widgetBridge.start()
         watchBridge.start()
         NotificationCenter.default.post(name: .profileSystemAccessChanged, object: self)
@@ -480,9 +526,11 @@ final class ProfileSession {
 
     func revokeSystemAccess() {
         allowsSystemAccess = false
+        ebookSystem.revoke()
         guard allowsSystemIntegrations else { return }
         #if os(iOS)
         if didCreateWidgetBridge { widgetBridge.revoke() } else { BookWidgetBridge.clearSharedSnapshot() }
+        EbookSpotlightIndex.shared.revoke()
         if didCreateWatchBridge { watchBridge.revoke() } else { WatchSessionBridge.clearSharedSnapshot() }
         NotificationCenter.default.post(name: .profileSystemAccessChanged, object: nil)
         #endif

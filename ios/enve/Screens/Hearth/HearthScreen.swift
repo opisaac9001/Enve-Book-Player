@@ -607,9 +607,18 @@ struct HearthScreen: View {
         guard sectionOrder.contains(.rediscover) else { return [] }
         let library = profileSession.preferences
         let preferences = library.loadPreferences()
-        let indexed = await appState.bookStore.allBooks()
+        let store = appState.bookStore
+        var candidates: [RediscoverPolicy.Candidate] = []
+        var cursor: String?
+        while !Task.isCancelled {
+            let page = await store.rediscoverCandidates(after: cursor, limit: 500)
+            guard let last = page.last else { break }
+            candidates.append(contentsOf: page.filter {
+                library.readingEnabled || $0.mediaType != .ebook || $0.hasMediaOverlay
+            })
+            cursor = last.uniqueId
+        }
         guard !Task.isCancelled else { return [] }
-        let books = indexed.filter(library.includesLibraryBook)
         let exclusions = RediscoverPolicy.Exclusions(
             stableIds: shown
                 .union(profileSession.dismissedShelves.stableIds)
@@ -618,9 +627,14 @@ struct HearthScreen: View {
             libraryKeys: preferences.excludedLibraryIds
         )
         let now = Date()
-        return await Task.detached(priority: .utility) {
-            RediscoverPolicy.picks(from: books, now: now, calendar: .current, exclusions: exclusions)
+        let selections = await Task.detached(priority: .utility) { [candidates] in
+            RediscoverPolicy.selections(from: candidates, now: now, calendar: .current, exclusions: exclusions)
         }.value
+        guard !Task.isCancelled else { return [] }
+        let books = await store.booksByStableIds(Set(selections.map(\.id)))
+        return selections.compactMap { selection in
+            books[selection.id].map { RediscoverPick(book: $0, reason: selection.reason) }
+        }
     }
 }
 

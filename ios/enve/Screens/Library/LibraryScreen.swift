@@ -26,6 +26,7 @@ struct LibraryScreen: View {
     @State private var destination: LibraryDestination?
     @State private var visibleScopeRefreshInProgress = false
     @State private var showPositionScanner = false
+    @State private var detailSplit = BookDetailSplitState()
     #if DEBUG
     @State private var didPresentDebugCollectionSelection = false
     @State private var didPresentDebugLibraryControls = false
@@ -34,30 +35,48 @@ struct LibraryScreen: View {
 
 
     var body: some View {
-        GeometryReader { geo in
-            let contentWidth = HearthAdaptive.contentWidth(for: geo.size.width, maximum: HearthAdaptive.wideReadableWidth)
-            ScrollView {
-                VStack(alignment: .leading, spacing: 12) {
-                    header(width: contentWidth)
-                    scopeRow
-                    if let failure = refreshFailure {
-                        refreshFailureNotice(failure)
+        BookDetailSplit(state: detailSplit) {
+            GeometryReader { geo in
+                let contentWidth = HearthAdaptive.contentWidth(for: geo.size.width, maximum: HearthAdaptive.wideReadableWidth)
+                ScrollView {
+                    VStack(alignment: .leading, spacing: 12) {
+                        header(width: contentWidth)
+                        scopeRow
+                        if let failure = refreshFailure {
+                            refreshFailureNotice(failure)
+                        }
+                        controlsRow
+                        if !model.isSearchActive {
+                            facetRow
+                        }
+                        content(width: contentWidth)
                     }
-                    controlsRow
-                    if !model.isSearchActive {
-                        facetRow
-                    }
-                    content(width: contentWidth)
-                }
-                .hearthReadableFrame(width: geo.size.width, maximum: HearthAdaptive.wideReadableWidth)
-                .padding(.top, 8)
+                    .hearthReadableFrame(width: geo.size.width, maximum: HearthAdaptive.wideReadableWidth)
+                    .padding(.top, 8)
 
-                .padding(.bottom, mantelInset + (model.isSelecting ? 76 : 80))
+                    .padding(.bottom, mantelInset + (model.isSelecting ? 76 : 80))
+                }
+                .scrollIndicators(.hidden)
+                .scrollDismissesKeyboard(.interactively)
+                .refreshable {
+                    await refreshVisibleLibraryScope()
+                }
             }
-            .scrollIndicators(.hidden)
-            .scrollDismissesKeyboard(.interactively)
-            .refreshable {
-                await refreshVisibleLibraryScope()
+            .overlay(alignment: .bottom) {
+                if model.isSelecting {
+                    LibrarySelectionBar(model: model) { books in
+                        guard !books.isEmpty else { return }
+                        collectionSelection = LibraryCollectionSelection(books: books)
+                    }
+                    .padding(.bottom, mantelInset + 10)
+                } else {
+                    HearthFloatingSearch(
+                        text: $searchText,
+                        expanded: $searchExpanded,
+                        focused: $searchFocused,
+                        restInset: mantelInset - 4
+                    )
+                }
             }
         }
         .navigationDestination(for: BrowseSeriesAggregate.self) { aggregate in
@@ -66,22 +85,6 @@ struct LibraryScreen: View {
         .background(HearthBackground())
         .accessibilityIdentifier("library-screen")
         .toolbar(.hidden, for: .navigationBar)
-        .overlay(alignment: .bottom) {
-            if model.isSelecting {
-                LibrarySelectionBar(model: model) { books in
-                    guard !books.isEmpty else { return }
-                    collectionSelection = LibraryCollectionSelection(books: books)
-                }
-                .padding(.bottom, mantelInset + 10)
-            } else {
-                HearthFloatingSearch(
-                    text: $searchText,
-                    expanded: $searchExpanded,
-                    focused: $searchFocused,
-                    restInset: mantelInset - 4
-                )
-            }
-        }
         .navigationDestination(isPresented: $showAddSource) {
             SourcesQuickConnectScreen()
         }
@@ -100,6 +103,10 @@ struct LibraryScreen: View {
                 DiscoverScreen()
             case .settings:
                 SettingsScreen(profileSession: profileSession ?? .owner)
+            case .bookOrbitScopes(let connectionId):
+                BookOrbitSmartScopesScreen(connectionId: connectionId)
+            case .bookOrbitDrop(let connectionId):
+                BookOrbitBookDropScreen(connectionId: connectionId)
             }
         }
         .sheet(isPresented: $showFilesImport) {
@@ -304,7 +311,7 @@ struct LibraryScreen: View {
         defer { visibleScopeRefreshInProgress = false }
         await engine.sources.refreshVisibleLibraryScope(model.sourceFilter)
         await engine.sources.refreshLibrarySourceNamesIfNeeded(force: true)
-        await model.reload()
+        await model.refreshFromServer()
     }
 
     private func presentDebugCollectionSelectionIfRequested() {
@@ -390,6 +397,18 @@ struct LibraryScreen: View {
                     Label("Discover", systemImage: "sparkles")
                 }
             }
+            if !bookOrbitConnections.isEmpty {
+                Section("BookOrbit smart scopes") {
+                    ForEach(bookOrbitConnections, id: \.id) { connection in
+                        Button {
+                            destination = .bookOrbitScopes(connection.id)
+                        } label: {
+                            Label(connectionLabel(connection), systemImage: "line.3.horizontal.decrease.circle")
+                        }
+                        .accessibilityIdentifier("library-bookorbit-scopes-\(connection.id.uuidString)")
+                    }
+                }
+            }
         } label: {
             LibraryMenuChip(
                 title: narrowed?.title ?? "Shelves",
@@ -424,6 +443,18 @@ struct LibraryScreen: View {
             } label: {
                 Label("Add a source", systemImage: "externaldrive.badge.plus")
             }
+            if !bookOrbitConnections.isEmpty {
+                Section("BookOrbit Book Drop") {
+                    ForEach(bookOrbitConnections, id: \.id) { connection in
+                        Button {
+                            destination = .bookOrbitDrop(connection.id)
+                        } label: {
+                            Label("Send to \(connectionLabel(connection))", systemImage: "tray.and.arrow.down")
+                        }
+                        .accessibilityIdentifier("library-bookorbit-drop-\(connection.id.uuidString)")
+                    }
+                }
+            }
         } label: {
             headerMenuGlyph("plus")
         }
@@ -457,12 +488,17 @@ struct LibraryScreen: View {
     }
 
     private var controlsRow: some View {
-        let stacked = dynamicTypeSize.isAccessibilitySize
+        let stacked = dynamicTypeSize.isAccessibilitySize || model.resultTotalCount > model.books.count
         let layout = stacked
             ? AnyLayout(VStackLayout(alignment: .leading, spacing: 8))
             : AnyLayout(HStackLayout(alignment: .top, spacing: 8))
+        let chipLayout = dynamicTypeSize.isAccessibilitySize
+            ? AnyLayout(VStackLayout(alignment: .leading, spacing: 8))
+            : AnyLayout(HStackLayout(spacing: 8))
         return layout {
-            controlChips
+            chipLayout {
+                controlChips
+            }
             if !stacked {
                 Spacer(minLength: 8)
             }
@@ -631,6 +667,10 @@ struct LibraryScreen: View {
         sourceSnapshot.connections
     }
 
+    private var bookOrbitConnections: [LibrarySourceConnectionSummary] {
+        activeConnections.filter { $0.type == .bookOrbit }
+    }
+
     private var activeProviderLibraries: [LibrarySourceLibrarySummary] {
         sourceSnapshot.libraries
     }
@@ -741,9 +781,19 @@ struct LibraryScreen: View {
         if let message = model.searchAttribution {
             quietNote(message)
         }
+        if let notice = model.localScopeNotice {
+            Text(notice)
+                .font(.hearthCaption)
+                .foregroundStyle(hearth.textTertiary)
+                .frame(maxWidth: .infinity, alignment: .leading)
+                .padding(.horizontal, 24)
+                .accessibilityIdentifier("library-local-scope-notice")
+        }
         if !model.hasLoaded {
             loadingStacks
-        } else if model.totalLibraryCount == 0 {
+        } else if let remote = model.remoteCatalog {
+            remoteCatalogContent(remote, width: width)
+        } else if model.totalLibraryCount == 0 && !model.isSearchActive {
             if model.searchAttribution == nil && refreshFailure == nil {
                 emptyLibrary
             }
@@ -885,7 +935,8 @@ struct LibraryScreen: View {
                 isDownloaded: { model.isDownloaded($0) },
                 isSelecting: model.isSelecting,
                 isSelected: { model.isSelected($0) },
-                onToggleSelect: { model.toggleSelected($0) }
+                onToggleSelect: { model.toggleSelected($0) },
+                onOpen: detailSplit.openHandler
             )
         } else {
             LazyVStack(spacing: 14) {
@@ -897,13 +948,123 @@ struct LibraryScreen: View {
                         isSelecting: model.isSelecting,
                         isSelected: model.isSelected(book),
                         onToggleSelect: { model.toggleSelected($0) },
-                        onHide: { model.hide($0) }
+                        onHide: { model.hide($0) },
+                        onOpen: detailSplit.openHandler
                     )
                     .onAppear { model.loadNextPageIfNeeded(currentBookId: book.uniqueId) }
                 }
             }
             .padding(.horizontal, 24)
         }
+    }
+
+    @ViewBuilder
+    private func remoteCatalogContent(_ state: LibraryRemoteCatalogState, width: CGFloat) -> some View {
+        switch state {
+        case .loading:
+            loadingStacks
+        case .loaded(let hasMore):
+            remoteIssuesNotice
+            if model.displayBooks.isEmpty {
+                if !hasMore {
+                    quietNote(model.isSearchActive ? "Nothing answers to that name." : "Nothing here yet.")
+                }
+            } else {
+                bookResults(width: width)
+            }
+            remotePageFooter(hasMore: hasMore)
+        case .onDeviceOnly:
+            remoteCatalogNotice(
+                title: "Server unavailable",
+                systemImage: "wifi.slash",
+                message: "Showing books downloaded to this device."
+            )
+            if model.displayBooks.isEmpty {
+                quietNote(model.isSearchActive ? "No downloaded book answers to that name." : "No downloads from this source.")
+            } else {
+                bookResults(width: width)
+            }
+        case .failed(let message):
+            remoteCatalogNotice(
+                title: "Couldn't load this source",
+                systemImage: "exclamationmark.triangle",
+                message: message
+            )
+        }
+    }
+
+    @ViewBuilder
+    private func remotePageFooter(hasMore: Bool) -> some View {
+        if model.isLoadingRemotePage {
+            ProgressView()
+                .tint(hearth.ember)
+                .frame(maxWidth: .infinity)
+                .padding(.vertical, 16)
+                .accessibilityLabel("Loading more books")
+        } else if let error = model.remotePageError {
+            VStack(spacing: 10) {
+                Text(error)
+                    .font(.hearthUI(14))
+                    .foregroundStyle(hearth.textSecondary)
+                    .multilineTextAlignment(.center)
+                Button("Try again") { model.loadMoreRemote() }
+                    .buttonStyle(.bordered)
+                    .tint(hearth.ember)
+            }
+            .frame(maxWidth: .infinity)
+            .padding(.vertical, 16)
+            .padding(.horizontal, 24)
+            .accessibilityIdentifier("library-remote-page-error")
+        } else if hasMore {
+            Button("Load more") { model.loadMoreRemote() }
+                .buttonStyle(.bordered)
+                .tint(hearth.ember)
+                .frame(maxWidth: .infinity)
+                .padding(.vertical, 16)
+                .accessibilityIdentifier("library-remote-load-more")
+        }
+    }
+
+    @ViewBuilder
+    private var remoteIssuesNotice: some View {
+        if !model.remoteIssues.isEmpty {
+            remoteCatalogNotice(
+                title: "Some sources are unavailable",
+                systemImage: "exclamationmark.triangle",
+                message: model.remoteIssues.map { issue in
+                    issue.message.map { "\(issue.sourceName): \($0)" }
+                        ?? "\(issue.sourceName) couldn't be reached. Showing its downloads."
+                }
+                .joined(separator: "\n")
+            )
+        }
+    }
+
+    private func remoteCatalogNotice(title: String, systemImage: String, message: String) -> some View {
+        VStack(alignment: .leading, spacing: 10) {
+            Label(title, systemImage: systemImage)
+                .font(.hearthUI(15, weight: .semibold))
+                .foregroundStyle(hearth.text)
+            Text(message)
+                .font(.hearthUI(14))
+                .foregroundStyle(hearth.textSecondary)
+            Button("Retry") {
+                Task { await model.refreshFromServer() }
+            }
+            .buttonStyle(.bordered)
+            .tint(hearth.ember)
+        }
+        .padding(16)
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .background {
+            HearthChromeBackground(
+                shape: .rounded(16), fill: hearth.bgElevated,
+                stroke: hearth.hairline, tint: hearth.bgElevated
+            )
+        }
+        .padding(.horizontal, 24)
+        .accessibilityElement(children: .contain)
+        .accessibilityIdentifier("library-remote-catalog-notice")
     }
 
     private func browseGridSpec(width: CGFloat) -> (columns: [GridItem], cellWidth: CGFloat, padding: CGFloat) {
@@ -1122,6 +1283,8 @@ private enum LibraryDestination: Hashable {
     case collections
     case discover
     case settings
+    case bookOrbitScopes(UUID)
+    case bookOrbitDrop(UUID)
 }
 
 private struct LibraryShelfPreset {
@@ -1238,12 +1401,15 @@ struct HearthFloatingSearch: View {
                 Image(systemName: "xmark.circle.fill")
                     .font(.hearthUI(17))
                     .foregroundStyle(hearth.textTertiary)
-                    .contentShape(Rectangle().inset(by: -12))
+                    .frame(minWidth: 44, minHeight: 44)
+                    .contentShape(Rectangle())
             }
+            .buttonStyle(.plain)
             .accessibilityLabel("Close search")
         }
-        .padding(.horizontal, 16)
-        .padding(.vertical, 13)
+        .padding(.leading, 16)
+        .padding(.trailing, 4)
+        .padding(.vertical, 3)
         .background {
             HearthChromeBackground(
                 shape: .capsule,
@@ -1251,6 +1417,7 @@ struct HearthFloatingSearch: View {
                 stroke: hearth.hairline,
                 tint: hearth.bgElevated
             )
+            .contentShape(Capsule())
         }
         .shadow(color: .black.opacity(hearth.isInk ? 0.55 : 0.18), radius: 14, y: 4)
         .transition(.move(edge: .trailing).combined(with: .opacity))
@@ -1294,6 +1461,8 @@ struct LibraryMenuChip: View {
 
 private struct LibraryControlsSheet: View {
     let model: LibraryModel
+    @State private var filterSearch = ""
+    @State private var filterOptionsRetry = 0
 
     @Environment(\.dismiss) private var dismiss
     @Environment(\.hearth) private var hearth
@@ -1418,7 +1587,15 @@ private struct LibraryControlsSheet: View {
                     }
                 }
 
-                controlSection("Rating") {
+                if model.usesServerFilterOptions {
+                    Text(model.usesServerCatalogFilters
+                        ? "Genres and languages search the server. Rating and series status use cached books and may be incomplete."
+                        : "These selections use cached books and may be incomplete. Use Books with any rating and any series status to search genres and languages on the server.")
+                        .font(.hearthCaption)
+                        .foregroundStyle(hearth.textSecondary)
+                }
+
+                controlSection(model.usesServerFilterOptions ? "Rating · cached books" : "Rating") {
                     LazyVGrid(columns: columns, alignment: .leading, spacing: 8) {
                         ForEach([nil, 3.0, 4.0, 4.5] as [Double?], id: \.self) { rating in
                             LibraryControlPill(
@@ -1432,7 +1609,7 @@ private struct LibraryControlsSheet: View {
                     }
                 }
 
-                controlSection("Series") {
+                controlSection(model.usesServerFilterOptions ? "Series · cached books" : "Series") {
                     LazyVGrid(columns: columns, alignment: .leading, spacing: 8) {
                         ForEach(LibrarySeriesFilter.allCases, id: \.self) { series in
                             LibraryControlPill(
@@ -1446,6 +1623,29 @@ private struct LibraryControlsSheet: View {
                     }
                 }
 
+                controlSection("Find filters") {
+                    TextField("Find a genre or language", text: $filterSearch)
+                        .font(.hearthUI(16))
+                        .foregroundStyle(hearth.text)
+                        .padding(14)
+                        .background(hearth.bgElevated, in: RoundedRectangle(cornerRadius: 12))
+                        .autocorrectionDisabled()
+                        .textInputAutocapitalization(.never)
+                        .accessibilityIdentifier("library-filter-search")
+                    if model.hasMoreAdvancedFilterOptions {
+                        Text("Search to find more genres and languages.")
+                            .font(.hearthCaption)
+                            .foregroundStyle(hearth.textSecondary)
+                    }
+                    if let error = model.advancedFilterOptionsError {
+                        Text(error)
+                            .font(.hearthCaption)
+                            .foregroundStyle(hearth.textSecondary)
+                        Button("Retry filters") { filterOptionsRetry += 1 }
+                            .foregroundStyle(hearth.ember)
+                    }
+                }
+
                 if model.isLoadingAdvancedFilterOptions {
                     HStack(spacing: 10) {
                         ProgressView()
@@ -1455,8 +1655,7 @@ private struct LibraryControlsSheet: View {
                             .foregroundStyle(hearth.textSecondary)
                     }
                 } else {
-                    let genres = Array(Set(model.advancedFilterOptions.genres).union(model.advancedFilters.genres))
-                        .sorted { $0.localizedStandardCompare($1) == .orderedAscending }
+                    let genres = LibraryAdvancedFilterPolicy.uniqueSorted(model.advancedFilterOptions.genres + model.advancedFilters.genres.sorted())
                     if !genres.isEmpty {
                         controlSection("Genres") {
                             LazyVGrid(columns: columns, alignment: .leading, spacing: 8) {
@@ -1473,8 +1672,7 @@ private struct LibraryControlsSheet: View {
                         }
                     }
 
-                    let languages = Array(Set(model.advancedFilterOptions.languages).union(model.advancedFilters.languages))
-                        .sorted { $0.localizedStandardCompare($1) == .orderedAscending }
+                    let languages = LibraryAdvancedFilterPolicy.uniqueSorted(model.advancedFilterOptions.languages + model.advancedFilters.languages.sorted())
                     if !languages.isEmpty {
                         controlSection("Languages") {
                             LazyVGrid(columns: columns, alignment: .leading, spacing: 8) {
@@ -1518,8 +1716,11 @@ private struct LibraryControlsSheet: View {
         }
         .accessibilityIdentifier("library-controls-sheet")
         .background(HearthBackground())
-        .task {
-            await model.loadAdvancedFilterOptions()
+        .task(id: "\(model.advancedFilterOptionsScope)|\(filterSearch)|\(filterOptionsRetry)") {
+            do {
+                try await Task.sleep(for: .milliseconds(250))
+                await model.loadAdvancedFilterOptions(search: filterSearch)
+            } catch {}
         }
     }
 

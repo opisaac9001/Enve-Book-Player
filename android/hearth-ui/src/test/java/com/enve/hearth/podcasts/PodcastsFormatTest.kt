@@ -15,7 +15,7 @@ class PodcastsFormatTest {
     fun decodesNumericAndNamedEntities() {
         assertEquals("It’s here", PodcastsFormat.cleanHTML("It&#8217;s here"))
         assertEquals("Q&A — “live” …", PodcastsFormat.cleanHTML("Q&amp;A &mdash; &ldquo;live&rdquo; &hellip;"))
-        assertEquals("It’s ✓ 😀", PodcastsFormat.cleanHTML("It&#x2019;s &#x2713; &#128512;"))
+        assertEquals("It’s ✓ \uD83D\uDE00", PodcastsFormat.cleanHTML("It&#x2019;s &#x2713; &#128512;"))
         assertEquals("<b> stays text", PodcastsFormat.cleanHTML("&lt;b&gt; stays text"))
     }
 

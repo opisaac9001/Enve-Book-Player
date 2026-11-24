@@ -1,5 +1,6 @@
 package com.enve.app.data.repository.grimmory
 
+import com.enve.app.data.remote.GRIMMORY_MAX_PAGE_SIZE
 import com.enve.app.data.remote.GrimmoryApi
 import com.enve.app.data.remote.dto.BookSummaryDto
 import com.enve.app.data.remote.dto.LegacyBookloreBookDto
@@ -38,9 +39,15 @@ internal data class GrimmoryCatalogBatch(
 @Serializable
 private data class CatalogPage(
     val content: JsonArray,
-    val totalPages: Int = 1,
-    val totalElements: Int? = null,
-    val size: Int? = null,
+    val page: CatalogPageInfo,
+)
+
+@Serializable
+private data class CatalogPageInfo(
+    val number: Int,
+    val size: Int,
+    val totalElements: Int,
+    val totalPages: Int,
 )
 
 class GrimmoryCatalogFetcher(
@@ -55,9 +62,11 @@ class GrimmoryCatalogFetcher(
 
     internal suspend fun fetch(libraryId: String?, page: Int, size: Int, sort: String, dir: String): GrimmoryCatalogBatch = coroutineScope {
         val stage = CatalogImportStage.BOOKS
+        val facets = listOfNotNull(libraryId?.let { grimmoryFacet("library", it) })
+        val browseSort = grimmoryBrowseSort(sort, dir)
         if (page == 0) {
             val response = try {
-                api.getCatalogBookIds(libraryId).catalogResponse()
+                api.getCatalogBookIds(facets, browseSort).catalogResponse()
             } catch (e: Exception) {
                 return@coroutineScope failed(e, stage)
             }
@@ -74,9 +83,9 @@ class GrimmoryCatalogFetcher(
                 return@coroutineScope formats(GrimmoryCatalogBatch(unique, report), libraryId)
             }
         }
-        val effectiveSize = size.coerceIn(1, 500)
+        val effectiveSize = size.coerceIn(1, GRIMMORY_MAX_PAGE_SIZE)
         val first = try {
-            api.getCatalogBooks(libraryId, page, effectiveSize, sort, dir).catalogResponse()
+            api.getCatalogBooks(facets, browseSort, page, effectiveSize).catalogResponse()
         } catch (e: Exception) {
             return@coroutineScope failed(e, stage, page)
         }
@@ -87,42 +96,51 @@ class GrimmoryCatalogFetcher(
         } catch (e: SerializationException) {
             return@coroutineScope failed(e, stage, page)
         }
-        if (envelope.totalPages !in 0..10000 || (envelope.totalPages == 0 && envelope.content.isNotEmpty()) || envelope.size?.let { it <= 0 } == true) {
+        val pages = envelope.page
+        if (pages.number != page || pages.totalPages !in 0..10000 || pages.size !in 1..effectiveSize ||
+            pages.totalElements < 0 || pages.totalPages.toLong() != (pages.totalElements.toLong() + pages.size - 1) / pages.size ||
+            envelope.content.size > pages.size || (pages.totalPages == 0 && envelope.content.isNotEmpty())) {
             return@coroutineScope GrimmoryCatalogBatch(report = problem(CatalogFailureKind.INVALID_PAGINATION, stage, page))
         }
         if (page == 0 && envelope.content.isEmpty()) {
             val fallback = legacy(libraryId)
-            return@coroutineScope if ((envelope.totalElements ?: 0) > 0 && fallback.books.isEmpty()) {
+            return@coroutineScope if (pages.totalElements > 0 && fallback.books.isEmpty()) {
                 fallback.copy(report = fallback.report.merge(problem(CatalogFailureKind.CONFLICTING_CATALOG, stage)))
             } else fallback
         }
-        val initial = decode(envelope.content, BookSummaryDto.serializer(), libraryId) { it.libraryId }
+        val initial = decodeRecords(envelope.content, libraryId)
         val semaphore = Semaphore(8)
-        val rest = ((page + 1) until envelope.totalPages).map { next ->
+        val rest = ((page + 1) until pages.totalPages).map { next ->
             async {
                 semaphore.withPermit {
                     try {
-                        val response = api.getCatalogBooks(libraryId, next, envelope.size ?: effectiveSize, sort, dir).catalogResponse()
+                        val response = api.getCatalogBooks(facets, browseSort, next, pages.size).catalogResponse()
                         if (!response.isSuccessful) return@withPermit failed(response, stage, next)
                         val body = json.decodeFromJsonElement<CatalogPage>(response.body() ?: JsonNull)
-                        if (body.totalPages != envelope.totalPages || body.content.isEmpty()) {
+                        if (body.page.number != next || body.page.size != pages.size ||
+                            body.page.totalElements != pages.totalElements || body.page.totalPages != pages.totalPages ||
+                            body.content.isEmpty() || body.content.size > pages.size) {
                             return@withPermit GrimmoryCatalogBatch(report = problem(CatalogFailureKind.INVALID_PAGINATION, stage, next))
                         }
-                        val decoded = decode(body.content, BookSummaryDto.serializer(), libraryId) { it.libraryId }
-                        GrimmoryCatalogBatch(decoded.first, decoded.second)
+                        decodeRecords(body.content, libraryId)
                     } catch (e: Exception) {
                         failed(e, stage, next)
                     }
                 }
             }
         }.awaitAll()
-        val books = initial.first + rest.flatMap { it.books }
-        var report = rest.fold(initial.second) { accumulated, batch -> accumulated.merge(batch.report) }
+        val books = initial.books + rest.flatMap { it.books }
+        var report = rest.fold(initial.report) { accumulated, batch -> accumulated.merge(batch.report) }
         val unique = books.distinctBy { it.id }
-        if (unique.size != books.size || (page == 0 && envelope.totalElements?.let { it != books.size + report.rejectedCount } == true)) {
+        if (unique.size != books.size || (page == 0 && pages.totalElements != books.size + report.rejectedCount)) {
             report = report.merge(problem(CatalogFailureKind.INVALID_PAGINATION, stage))
         }
-        formats(GrimmoryCatalogBatch(unique, report), libraryId)
+        GrimmoryCatalogBatch(unique, report.copy(acceptedCount = unique.size))
+    }
+
+    private fun decodeRecords(elements: JsonArray, libraryId: String?): GrimmoryCatalogBatch {
+        val decoded = decode(elements, LegacyBookloreBookDto.serializer(), libraryId) { it.libraryId }
+        return GrimmoryCatalogBatch(decoded.first.map { it.toCatalogSummary(libraryId) }, decoded.second)
     }
 
     private suspend fun formats(batch: GrimmoryCatalogBatch, libraryId: String?): GrimmoryCatalogBatch = coroutineScope {

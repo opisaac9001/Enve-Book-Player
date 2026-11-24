@@ -17,8 +17,6 @@ enum ProgressSaveReason: String {
 
 @MainActor
 final class CurrentPlaybackPersister {
-    static let shared = CurrentPlaybackPersister()
-
     private let playbackState: any PlaybackStateProvider
     private let coordinator: SyncCoordinator
     private let cloudSync: CloudKitProgressSync
@@ -27,9 +25,9 @@ final class CurrentPlaybackPersister {
     private var lastCloudSaveTime: Date?
 
     init(
-        playbackState: any PlaybackStateProvider = ActivePlayback.controller,
-        coordinator: SyncCoordinator = .shared,
-        cloudSync: CloudKitProgressSync = .shared
+        playbackState: any PlaybackStateProvider,
+        coordinator: SyncCoordinator,
+        cloudSync: CloudKitProgressSync
     ) {
         self.playbackState = playbackState
         self.coordinator = coordinator

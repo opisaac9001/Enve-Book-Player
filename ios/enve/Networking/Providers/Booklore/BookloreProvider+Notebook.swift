@@ -8,18 +8,24 @@ extension BookloreProvider {
         var entries: [AppNotebookEntry] = []
         var pageIndex = 0
         while true {
+            // Unlike the app endpoint, the notebook query requires explicit entry types.
             let request = try makeRequest(
-                path: "/api/v1/app/notebook/books/\(grimmoryNumericId(book))/entries",
+                path: "/api/v1/notebook",
                 queryItems: [
+                    URLQueryItem(name: "bookId", value: grimmoryNumericId(book)),
+                    URLQueryItem(name: "types", value: AppNotebookEntry.EntryType.highlight.rawValue),
+                    URLQueryItem(name: "types", value: AppNotebookEntry.EntryType.note.rawValue),
+                    URLQueryItem(name: "types", value: AppNotebookEntry.EntryType.bookmark.rawValue),
                     URLQueryItem(name: "page", value: String(pageIndex)),
                     URLQueryItem(name: "size", value: "200"),
                 ]
             )
             let (data, response) = try await performAuthorizedRequest(request)
             guard response.statusCode == 200 else { return entries }
-            let page = try JSONDecoder().decode(NotebookEntriesPage.self, from: data)
+            let page = try JSONDecoder().decode(BooklorePage<AppNotebookEntry>.self, from: data)
+            guard page.rejectedItems.isEmpty else { throw ProviderError.invalidResponse }
             entries.append(contentsOf: page.content)
-            guard page.hasNext == true else { break }
+            guard page.hasNext else { break }
             pageIndex += 1
         }
         return entries

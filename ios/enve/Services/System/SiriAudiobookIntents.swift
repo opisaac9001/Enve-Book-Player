@@ -74,6 +74,20 @@ struct ResumeAudiobookIntent: AudioPlaybackIntent {
 struct EnveAppShortcuts: AppShortcutsProvider {
     static var appShortcuts: [AppShortcut] {
         AppShortcut(
+            intent: OpenEbookIntent(),
+            phrases: ["Read \(\.$target) in \(.applicationName)", "Open \(\.$target) in \(.applicationName)"],
+            shortTitle: "Open Ebook",
+            systemImageName: "book"
+        )
+
+        AppShortcut(
+            intent: ContinueReadingIntent(),
+            phrases: ["Continue reading in \(.applicationName)", "Resume reading in \(.applicationName)"],
+            shortTitle: "Continue Reading",
+            systemImageName: "book.pages"
+        )
+
+        AppShortcut(
             intent: PlayDownloadedAudiobookIntent(),
             phrases: [
                 "Play \(\.$audiobook) with \(.applicationName)",

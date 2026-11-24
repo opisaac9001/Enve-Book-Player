@@ -34,7 +34,7 @@ username=YourUsername&password=YourPassword
 The server responds with a `303 See Other` redirect and sets the `st_token` cookie.
 ```http
 HTTP/1.1 303 See Other
-Set-Cookie: st_token=1d0712d2-938b-47af-ae20-3bd77750525d; Path=/; HttpOnly; SameSite=Lax
+Set-Cookie: st_token=<session-token>; Path=/; HttpOnly; SameSite=Lax
 Location: /
 ```
 

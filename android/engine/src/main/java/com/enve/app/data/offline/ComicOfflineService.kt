@@ -3,6 +3,8 @@ package com.enve.app.data.offline
 import com.enve.core.data.model.Book
 import com.enve.core.data.model.BookSource
 import com.enve.core.data.local.BookCacheDao
+import com.enve.core.data.local.toCachedBook
+import com.enve.core.data.util.runSuspendCatching
 import com.enve.core.reader.MediaOverlayTimeline
 import com.enve.app.data.repository.AggregatorRepository
 import dagger.hilt.android.qualifiers.ApplicationContext
@@ -23,6 +25,8 @@ import okhttp3.OkHttpClient
 import okhttp3.Request
 import java.io.File
 import java.io.FileOutputStream
+import com.enve.core.data.remote.ConnectionScope
+import kotlin.coroutines.EmptyCoroutineContext
 import java.util.concurrent.ConcurrentHashMap
 import java.util.concurrent.atomic.AtomicBoolean
 import java.util.zip.ZipFile
@@ -41,76 +45,97 @@ class ComicOfflineService @Inject constructor(
     private val scope = CoroutineScope(SupervisorJob(parentScope.coroutineContext[Job]) + Dispatchers.IO)
     private val admissionLock = Any()
     private var acceptingDownloads = true
+    private val transfers = DownloadTransferLocks()
+    private val jobs = mutableMapOf<String, Job>()
     private val cancelSignals = ConcurrentHashMap<String, AtomicBoolean>()
 
-    private val _progressByBookId = MutableStateFlow<Map<String, ComicDownloadProgress>>(emptyMap())
-    val progressByBookId: StateFlow<Map<String, ComicDownloadProgress>> = _progressByBookId.asStateFlow()
+    private val _progressByDownloadKey = MutableStateFlow<Map<String, ComicDownloadProgress>>(emptyMap())
+    val progressByDownloadKey: StateFlow<Map<String, ComicDownloadProgress>> = _progressByDownloadKey.asStateFlow()
 
-    private val _downloadedBookIds = MutableStateFlow(storage.listDownloadedBookIds())
-    val downloadedBookIds: StateFlow<Set<String>> = _downloadedBookIds.asStateFlow()
+    private val _downloadedKeys = MutableStateFlow(storage.listDownloadedKeys())
+    val downloadedKeys: StateFlow<Set<String>> = _downloadedKeys.asStateFlow()
 
-    fun isDownloaded(bookId: String): Boolean = storage.isDownloaded(bookId)
+    init {
+        scope.launch { registerRecoveredDownloads() }
+    }
 
-    fun getLocalFile(bookId: String): File? = storage.getDownloadedFile(bookId)
+    fun isDownloaded(key: String): Boolean = storage.isDownloaded(key)
+
+    fun getLocalFile(key: String): File? = storage.getDownloadedFile(key)
 
     fun listDownloadedManifests(): List<Book> = storage.listManifests()
 
     suspend fun detectReadAloud(book: Book): Book = kotlinx.coroutines.withContext(Dispatchers.IO) {
-        val manifest = storage.getManifest(book.id)?.takeIf { it.uniqueKey == book.uniqueKey }
+        val key = book.offlineDownloadKey
+        val manifest = storage.getManifest(key)?.takeIf { it.offlineDownloadKey == key }
             ?: return@withContext book
-        val file = storage.getDownloadedFile(book.id) ?: return@withContext book
+        val file = storage.getDownloadedFile(key) ?: return@withContext book
         val detected = book.withDownloadedReadAloud(file, file.extension)
         if (detected.readAlongAvailable) {
             bookCache.markReadAlongAvailable(book.uniqueKey)
-            storage.saveManifest(manifest.copy(readAlongAvailable = true, hasAudio = true, hasEbook = true))
+            synchronized(admissionLock) {
+                if (!isRecoveredLocalBookId(manifest.id) && storage.isDownloaded(key) && storage.getManifest(key) == manifest) {
+                    storage.saveManifest(manifest.copy(readAlongAvailable = true, hasAudio = true, hasEbook = true))
+                }
+            }
         }
         detected
     }
 
+    private suspend fun registerRecoveredDownloads() {
+        storage.listManifests().filter { isRecoveredLocalBookId(it.id) }.forEach { book ->
+            runSuspendCatching { bookCache.insertIfAbsent(book.toCachedBook()) }
+                .onFailure { android.util.Log.w("ComicOfflineService", "Recovered download ${book.offlineDownloadKey} was not registered", it) }
+        }
+    }
+
+    private fun publish(book: Book, status: ComicDownloadStatus, progress: Float, errorMessage: String? = null) {
+        val key = book.offlineDownloadKey
+        _progressByDownloadKey.update {
+            it + (key to ComicDownloadProgress(key, book.id, book.title, status, progress, errorMessage))
+        }
+    }
+
     fun startDownload(book: Book) {
+        val key = book.offlineDownloadKey
         synchronized(admissionLock) {
             check(acceptingDownloads) { "Downloads are paused for this profile." }
-            if (isDownloaded(book.id)) {
-                storage.clearPendingRequest(book.id)
-                _downloadedBookIds.update { it + book.id }
+            if (isDownloaded(key)) {
+                storage.clearPendingRequest(key)
+                _downloadedKeys.update { it + key }
                 return
             }
-            val existing = _progressByBookId.value[book.id]
+            val existing = _progressByDownloadKey.value[key]
             if (existing?.status == ComicDownloadStatus.DOWNLOADING || existing?.status == ComicDownloadStatus.QUEUED) {
                 return
             }
 
             storage.savePendingRequest(book)
             val cancelSignal = AtomicBoolean(false)
-            cancelSignals[book.id] = cancelSignal
+            cancelSignals[key] = cancelSignal
 
-            _progressByBookId.update {
-                it + (book.id to ComicDownloadProgress(book.id, book.title, ComicDownloadStatus.QUEUED, 0f))
-            }
+            publish(book, ComicDownloadStatus.QUEUED, 0f)
 
-            scope.launch {
+            val context = book.connectionId?.let { ConnectionScope.asContextElement(it) } ?: EmptyCoroutineContext
+            val job = scope.launch(context) {
                 try {
-                    downloadOne(book, cancelSignal)
-                    storage.clearPendingRequest(book.id)
+                    transfers.withKey(key) { downloadOne(book, cancelSignal) }
                 } catch (e: kotlinx.coroutines.CancellationException) {
-                    _progressByBookId.update {
-                        it + (book.id to ComicDownloadProgress(book.id, book.title, ComicDownloadStatus.CANCELLED, 0f))
+                    synchronized(admissionLock) {
+                        if (cancelSignals[key] === cancelSignal) publish(book, ComicDownloadStatus.CANCELLED, 0f)
                     }
                     throw e
                 } catch (e: Exception) {
                     currentCoroutineContext().ensureActive()
-                    val cancelled = cancelSignal.get()
-                    _progressByBookId.update { current ->
-                        current + (book.id to ComicDownloadProgress(
-                            bookId = book.id,
-                            title = book.title,
-                            status = if (cancelled) ComicDownloadStatus.CANCELLED else ComicDownloadStatus.FAILED,
-                            progress = 0f,
-                            errorMessage = if (cancelled) null else e.message,
-                        ))
+                    synchronized(admissionLock) {
+                        if (cancelSignals[key] === cancelSignal) publish(book, ComicDownloadStatus.FAILED, 0f, e.message)
                     }
-                } finally {
-                    cancelSignals.remove(book.id)
+                }
+            }
+            jobs[key] = job
+            job.invokeOnCompletion {
+                synchronized(admissionLock) {
+                    if (cancelSignals.remove(key, cancelSignal)) jobs.remove(key)
                 }
             }
         }
@@ -129,8 +154,8 @@ class ComicOfflineService @Inject constructor(
         scope.launch {
             storage.listPendingRequests().forEach { book ->
                 synchronized(admissionLock) {
-                    if (acceptingDownloads) {
-                        _progressByBookId.update { it - book.id }
+                    if (acceptingDownloads && jobs[book.offlineDownloadKey] == null && storage.hasPendingRequest(book.offlineDownloadKey)) {
+                        _progressByDownloadKey.update { it - book.offlineDownloadKey }
                         startDownload(book)
                     }
                 }
@@ -139,26 +164,34 @@ class ComicOfflineService @Inject constructor(
     }
 
     fun refreshCompletedDownloads() {
-        _downloadedBookIds.value = storage.listDownloadedBookIds()
+        _downloadedKeys.value = storage.listDownloadedKeys()
     }
 
     fun startDownloadAll(books: List<Book>) {
         for (book in books) startDownload(book)
     }
 
-    fun cancelDownload(bookId: String) {
-        storage.clearPendingRequest(bookId)
-        cancelSignals[bookId]?.set(true)
+    fun cancelDownload(key: String) = synchronized(admissionLock) {
+        cancelSignals.remove(key)?.set(true)
+        jobs.remove(key)?.cancel()
+        storage.clearPendingRequest(key)
+        _progressByDownloadKey.update { current ->
+            val active = current[key]
+            if (active != null && (active.status == ComicDownloadStatus.DOWNLOADING || active.status == ComicDownloadStatus.QUEUED)) {
+                current + (key to active.copy(status = ComicDownloadStatus.CANCELLED, progress = 0f))
+            } else current
+        }
     }
 
-    fun removeDownload(bookId: String) {
-        cancelDownload(bookId)
-        storage.removeDownload(bookId)
-        _downloadedBookIds.update { it - bookId }
-        _progressByBookId.update { it - bookId }
+    fun removeDownload(key: String) = synchronized(admissionLock) {
+        cancelDownload(key)
+        storage.removeDownload(key)
+        _downloadedKeys.update { it - key }
+        _progressByDownloadKey.update { it - key }
     }
 
     private suspend fun downloadOne(book: Book, cancelSignal: AtomicBoolean) = okHttpClient.withDownloadCalls { calls ->
+        val key = book.offlineDownloadKey
         val isStorytellerReadAloud = book.source == BookSource.STORYTELLER && book.readAlongAvailable
         val url = if (isStorytellerReadAloud) {
             aggregatorRepository.getReadaloudDownloadUrl(book.id, book.source, book.connectionId)
@@ -168,20 +201,22 @@ class ComicOfflineService @Inject constructor(
             ?: error("No download URL available for ${book.title}")
         val preferredExtension = if (isStorytellerReadAloud) "epub" else book.primaryFileType
 
-        _progressByBookId.update {
-            it + (book.id to ComicDownloadProgress(book.id, book.title, ComicDownloadStatus.DOWNLOADING, 0f))
+        fun publishTransfer(progress: Float) = synchronized(admissionLock) {
+            if (cancelSignal.get()) throw kotlinx.coroutines.CancellationException("Cancelled")
+            publish(book, ComicDownloadStatus.DOWNLOADING, progress)
         }
+
+        publishTransfer(0f)
 
         if (url.startsWith("content://") || url.startsWith("file://")) {
             val ext = extensionFor(url, null, preferredExtension)
-            val target = storage.createTempFile(book.id, ext)
+            val target = storage.createTempFile(key, ext)
             val input = context.contentResolver.openInputStream(android.net.Uri.parse(url))
                 ?: error("Couldn't open the local file for ${book.title}")
             input.use { inp ->
                 FileOutputStream(target).use { out ->
                     val buffer = ByteArray(32_768)
                     while (true) {
-                        currentCoroutineContext().ensureActive()
                         currentCoroutineContext().ensureActive()
                         if (cancelSignal.get()) throw kotlinx.coroutines.CancellationException("Cancelled")
                         val count = inp.read(buffer)
@@ -194,19 +229,24 @@ class ComicOfflineService @Inject constructor(
                 target.delete()
                 error("Local file is empty for ${book.title}")
             }
-            commitDownload(book, target, ext)
-            _downloadedBookIds.update { it + book.id }
-            _progressByBookId.update {
-                it + (book.id to ComicDownloadProgress(book.id, book.title, ComicDownloadStatus.COMPLETED, 1f))
-            }
+            commitDownload(book, target, ext, cancelSignal)
             return@withDownloadCalls
         }
 
-        var tmp = storage.existingTempFile(book.id)
-        var resumeOffset = tmp?.length()?.takeIf { it > 0L } ?: 0L
+        var tmp = storage.existingTempFile(key)
+        val validatorFile = storage.resumeValidatorFile(key)
+        val storedValidator = validatorFile.takeIf { it.isFile }?.readText()?.takeIf { it.isNotBlank() }
+        var resumeOffset = if (storedValidator == null) 0L else tmp?.length() ?: 0L
+        if (resumeOffset == 0L) {
+            tmp?.let { check(it.delete()) }
+            tmp = null
+        }
         fun requestFor(offset: Long): Request =
             Request.Builder().url(url).get().apply {
-                if (offset > 0L) header("Range", "bytes=$offset-")
+                if (offset > 0L) {
+                    header("Range", "bytes=$offset-")
+                    header("If-Range", checkNotNull(storedValidator))
+                }
             }.build()
 
         var response = calls.execute(requestFor(resumeOffset))
@@ -227,14 +267,23 @@ class ComicOfflineService @Inject constructor(
             if (!resp.isSuccessful) error("HTTP ${resp.code} downloading ${book.title}")
             val body = resp.body ?: error("Empty response body for ${book.title}")
             val responseLength = body.contentLength().takeIf { it > 0 } ?: 0L
-            val total = when {
-                resp.code == 206 && responseLength > 0L -> resumeOffset + responseLength
-                responseLength > 0L -> responseLength
-                else -> 0L
-            }
+            val responseValidator = strongResumeValidator(resp.header("ETag"), resp.header("Last-Modified"))
+            val total = if (resp.code == 206) {
+                val range = resp.header("Content-Range")
+                try {
+                    completeBookRangeLength(range, resumeOffset, body.contentLength(), storedValidator, responseValidator)
+                } catch (e: IllegalStateException) {
+                    tmp?.delete()
+                    validatorFile.delete()
+                    throw e
+                }
+            } else responseLength
             val ext = extensionFor(url, resp.header("Content-Type"), preferredExtension)
-            val target = tmp ?: storage.createTempFile(book.id, ext).also { tmp = it }
-            if (resumeOffset == 0L && target.exists()) target.delete()
+            val target = tmp ?: storage.createTempFile(key, ext).also { tmp = it }
+            if (resumeOffset == 0L) {
+                if (target.exists()) check(target.delete())
+                if (responseValidator == null) validatorFile.delete() else validatorFile.writeText(responseValidator)
+            }
 
             body.byteStream().use { input ->
                 FileOutputStream(target, resumeOffset > 0L && resp.code == 206).use { output ->
@@ -255,9 +304,7 @@ class ComicOfflineService @Inject constructor(
                                 total > 0 -> (done.toFloat() / total).coerceIn(0f, 1f)
                                 else -> (done.toFloat() / (done + 2_000_000f)).coerceIn(0f, 0.95f)
                             }
-                            _progressByBookId.update {
-                                it + (book.id to ComicDownloadProgress(book.id, book.title, ComicDownloadStatus.DOWNLOADING, pct))
-                            }
+                            publishTransfer(pct)
                         }
                     }
                 }
@@ -268,12 +315,8 @@ class ComicOfflineService @Inject constructor(
                 error("Downloaded file is empty for ${book.title}")
             }
 
-            commitDownload(book, target, ext)
-        }
-
-        _downloadedBookIds.update { it + book.id }
-        _progressByBookId.update {
-            it + (book.id to ComicDownloadProgress(book.id, book.title, ComicDownloadStatus.COMPLETED, 1f))
+            check(total == 0L || target.length() == total) { "Incomplete book download" }
+            commitDownload(book, target, ext, cancelSignal)
         }
     }
 
@@ -291,13 +334,24 @@ class ComicOfflineService @Inject constructor(
         return urlExt.ifBlank { "bin" }
     }
 
-    private suspend fun commitDownload(book: Book, target: File, extension: String) {
+    private suspend fun commitDownload(book: Book, target: File, extension: String, cancelSignal: AtomicBoolean) {
         validateEpub(target, extension)
         val detected = book.withDownloadedReadAloud(target, extension)
         currentCoroutineContext().ensureActive()
-        storage.commit(target)
-        storage.saveManifest(detected)
-        if (detected.readAlongAvailable) bookCache.markReadAlongAvailable(book.uniqueKey)
+        val key = book.offlineDownloadKey
+        synchronized(admissionLock) {
+            if (cancelSignal.get()) throw kotlinx.coroutines.CancellationException("Cancelled")
+            storage.saveManifest(detected)
+            storage.commit(target)
+            storage.resumeValidatorFile(key).delete()
+            storage.clearPendingRequest(key)
+            _downloadedKeys.update { it + key }
+            publish(book, ComicDownloadStatus.COMPLETED, 1f)
+        }
+        if (detected.readAlongAvailable) {
+            runSuspendCatching { bookCache.markReadAlongAvailable(book.uniqueKey) }
+                .onFailure { android.util.Log.w("ComicOfflineService", "Could not update read-aloud availability", it) }
+        }
     }
 
     private fun validateEpub(file: File, extension: String) {
@@ -324,6 +378,7 @@ internal fun Book.withDownloadedReadAloud(file: File, extension: String): Book {
 }
 
 data class ComicDownloadProgress(
+    val downloadKey: String,
     val bookId: String,
     val title: String,
     val status: ComicDownloadStatus,

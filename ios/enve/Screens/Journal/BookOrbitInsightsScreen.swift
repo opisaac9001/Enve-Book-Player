@@ -28,6 +28,11 @@ struct BookOrbitInsightsScreen: View {
                             Task { await model.refresh() }
                         }
                     case .ready:
+                        if let message = model.widgetError {
+                            BookOrbitErrorCard(message: message) {
+                                Task { await model.refresh() }
+                            }
+                        }
                         rangeChips
                         content(cardWidth: max(1, geo.size.width - 84))
                     }

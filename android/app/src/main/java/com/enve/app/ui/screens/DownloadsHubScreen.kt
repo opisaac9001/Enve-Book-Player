@@ -40,6 +40,7 @@ import com.enve.app.ui.theme.einkAwareBackground
 import com.enve.app.ui.theme.rememberAdaptiveMetrics
 import com.enve.app.ui.theme.scaled
 import com.enve.app.viewmodel.DownloadsHubState
+import com.enve.app.viewmodel.downloadEntryId
 import com.enve.core.data.local.KeepNextOfflineSettings
 import com.enve.core.data.model.Book
 import com.enve.hearth.design.hearthDisplay
@@ -136,22 +137,22 @@ fun DownloadsHubScreen(
                     }
                 }
 
-                items(state.activeDownloads, key = { "active-audio-${it.bookId}" }) { download ->
+                items(state.activeDownloads, key = { "active-audio-${it.downloadKey}" }) { download ->
                     ActiveDownloadCard(
                         title = download.title,
                         progress = download.progress,
                         detail = "${download.completedTracks}/${download.totalTracks} tracks",
-                        onCancel = { onCancelDownload(download.bookId) },
+                        onCancel = { onCancelDownload(download.downloadKey) },
                         modifier = Modifier.padding(horizontal = hPad),
                     )
                 }
 
-                items(state.activeComicDownloads, key = { "active-comic-${it.bookId}" }) { download ->
+                items(state.activeComicDownloads, key = { "active-comic-${it.downloadKey}" }) { download ->
                     ActiveDownloadCard(
                         title = download.title,
                         progress = download.progress,
                         detail = null,
-                        onCancel = { onCancelComicDownload(download.bookId) },
+                        onCancel = { onCancelComicDownload(download.downloadKey) },
                         modifier = Modifier.padding(horizontal = hPad),
                     )
                 }
@@ -189,11 +190,11 @@ fun DownloadsHubScreen(
                             }
                         }
 
-                        items(state.terminalDownloads, key = { "terminal-${it.bookId}" }) { download ->
+                        items(state.terminalDownloads, key = { "terminal-${it.downloadKey}" }) { download ->
                             TerminalDownloadCard(
                                 download = download,
-                                onRetry = { onRetryDownload(download.bookId) },
-                                onRemove = { onRemoveItem(download.bookId) },
+                                onRetry = { onRetryDownload(download.downloadKey) },
+                                onRemove = { onRemoveItem(download.downloadKey) },
                                 modifier = Modifier.padding(horizontal = hPad),
                             )
                         }
@@ -210,11 +211,11 @@ fun DownloadsHubScreen(
                             }
                         }
 
-                        items(state.downloadedBooks.take(50), key = { it.uniqueKey }) { book ->
+                        items(state.downloadedBooks.take(50), key = { it.downloadEntryId }) { book ->
                             DownloadedBookCard(
                                 book = book,
                                 onOpen = { onOpenBook(book) },
-                                onRemove = { onRemoveItem(book.id) },
+                                onRemove = { onRemoveItem(book.downloadEntryId) },
                                 modifier = Modifier.padding(horizontal = hPad),
                             )
                         }

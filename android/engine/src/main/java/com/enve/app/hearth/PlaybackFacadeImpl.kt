@@ -191,6 +191,7 @@ class PlaybackFacadeImpl @Inject constructor(
     override suspend fun stop() {
         val key = audioManager.state.value.mediaId?.let(AutoMediaBrowserHelper::cacheKeyFrom)
         val marker = checkpointOrder.newSequence()
+        queueCoordinator.cancelPendingStart()
         audioManager.stop()
         if (key == null) return
         withTimeoutOrNull(STOP_CHECKPOINT_TIMEOUT_MS) {

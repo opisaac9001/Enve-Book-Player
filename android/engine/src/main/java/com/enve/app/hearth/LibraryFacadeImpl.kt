@@ -6,6 +6,8 @@ import com.enve.app.data.offline.ComicDownloadStatus
 import com.enve.app.data.offline.OfflineDownloadManager
 import com.enve.app.data.offline.OfflineDownloadProgress
 import com.enve.app.data.offline.OfflineDownloadStatus
+import com.enve.app.data.offline.offlineDownloadKey
+import com.enve.app.data.offline.isManagedLocalDownload
 import com.enve.app.data.metadata.MatchedBookMetadataStore
 import com.enve.app.data.duplicates.DuplicateGroupStore
 import com.enve.app.data.hardcover.HardcoverSyncService
@@ -78,6 +80,7 @@ import javax.inject.Singleton
 @OptIn(kotlinx.coroutines.ExperimentalCoroutinesApi::class)
 class LibraryFacadeImpl @Inject constructor(
     private val cache: LibraryCacheRepository,
+    private val remoteCatalog: RemoteLibraryCatalog,
     private val aggregator: AggregatorRepository,
     private val grimmory: GrimmoryAppRepository,
     private val bookOrbit: BookOrbitRepository,
@@ -99,6 +102,7 @@ class LibraryFacadeImpl @Inject constructor(
     private val crossProviderHistory: AbsCrossProviderHistorySync,
     private val groupingOverrides: AudiobookGroupingOverrideStore,
     private val hardcoverSync: HardcoverSyncService,
+    private val bookEdits: com.enve.engine.library.PendingBookMutationsFacade,
     @ApplicationScope scope: CoroutineScope,
 ) : LibraryFacade {
     override val locallyMatchedMetadataKeys: Flow<Set<String>> = matchedMetadata.matchedKeys
@@ -112,7 +116,12 @@ class LibraryFacadeImpl @Inject constructor(
     override val downloaded: Flow<List<Book>> = visibleBooks(cache::downloadedBooksExcludingLibraries)
     override val allBooks: Flow<List<Book>> = visibleBooks(cache::rawAllBooksExcludingLibraries)
         .shareIn(scope, SharingStarted.WhileSubscribed(5_000, replayExpirationMillis = 0), replay = 1)
-    override val totalCount: Flow<Int> = allBooks.map { it.size }
+    override val catalogLocalBooks: Flow<List<Book>> = visibleBooks(cache::catalogLocalBooks)
+    override suspend fun remoteCatalogPage(request: com.enve.engine.library.RemoteLibraryRequest, cursors: Map<String, String>?) =
+        remoteCatalog.page(request, cursors)
+    override suspend fun remoteCatalogFilterOptions(request: com.enve.engine.library.RemoteLibraryRequest, search: String) =
+        remoteCatalog.filterOptions(request, search)
+    override val totalCount: Flow<Int> = prefs.excludedLibraryIds.flatMapLatest(cache::totalCountExcludingLibraries)
     override val libraries: Flow<List<com.enve.core.data.model.Library>> =
         combine(cache.libraries, connectionRegistry.connections) { libraries, connections ->
             val disabled = connections.filterNot { it.enabled }.mapTo(mutableSetOf()) { it.id }
@@ -221,7 +230,7 @@ class LibraryFacadeImpl @Inject constructor(
             if (!result.hasNext) break
             page += 1
         }
-        return visibleBooks(books.distinctBy { it.uniqueKey }.map { it.toShallowBook(grimmory.isDownloaded(it.id)) })
+        return visibleBooks(books.distinctBy { it.uniqueKey }.map { it.toShallowBook(grimmory.isDownloaded(offlineDownloadKey(it.source, it.connectionId, it.id))) })
     }
 
     override suspend fun shelfBooksPage(key: String, page: Int, size: Int, query: String?): LibraryShelfPage {
@@ -248,7 +257,7 @@ class LibraryFacadeImpl @Inject constructor(
             grimmory.getBooksPage(ref.connectionId, shelfId = ref.shelfId, page = page, size = size).getOrNull()
         } ?: return LibraryShelfPage(emptyList(), 0, page, false)
         return LibraryShelfPage(
-            items = visibleBooks(result.items.map { it.toShallowBook(grimmory.isDownloaded(it.id)) }),
+            items = visibleBooks(result.items.map { it.toShallowBook(grimmory.isDownloaded(offlineDownloadKey(it.source, it.connectionId, it.id))) }),
             total = result.totalElements.toInt(),
             page = page,
             hasMore = result.hasNext,
@@ -328,13 +337,13 @@ class LibraryFacadeImpl @Inject constructor(
     }
     override suspend fun book(bookId: String): Book? =
         bookCache.getById(bookId)?.toBook()?.withActualDownloadState(
-            audioDownloadedIds = offlineDownloads.downloadedBookIds.value,
-            comicDownloadedIds = comicOffline.downloadedBookIds.value,
+            audioDownloadedIds = offlineDownloads.downloadedKeys.value,
+            comicDownloadedIds = comicOffline.downloadedKeys.value,
         )?.takeIfVisible()?.let { matchedMetadata.applyStoredMetadata(it) }
 
     override suspend fun bookDetail(book: Book): Book? {
         val local = comicOffline.detectReadAloud(book)
-        val detail = aggregator.getBookDetail(book).getOrNull() ?: return local
+        val detail = remoteCatalog.detail(book) ?: aggregator.getBookDetail(book).getOrNull() ?: return local
         return detail.copy(
             readAlongAvailable = detail.readAlongAvailable || local.readAlongAvailable,
             hasAudio = detail.hasAudio || local.hasAudio,
@@ -345,8 +354,8 @@ class LibraryFacadeImpl @Inject constructor(
     override fun bookFlow(bookId: String): Flow<Book?> = flow {
         combine(
             bookCache.observeById(bookId),
-            offlineDownloads.downloadedBookIds,
-            comicOffline.downloadedBookIds,
+            offlineDownloads.downloadedKeys,
+            comicOffline.downloadedKeys,
             prefs.excludedLibraryIds,
             duplicateGroups.groups,
         ) { cached, audioDownloadedIds, comicDownloadedIds, excludedLibraryIds, groups ->
@@ -361,8 +370,8 @@ class LibraryFacadeImpl @Inject constructor(
     override fun bookByKeyFlow(bookKey: String): Flow<Book?> = flow {
         combine(
             bookCache.observeByCacheKey(bookKey),
-            offlineDownloads.downloadedBookIds,
-            comicOffline.downloadedBookIds,
+            offlineDownloads.downloadedKeys,
+            comicOffline.downloadedKeys,
             prefs.excludedLibraryIds,
             duplicateGroups.groups,
         ) { cached, audioDownloadedIds, comicDownloadedIds, excludedLibraryIds, groups ->
@@ -376,14 +385,14 @@ class LibraryFacadeImpl @Inject constructor(
 
     override suspend fun linkedAudiobook(book: Book): Book? =
         bookLinks.linkedAudiobook(book)?.withActualDownloadState(
-            audioDownloadedIds = offlineDownloads.downloadedBookIds.value,
-            comicDownloadedIds = comicOffline.downloadedBookIds.value,
+            audioDownloadedIds = offlineDownloads.downloadedKeys.value,
+            comicDownloadedIds = comicOffline.downloadedKeys.value,
         )?.takeIfVisible()?.let { matchedMetadata.applyStoredMetadata(it) }
 
     override suspend fun linkedEbook(book: Book): Book? =
         bookLinks.linkedEbook(book)?.withActualDownloadState(
-            audioDownloadedIds = offlineDownloads.downloadedBookIds.value,
-            comicDownloadedIds = comicOffline.downloadedBookIds.value,
+            audioDownloadedIds = offlineDownloads.downloadedKeys.value,
+            comicDownloadedIds = comicOffline.downloadedKeys.value,
         )?.takeIfVisible()?.let { matchedMetadata.applyStoredMetadata(it) }
 
     override suspend fun linkCandidates(book: Book, query: String): List<LibraryLinkCandidate> {
@@ -394,8 +403,8 @@ class LibraryFacadeImpl @Inject constructor(
             LibraryLinkCandidate(
                 book = matchedMetadata.applyStoredMetadata(
                     candidate.book.withActualDownloadState(
-                        audioDownloadedIds = offlineDownloads.downloadedBookIds.value,
-                        comicDownloadedIds = comicOffline.downloadedBookIds.value,
+                        audioDownloadedIds = offlineDownloads.downloadedKeys.value,
+                        comicDownloadedIds = comicOffline.downloadedKeys.value,
                     ),
                 ),
                 confidence = candidate.confidence,
@@ -463,56 +472,63 @@ class LibraryFacadeImpl @Inject constructor(
 
     override val hiddenBookIds: Flow<Set<String>> = prefs.libraryHiddenBookIds
 
-    override suspend fun setFinished(book: Book, finished: Boolean): Boolean =
-        aggregator.updateBookStatus(book, if (finished) "READ" else "UNREAD").isSuccess.also { updated ->
-            if (updated && finished) hardcoverSync.submitFinished(book)
+    override suspend fun setFinished(book: Book, finished: Boolean): Boolean {
+        val status = if (finished) "READ" else "UNREAD"
+        val updated = if (status in bookEdits.readStatusOptions(book)) {
+            bookEdits.setReadStatus(book, status).accepted
+        } else {
+            aggregator.updateBookStatus(book, status).isSuccess
         }
+        if (updated && finished) hardcoverSync.submitFinished(book)
+        return updated
+    }
 
     override fun supportsPersonalRating(book: Book): Boolean =
         aggregator.supportsPersonalRating(book)
-
-    override suspend fun setPersonalRating(book: Book, rating: Int): Boolean =
-        aggregator.updatePersonalRating(book, rating).isSuccess
 
     override suspend fun setHidden(bookId: String, hidden: Boolean) {
         prefs.updateLibraryHiddenBookIds { if (hidden) it + bookId else it - bookId }
     }
 
-    override fun downloadState(bookId: String): Flow<LibraryDownloadState> =
-        combine(
-            offlineDownloads.progressByBookId,
-            comicOffline.progressByBookId,
-            offlineDownloads.downloadedBookIds,
-            comicOffline.downloadedBookIds,
-        ) { audioProgress, comicProgress, audioDownloadedIds, comicDownloadedIds ->
-            audioProgress[bookId]?.toLibraryDownloadState()
-                ?: comicProgress[bookId]?.toLibraryDownloadState()
+    override fun downloadState(book: Book): Flow<LibraryDownloadState> {
+        val key = book.offlineDownloadKey
+        return combine(
+            offlineDownloads.progressByDownloadKey,
+            comicOffline.progressByDownloadKey,
+            offlineDownloads.downloadedKeys,
+            comicOffline.downloadedKeys,
+        ) { audioProgress, comicProgress, audioDownloadedKeys, comicDownloadedKeys ->
+            audioProgress[key]?.toLibraryDownloadState()
+                ?: comicProgress[key]?.toLibraryDownloadState()
                 ?: when {
-                    bookId in audioDownloadedIds || bookId in comicDownloadedIds ->
+                    key in audioDownloadedKeys || key in comicDownloadedKeys ->
                         LibraryDownloadState(status = LibraryDownloadStatus.COMPLETED, progress = 1f)
                     else -> LibraryDownloadState()
                 }
         }
+    }
 
     override suspend fun download(book: Book) {
         if (book.source == BookSource.LOCAL) return
-        if (book.usesOfflineAudioDownload()) {
-            offlineDownloads.startAudiobookDownload(book, allowCellular = prefs.downloadOnCellular.first())
+        val resolved = remoteCatalog.detail(book) ?: book
+        if (resolved.usesOfflineAudioDownload()) {
+            offlineDownloads.startAudiobookDownload(resolved, allowCellular = prefs.downloadOnCellular.first())
         } else {
-            if (book.source == BookSource.STORYTELLER && book.readAlongAvailable) {
-                offlineDownloads.removeDownload(book.id)
+            if (resolved.source == BookSource.STORYTELLER && resolved.readAlongAvailable) {
+                offlineDownloads.removeDownload(resolved.offlineDownloadKey)
             }
-            comicOffline.startDownload(book)
+            comicOffline.startDownload(resolved)
         }
     }
 
     override suspend fun removeDownload(book: Book) {
+        val key = book.offlineDownloadKey
         if (book.usesOfflineAudioDownload()) {
-            offlineDownloads.removeDownload(book.id)
+            offlineDownloads.removeDownload(key)
         } else {
-            comicOffline.removeDownload(book.id)
+            comicOffline.removeDownload(key)
             if (book.source == BookSource.STORYTELLER && book.readAlongAvailable) {
-                offlineDownloads.removeDownload(book.id)
+                offlineDownloads.removeDownload(key)
             }
         }
     }
@@ -562,8 +578,12 @@ class LibraryFacadeImpl @Inject constructor(
 
     override suspend fun deleteFromLibrary(book: Book): Boolean {
         if (book.source != BookSource.LOCAL) return false
-        offlineDownloads.removeDownload(book.id)
-        comicOffline.removeDownload(book.id)
+        offlineDownloads.removeDownload(book.offlineDownloadKey)
+        comicOffline.removeDownload(book.offlineDownloadKey)
+        if (isManagedLocalDownload(book.source, book.connectionId, book.id)) {
+            bookCache.deleteByCacheKeys(listOf(book.uniqueKey))
+            return true
+        }
         return aggregator.deleteBook(book).isSuccess
     }
 
@@ -633,16 +653,16 @@ class LibraryFacadeImpl @Inject constructor(
 
 internal fun Book.usesOfflineAudioDownload(): Boolean =
     !(source == BookSource.STORYTELLER && readAlongAvailable) &&
-        mediaType == AppMediaType.AUDIOBOOK
+        (mediaType == AppMediaType.AUDIOBOOK || (mediaType == AppMediaType.PODCAST && episodeId != null))
 
 private fun Book.withActualDownloadState(
     audioDownloadedIds: Set<String>,
     comicDownloadedIds: Set<String>,
 ): Book {
     val actualDownloaded = if (usesOfflineAudioDownload()) {
-        id in audioDownloadedIds
+        offlineDownloadKey in audioDownloadedIds
     } else {
-        id in comicDownloadedIds
+        offlineDownloadKey in comicDownloadedIds
     }
     return if (isDownloaded == actualDownloaded) this else copy(isDownloaded = actualDownloaded)
 }

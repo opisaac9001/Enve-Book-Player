@@ -14,6 +14,7 @@ import com.enve.app.data.opds.OpdsCatalogApi
 import com.enve.app.data.opds.OpdsProgressionStateStore
 import com.enve.app.data.opds.parseOpdsAuthenticationDocument
 import com.enve.core.data.util.runSuspendCatching
+import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
 import kotlinx.coroutines.withContext
@@ -80,11 +81,11 @@ class OpdsRepository @Inject constructor(
     }
 
     suspend fun getLibraries(connectionId: String): Result<List<Library>> {
-        val conn = connectionRegistry.getConnectionsSync().find { it.id == connectionId }
+        val conn = connectionRegistry.connections.first().find { it.id == connectionId }
             ?: return Result.failure(IllegalStateException("Connection $connectionId not found"))
         return Result.success(listOf(
             Library(
-                id = "$connectionId::root",
+                id = "root",
                 name = conn.username.ifBlank { "OPDS Catalog" },
                 bookCount = 0,
                 source = BookSource.OPDS,
@@ -93,8 +94,8 @@ class OpdsRepository @Inject constructor(
         ))
     }
 
-    fun getRootCatalogUrl(connectionId: String): String? {
-        val conn = connectionRegistry.getConnectionsSync().find { it.id == connectionId }
+    suspend fun getRootCatalogUrl(connectionId: String): String? {
+        val conn = connectionRegistry.connections.first().find { it.id == connectionId }
             ?: return null
         return conn.serverUrl.takeIf { it.isNotBlank() }?.trimEnd('/')
     }
@@ -242,7 +243,7 @@ class OpdsRepository @Inject constructor(
         url: String,
         block: suspend () -> Result<T>,
     ): Result<T> {
-        val conn = connectionRegistry.getConnectionsSync().find { it.id == connectionId }
+        val conn = connectionRegistry.connections.first().find { it.id == connectionId }
             ?: return Result.failure(IllegalStateException("Connection $connectionId not found"))
         val rootOrigin = opdsOrigin(conn.serverUrl)
             ?: return Result.failure(IllegalStateException("This source has no usable catalog URL"))
@@ -270,7 +271,7 @@ class OpdsRepository @Inject constructor(
     )
 
     private suspend fun <T> withConnection(connectionId: String, block: suspend () -> Result<T>): Result<T> {
-        val conn = connectionRegistry.getConnectionsSync().find { it.id == connectionId }
+        val conn = connectionRegistry.connections.first().find { it.id == connectionId }
             ?: return Result.failure(IllegalStateException("Connection $connectionId not found"))
         return applyConnection(conn, block)
     }

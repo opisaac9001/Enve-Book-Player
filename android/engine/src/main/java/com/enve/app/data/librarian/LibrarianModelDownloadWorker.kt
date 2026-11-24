@@ -9,6 +9,7 @@ import androidx.work.CoroutineWorker
 import androidx.work.ForegroundInfo
 import androidx.work.WorkerParameters
 import androidx.work.workDataOf
+import com.enve.app.work.enterForeground
 import com.enve.engine.impl.R
 import dagger.assisted.Assisted
 import dagger.assisted.AssistedInject
@@ -23,7 +24,7 @@ class LibrarianModelDownloadWorker @AssistedInject constructor(
 ) : CoroutineWorker(appContext, params) {
 
     override suspend fun doWork(): Result {
-        setForeground(foregroundInfo())
+        if (!enterForeground(foregroundInfo())) return Result.retry()
         return try {
             engineManager.downloadRecommendedLiteRtModel { progress ->
                 setProgress(workDataOf(KEY_PROGRESS to progress))

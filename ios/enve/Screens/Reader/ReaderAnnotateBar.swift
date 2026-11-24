@@ -9,6 +9,8 @@ struct ReaderAnnotateBar: View {
     let onNote: () -> Void
     let onCopy: () -> Void
     let onDefine: () -> Void
+    let onTranslate: () -> Void
+    let onWikipedia: () -> Void
 
     @Environment(\.hearth) private var hearth
 
@@ -109,14 +111,24 @@ struct ReaderAnnotateBar: View {
 
     private func styleMenu(compact: Bool) -> some View {
         Menu {
-            Button(action: onUnderline) {
-                Label("Underline", systemImage: "underline")
+            Section {
+                Button(action: onUnderline) {
+                    Label("Underline", systemImage: "underline")
+                }
+                Button(action: onStrikethrough) {
+                    Label("Strikethrough", systemImage: "strikethrough")
+                }
+                Button(action: onSquiggle) {
+                    Label("Squiggle", systemImage: "scribble.variable")
+                }
             }
-            Button(action: onStrikethrough) {
-                Label("Strikethrough", systemImage: "strikethrough")
-            }
-            Button(action: onSquiggle) {
-                Label("Squiggle", systemImage: "scribble.variable")
+            Section("Look Up") {
+                Button(action: onTranslate) {
+                    Label("Translate", systemImage: "translate")
+                }
+                Button(action: onWikipedia) {
+                    Label("Search Wikipedia", systemImage: "globe")
+                }
             }
         } label: {
             Image(systemName: "ellipsis")
@@ -127,6 +139,7 @@ struct ReaderAnnotateBar: View {
         }
         .buttonStyle(PressableStyle())
         .accessibilityLabel("More annotation styles")
+        .accessibilityHint("Underline, strikethrough, squiggle, translate, or search Wikipedia")
     }
 
     private var currentColorLabel: String {

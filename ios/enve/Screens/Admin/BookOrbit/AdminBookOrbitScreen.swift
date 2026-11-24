@@ -106,6 +106,22 @@ struct AdminBookOrbitScreen: View {
     private var doorsCard: some View {
         SourcesCard {
             AdminLinkRow(
+                systemImage: "tray.and.arrow.down",
+                title: "Book Drop",
+                caption: "Stage, review, and file uploads"
+            ) {
+                BookOrbitBookDropScreen(connectionId: connection.id)
+            }
+            .accessibilityIdentifier("admin-bookorbit-book-drop")
+            AdminLinkRow(
+                systemImage: "line.3.horizontal.decrease.circle",
+                title: "Smart scopes",
+                caption: "Browse the scopes saved on this server"
+            ) {
+                BookOrbitSmartScopesScreen(connectionId: connection.id)
+            }
+            .accessibilityIdentifier("admin-bookorbit-smart-scopes")
+            AdminLinkRow(
                 systemImage: "chart.xyaxis.line",
                 title: "Insights",
                 caption: "Rhythm, pace, genres, and the year so far"

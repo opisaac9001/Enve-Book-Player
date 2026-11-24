@@ -5,12 +5,14 @@ import Logging
 /// Read/write view of the configured server connections, for owners that repair or prune them.
 @MainActor
 protocol ProviderConnectionEditing: AnyObject {
+    var isConfigurationAuthoritative: Bool { get }
     var connections: [ServerConnection] { get set }
 }
 
 /// Provider resolution and reauthentication signalling, for owners that drive catalog refresh.
 @MainActor
 protocol ProviderConnectionResolving: AnyObject {
+    var isConfigurationAuthoritative: Bool { get }
     var connections: [ServerConnection] { get }
     var connectionsNeedingReauth: [ServerConnection] { get }
     var allProviders: [UUID: LibraryProvider] { get }
@@ -27,6 +29,7 @@ protocol ProviderConnectionResolving: AnyObject {
 @MainActor
 final class ProviderConnectionStore: ProviderConnectionAccessing, ProviderConnectionEditing, ProviderConnectionResolving {
     private static let storageKey = "enve_server_connections"
+    private static let unreadableBackupKey = "enve_server_connections.unreadable"
     private static let secretsMigratedKey = "enve.connectionSecretsMigratedV1"
 
     var connections: [ServerConnection] = [] {
@@ -42,6 +45,8 @@ final class ProviderConnectionStore: ProviderConnectionAccessing, ProviderConnec
     }
 
     private(set) var connectionsNeedingReauth: [ServerConnection] = []
+    /// False after the saved configuration failed to decode; an empty list then is not evidence that providers were removed.
+    private(set) var isConfigurationAuthoritative = true
     let changes = PassthroughSubject<[ServerConnection], Never>()
     var configurationDidChange: (() -> Void)?
 
@@ -92,7 +97,9 @@ final class ProviderConnectionStore: ProviderConnectionAccessing, ProviderConnec
         isOwnerProfile = profileID == FamilyProfile.ownerID
         self.providerFactory = providerFactory
         persistsConnections = initialConnections == nil
-        connections = initialConnections ?? load()
+        let loaded = initialConnections ?? load()
+        isConfigurationAuthoritative = loaded != nil && defaults.data(forKey: Self.unreadableBackupKey) == nil
+        _connections = loaded ?? []
         syncProviders()
         refreshAuthenticationFailures()
     }
@@ -192,7 +199,12 @@ final class ProviderConnectionStore: ProviderConnectionAccessing, ProviderConnec
     }
 
     func refresh() {
-        connections = load()
+        guard let loaded = load() else {
+            isConfigurationAuthoritative = false
+            return
+        }
+        isConfigurationAuthoritative = defaults.data(forKey: Self.unreadableBackupKey) == nil
+        connections = loaded
     }
 
     func updateToken(_ updatedConnection: ServerConnection) {
@@ -440,18 +452,22 @@ final class ProviderConnectionStore: ProviderConnectionAccessing, ProviderConnec
         return try decoder.decode([ServerConnection].self, from: data)
     }
 
-    private func load() -> [ServerConnection] {
+    private func load() -> [ServerConnection]? {
         migrateSecretsIfNeeded()
         var loaded: [ServerConnection] = []
-        if let data = defaults.data(forKey: Self.storageKey), !data.isEmpty {
+        if let data = defaults.data(forKey: Self.storageKey) {
             do {
                 loaded = try decode(data)
             } catch {
                 AppLogger.general.error(
                     "Failed to decode connections blob (\(data.count) bytes); preserving blob: \(error.localizedDescription)"
                 )
+                // A later save replaces the primary key, so keep the unreadable configuration for recovery.
+                if defaults.data(forKey: Self.unreadableBackupKey) == nil {
+                    defaults.set(data, forKey: Self.unreadableBackupKey)
+                }
                 StoreHealth.shared.state = .rebuildRequired
-                return []
+                return nil
             }
         }
 

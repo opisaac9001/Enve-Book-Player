@@ -58,6 +58,11 @@ class CloudImportActivity : ComponentActivity() {
             ?.let { name -> CloudStorageService.entries.firstOrNull { it.name == name } }
             ?: run { finish(); return }
         enableEdgeToEdge()
+        if (service == CloudStorageService.INCOMING_FILES && importViewModel.state.value.entries.isEmpty()) {
+            importViewModel.onFilesPicked(
+                androidx.core.content.IntentCompat.getParcelableArrayListExtra(intent, EXTRA_FILES, android.net.Uri::class.java).orEmpty(),
+            )
+        }
 
         setContent {
             ImportActivityTheme(themeViewModel, profileBinding.runtime.component.preferencesFacade()) {
@@ -91,6 +96,12 @@ class CloudImportActivity : ComponentActivity() {
 
     companion object {
         private const val EXTRA_SERVICE = "enve.cloud_service"
+        private const val EXTRA_FILES = "enve.incoming_files"
+
+        fun incomingIntent(context: Context, files: List<android.net.Uri>): Intent =
+            createIntent(context, CloudStorageService.INCOMING_FILES).apply {
+                putParcelableArrayListExtra(EXTRA_FILES, ArrayList(files))
+            }
 
         fun createIntent(context: Context, service: CloudStorageService): Intent =
             Intent(context, CloudImportActivity::class.java).apply {

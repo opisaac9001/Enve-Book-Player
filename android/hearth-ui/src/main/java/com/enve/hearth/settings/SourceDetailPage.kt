@@ -39,9 +39,11 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.text.input.KeyboardType
 import androidx.compose.ui.unit.dp
 import com.enve.core.data.model.ProviderConnection
+import com.enve.hearth.bookorbit.BookOrbitTool
 import com.enve.hearth.design.EmberButton
 import com.enve.hearth.design.Hearth
 import com.enve.hearth.design.HearthText
@@ -57,6 +59,7 @@ internal fun SourceDetailPage(
     onReauthenticate: () -> Unit,
     onDelete: () -> Unit,
     onBrowseCatalog: (() -> Unit)? = null,
+    onOpenBookOrbitTool: ((BookOrbitTool) -> Unit)? = null,
 ) {
     val palette = Hearth.palette
     var name by remember(connection.id) { mutableStateOf(connection.name) }
@@ -127,6 +130,23 @@ internal fun SourceDetailPage(
                         Icon(Icons.AutoMirrored.Outlined.MenuBook, null)
                         Spacer(Modifier.size(Hearth.Spacing.S))
                         Text("Browse catalog")
+                    }
+                }
+            }
+
+            onOpenBookOrbitTool?.let { open ->
+                SourceCard {
+                    Overline("BookOrbit tools")
+                    Text(
+                        "Browse the smart scopes saved on this server, review its Book Drop inbox, and search this account's highlights.",
+                        style = HearthText.Body,
+                        color = palette.textSecondary,
+                    )
+                    BookOrbitTool.entries.forEach { tool ->
+                        OutlinedButton(
+                            onClick = { open(tool) },
+                            modifier = Modifier.fillMaxWidth().testTag("source-bookorbit-${tool.tag}"),
+                        ) { Text(tool.label) }
                     }
                 }
             }

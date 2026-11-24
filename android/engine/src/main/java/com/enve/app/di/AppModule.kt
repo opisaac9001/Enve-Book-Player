@@ -7,7 +7,6 @@ import com.enve.core.data.local.ProfileStorageLocations
 import coil.ImageLoader
 import coil.disk.DiskCache
 import coil.memory.MemoryCache
-import com.enve.engine.impl.BuildConfig
 import com.enve.core.data.remote.auth.AuthInterceptor
 import com.enve.core.data.remote.ConnectionScope
 import com.enve.core.data.remote.DynamicUrlInterceptor
@@ -75,22 +74,13 @@ object AppModule {
         jsonSafetyInterceptor: JsonSafetyInterceptor,
         tokenRefreshAuthenticator: TokenRefreshAuthenticator,
         mtlsManager: MtlsManager,
+        kavitaCovers: com.enve.app.data.kavita.KavitaCoverInterceptor,
     ): OkHttpClient {
 
         val logging = HttpLoggingInterceptor { message ->
             android.util.Log.d("OkHttp", redactSensitiveHttpLogMessage(message))
         }.apply {
-            level = if (BuildConfig.DEBUG) {
-                HttpLoggingInterceptor.Level.HEADERS
-            } else {
-                HttpLoggingInterceptor.Level.BASIC
-            }
-            redactHeader("Authorization")
-            redactHeader("X-Profile-Token")
-            redactHeader("Cookie")
-            redactHeader("Set-Cookie")
-            redactHeader("X-Plex-Token")
-            redactHeader("X-Emby-Token")
+            level = HttpLoggingInterceptor.Level.BASIC
         }
 
         val trustManager = PrivateNetworkTrust.buildTrustManager()
@@ -111,9 +101,12 @@ object AppModule {
             Thread(runnable, "OkHttp Dispatcher").apply { isDaemon = false }
         }
         val dispatcher = okhttp3.Dispatcher(ConnectionScope.propagatingExecutor(baseExecutor))
+        val requestScope = com.enve.core.data.remote.RequestScopeInterceptor()
 
         return OkHttpClient.Builder()
             .dispatcher(dispatcher)
+            .eventListenerFactory(requestScope)
+            .addInterceptor(requestScope)
             .sslSocketFactory(sslContext.socketFactory, trustManager)
             .hostnameVerifier(PrivateNetworkTrust.buildHostnameVerifier())
             .cache(responseCache)
@@ -127,8 +120,16 @@ object AppModule {
             }
             .addInterceptor(dynamicUrlInterceptor)
             .addInterceptor(authInterceptor)
+            .addInterceptor(kavitaCovers)
             .addInterceptor(jsonSafetyInterceptor)
-            .addInterceptor(logging)
+            .addInterceptor { chain ->
+                if (chain.request().url.queryParameter("enveCoverRevision") != null) {
+                    chain.proceed(chain.request())
+                } else {
+                    logging.intercept(chain)
+                }
+            }
+            .addNetworkInterceptor(com.enve.core.data.remote.auth.ConnectionAuthRedirectInterceptor())
             .authenticator(tokenRefreshAuthenticator)
             .connectTimeout(30, TimeUnit.SECONDS)
             .readTimeout(60, TimeUnit.SECONDS)
@@ -167,12 +168,6 @@ object AppModule {
     @Singleton
     fun provideGrimmoryApi(retrofit: Retrofit): GrimmoryApi {
         return retrofit.create(GrimmoryApi::class.java)
-    }
-
-    @Provides
-    @Singleton
-    fun provideGrimmoryAppApi(retrofit: Retrofit): com.enve.app.data.remote.GrimmoryAppApi {
-        return retrofit.create(com.enve.app.data.remote.GrimmoryAppApi::class.java)
     }
 
     @Provides

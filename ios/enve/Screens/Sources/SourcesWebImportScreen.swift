@@ -622,7 +622,7 @@ final class SourcesWebImportModel {
                 defer { staging.remove() }
                 guard id == request else { return }
                 phase = .adding
-                let count = try await engine.sources.importFiles(urls: [staging.url], mode: .groupByFolder)
+                let count = try await engine.sources.importFiles(urls: [staging.url], mode: .groupByFolder).count
                 guard id == request else { return }
                 task = nil
                 guard count > 0 else {

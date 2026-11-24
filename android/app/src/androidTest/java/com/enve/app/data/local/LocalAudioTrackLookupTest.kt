@@ -82,7 +82,7 @@ class LocalAudioTrackLookupTest {
         val dataStore = PreferenceDataStoreFactory.create(scope = dataScope) {
             File(directory, "lookup.preferences_pb")
         }
-        val registry = ConnectionRegistry(dataStore)
+        val registry = ConnectionRegistry(dataStore, com.enve.core.auth.CredentialVault.forProfile(context, "registry-test-localaudiotracklookuptest"))
         registry.upsert(ProviderConnection(sourceId, BookSource.LOCAL, "Fixture", provider.tree.toString(), ""))
         overrides = AudiobookGroupingOverrideStore(dataStore)
         val locations = ProfileStorageLocations.forProfile(DEFAULT_ADULT_PROFILE_ID, directory, directory, directory)

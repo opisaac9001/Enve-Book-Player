@@ -162,7 +162,7 @@ extension BookloreProvider {
         expectedBookIds: Set<String>? = nil
     ) async throws -> (books: [Book], isComplete: Bool) {
         AppLogger.network.info(
-            "[Booklore] \(reason) - using legacy catalog endpoint for library \(libraryId) while preserving app feature endpoints"
+            "[Booklore] \(reason) - using legacy catalog endpoint for library \(libraryId) while preserving feature endpoints"
         )
         let snapshot = try await fetchBooksViaLegacyAPI(libraryId: libraryId, expectedBookIds: expectedBookIds)
         useKomgaFallback = false
@@ -262,25 +262,23 @@ extension BookloreProvider {
                 throw ProviderError.serverError("Grimmory catalog endpoints returned conflicting books")
             }
         } else if books.isEmpty && !useLegacyRestAPI {
-            let appRequest = try makeRequest(
-                path: "/api/v1/app/books",
-                queryItems: [
-                    URLQueryItem(name: "libraryId", value: libraryId),
-                    URLQueryItem(name: "page", value: "0"),
-                    URLQueryItem(name: "size", value: String(pageSize)),
-                ]
+            let pageRequest = try browsePageRequest(
+                facets: ["library:\(libraryId)"],
+                sort: "-addedOn",
+                page: 0,
+                size: 1
             )
-            let (appData, appResponse) = try await performAuthorizedRequest(appRequest)
-            switch appResponse.statusCode {
+            let (pageData, pageResponse) = try await performAuthorizedRequest(pageRequest)
+            switch pageResponse.statusCode {
             case 200:
-                let page = try JSONDecoder().decode(BooklorePage<BookloreBookSummary>.self, from: appData)
+                let page = try JSONDecoder().decode(BooklorePage<BookloreLegacyBook>.self, from: pageData)
                 guard page.rawItemCount == 0 else {
                     throw ProviderError.serverError("Grimmory catalog endpoints returned conflicting books")
                 }
             case 404, 405:
                 break
             default:
-                throw ProviderError.serverError("Could not verify empty Grimmory catalog (HTTP \(appResponse.statusCode))")
+                throw ProviderError.serverError("Could not verify empty Grimmory catalog (HTTP \(pageResponse.statusCode))")
             }
         }
         rejectedContent.update(

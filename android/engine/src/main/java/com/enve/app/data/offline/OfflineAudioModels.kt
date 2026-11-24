@@ -20,6 +20,8 @@ data class OfflineAudioManifest(
     val source: String,
     val downloadedAtEpochMs: Long,
     val tracks: List<OfflineAudioTrackManifest>,
+    val connectionId: String? = null,
+    val downloadKey: String = "",
 )
 
 enum class OfflineDownloadStatus {
@@ -31,6 +33,7 @@ enum class OfflineDownloadStatus {
 }
 
 data class OfflineDownloadProgress(
+    val downloadKey: String,
     val bookId: String,
     val title: String,
     val status: OfflineDownloadStatus,

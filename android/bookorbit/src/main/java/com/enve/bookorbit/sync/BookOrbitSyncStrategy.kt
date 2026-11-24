@@ -4,11 +4,15 @@ import android.util.Log
 import com.enve.bookorbit.BookOrbitProviderAdapter
 import com.enve.core.data.local.BookCacheDao
 import com.enve.core.data.local.ConnectionRegistry
+import com.enve.core.data.local.PendingBookMutationKind
+import com.enve.core.data.local.PendingBookMutationStore
+import com.enve.core.data.local.pendingBookMutationAccountKey
 import com.enve.core.data.local.toCachedBook
 import com.enve.core.data.local.toBook
 import com.enve.core.data.model.AppMediaType
 import com.enve.core.data.model.Book
 import com.enve.core.data.model.BookSource
+import com.enve.core.data.model.ProviderConnection
 import com.enve.core.data.remote.ConnectionScope
 import com.enve.core.data.sync.ProviderSyncResult
 import com.enve.core.data.sync.ProviderSyncStrategy
@@ -25,6 +29,7 @@ class BookOrbitSyncStrategy @Inject constructor(
     private val connectionRegistry: ConnectionRegistry,
     private val historySync: BookOrbitHistorySessionSync,
     private val readerArtifactSync: BookOrbitReaderArtifactSync,
+    private val pendingMutations: PendingBookMutationStore,
 ) : ProviderSyncStrategy {
     override val id: String = "bookorbit"
     override val displayName: String = "BookOrbit"
@@ -71,14 +76,21 @@ class BookOrbitSyncStrategy @Inject constructor(
                         val existing = bookCacheDao.getByCacheKey(
                             remote.copy(connectionId = connection.id).uniqueKey,
                         ) ?: continue
-                        val status = remote.serverReadStatus
-                        if (existing.personalRating != remote.personalRating ||
-                            existing.serverReadStatus != status
-                        ) {
+                        val rating = if (hasPendingEdit(connection, remote.id, PendingBookMutationKind.RATING)) {
+                            existing.personalRating
+                        } else {
+                            remote.personalRating
+                        }
+                        val status = if (hasPendingEdit(connection, remote.id, PendingBookMutationKind.READ_STATUS)) {
+                            existing.serverReadStatus
+                        } else {
+                            remote.serverReadStatus
+                        }
+                        if (existing.personalRating != rating || existing.serverReadStatus != status) {
                             bookCacheDao.updateBookOrbitUserData(
                                 bookId = remote.id,
                                 connectionId = connection.id,
-                                rating = remote.personalRating,
+                                rating = rating,
                                 serverReadStatus = status,
                                 nowMs = nowMs,
                             )
@@ -206,6 +218,15 @@ class BookOrbitSyncStrategy @Inject constructor(
         }
         return books.distinctBy(Book::uniqueKey)
     }
+
+    private fun hasPendingEdit(connection: ProviderConnection, bookId: String, kind: PendingBookMutationKind): Boolean =
+        pendingMutations.hasPending(
+            BookSource.BOOKORBIT.name,
+            connection.id,
+            connection.pendingBookMutationAccountKey(),
+            bookId,
+            kind,
+        )
 
     private fun Book.hasReadingActivity(): Boolean =
         lastReadTime > 0L || progress > 0f || (epubProgress ?: 0f) > 0f || serverReadStatus != null

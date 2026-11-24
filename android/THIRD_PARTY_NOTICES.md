@@ -8,8 +8,8 @@ This inventory describes the repository audited on 2026-08-29. Gradle build file
 
 | Component | Location or version | License | Distribution notes |
 |---|---|---|---|
-| Foliate JS | `ThirdParty/foliate-js`, commit `6b11e1744346f60504b727984f7d42f0fef3ab54` | MIT | Copyright John Factotum. The app packages an allowlisted runtime subset and retains its license. |
 | Liseur reader behavior | Adapted wide-content fitting; revision `1822c64b6a462e6d9285a1b43e2ec7448e4a7719` | MIT | Copyright 2026 chmouel. See `BuildSupport/Liseur/UPSTREAM.md` and `LICENSE.txt`. |
+| Foliate JS | `ThirdParty/foliate-js`, commit `6b11e1744346f60504b727984f7d42f0fef3ab54` | MIT | Copyright John Factotum. The app packages an allowlisted runtime subset and retains its license. |
 | fflate | `vendor/fflate.js` in the pinned Foliate runtime | MIT | Copyright Arjun Barrett. Retain `BuildSupport/FoliateRuntime/fflate-LICENSE.txt` in binary documentation or acknowledgements. |
 | zip.js | 2.7.52 in the Foliate runtime | BSD-3-Clause | Copyright Gildas Lormeau. Retain `BuildSupport/FoliateRuntime/zip.js-LICENSE.txt` in binary documentation or acknowledgements. |
 | PDF.js and its CMaps/fonts | PDF.js 4.7.76 in the Foliate vendored tree | Apache-2.0, BSD-style, and SIL OFL-1.1 terms | The app surfaces the PDF.js, CMap, Foxit font, and Liberation font license texts in acknowledgements. |
@@ -68,6 +68,10 @@ Enve displays names and logos for compatible services so users can identify a co
 The bundled Grimmory variants are official, unmodified reference assets covered by `ThirdParty/grimmory-branding/ASSET-LICENSE.md` and `ThirdParty/grimmory-branding/TRADEMARKS.md`. The maintainer has confirmed permission to use provider logos in this compatibility context. Forks and redistributors must make their own trademark assessment and must not imply endorsement.
 
 The Enve name, logo, and app icon are not granted for use as a fork's brand by the source license.
+
+## Ambient audio
+
+BigSoundBank publishes the four bundled ambient recordings under CC0. Rain Under an Umbrella is by Pierre SIBANARCO, Fireplace #5 and Forest are by Joseph SARDIN, and Sea: Waves is by DenisChardonnet. The sound pages and file digests are recorded in the [ambient audio sources](engine/src/main/assets/ambient/SOURCES.md).
 
 ## Distribution reminder
 

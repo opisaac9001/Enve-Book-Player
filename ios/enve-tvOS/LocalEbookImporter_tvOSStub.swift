@@ -57,6 +57,12 @@ final class LocalEbookImporter: @unchecked Sendable {
         return collapsed.isEmpty ? "ebook.epub" : collapsed
     }
 
+    nonisolated static func matchesRemoteBookIdentifier(_ filename: String, identifier: String) -> Bool {
+        filename.hasPrefix(identifier + "-") || filename.hasPrefix(identifier + ".")
+    }
+
+    func cachedEbook(for book: Book) -> URL? { cachedEbook(forBookId: book.ebookStorageID) }
+
     func cachedEbook(forBookId bookId: String) -> URL? {
         let safeId = sanitizeFilename(bookId)
         guard !safeId.isEmpty else { return nil }
@@ -75,7 +81,7 @@ final class LocalEbookImporter: @unchecked Sendable {
     }
 
     func resolveEbookForOverlay(book: Book) -> URL? {
-        if let cached = cachedReadaloudEpub(forBookId: book.id) { return cached }
+        if let cached = cachedReadaloudEpub(forBookId: book.ebookStorageID) { return cached }
         if book.source == .storyteller { return nil }
         return resolveExistingLocalEbookURL(bookIdentifier: book.id, ebookFileURL: book.ebookFileURL, filePath: book.filePath)
     }
@@ -171,6 +177,11 @@ final class LocalEbookImporter: @unchecked Sendable {
         throw EbookImportError.notSupportedOnTVOS
     }
 
+    func resolveExistingLocalEbookURL(for book: Book) -> URL? {
+        resolveExistingLocalEbookURL(ebookFileURL: book.ebookFileURL, filePath: book.source == .local ? book.filePath : nil)
+            ?? cachedEbook(for: book)
+    }
+
     func resolveExistingLocalEbookURL(bookIdentifier: String? = nil, ebookFileURL: URL?, filePath: String?) -> URL? {
         let candidates: [URL] = [
             ebookFileURL,
@@ -186,6 +197,10 @@ final class LocalEbookImporter: @unchecked Sendable {
     func extractChapters(from fileURL: URL) async throws -> [LocalChapter] {
         []
     }
+
+    func deleteRecordedLegacyEbook(for book: Book, otherBooks: [Book]) throws {}
+
+    func deleteRemoteEbookArtifacts(for book: Book) throws {}
 
     func deleteRemoteEbookArtifacts(forBookId bookId: String) throws {}
 

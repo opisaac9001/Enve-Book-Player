@@ -74,6 +74,16 @@ data class CachedBook(
     val comicSeriesId: String? = null,
 )
 
+data class CachedDownloadState(
+    val cacheKey: String,
+    val id: String,
+    val connectionId: String?,
+    val source: String,
+    val isDownloaded: Boolean,
+    val mediaType: String,
+    val readAlongAvailable: Boolean,
+)
+
 @Dao
 interface BookCacheDao {
 
@@ -95,6 +105,9 @@ interface BookCacheDao {
 
     @Insert(onConflict = OnConflictStrategy.IGNORE)
     suspend fun insertIfAbsent(book: CachedBook): Long
+
+    @Insert(onConflict = OnConflictStrategy.IGNORE)
+    suspend fun insertIfAbsent(books: List<CachedBook>): List<Long>
 
     @Query("""
         UPDATE book_cache
@@ -241,6 +254,9 @@ interface BookCacheDao {
 
     @Query("SELECT * FROM book_cache WHERE id = :bookId LIMIT 1")
     suspend fun getById(bookId: String): CachedBook?
+
+    @Query("SELECT * FROM book_cache WHERE id IN (:bookIds)")
+    suspend fun getByIds(bookIds: List<String>): List<CachedBook>
 
     @Query("""
         UPDATE book_cache SET opdsAcquisitionUrl = :url
@@ -442,6 +458,15 @@ interface BookCacheDao {
         nowMs: Long,
     ): Int
 
+    @Query("SELECT cacheKey, id, connectionId, source, isDownloaded, mediaType, readAlongAvailable FROM book_cache ORDER BY cacheKey")
+    fun observeDownloadStates(): Flow<List<CachedDownloadState>>
+
+    @Query("""
+        UPDATE book_cache SET isDownloaded = :downloaded
+        WHERE cacheKey = :cacheKey AND source = :source AND isDownloaded != :downloaded
+    """)
+    suspend fun reconcileDownloadedStatus(cacheKey: String, source: String, downloaded: Boolean)
+
     @Query("""
         UPDATE book_cache
         SET isDownloaded = :downloaded,
@@ -464,7 +489,7 @@ interface BookCacheDao {
     suspend fun updateDownloadedStatusById(bookId: String, downloaded: Boolean, nowMs: Long)
 
     @Query("""
-        SELECT id, connectionId, source FROM book_cache
+        SELECT cacheKey, id, connectionId, source FROM book_cache
         WHERE mediaType = 'AUDIOBOOK' AND narratorEnrichedAt = 0
         LIMIT :limit
     """)
@@ -475,11 +500,11 @@ interface BookCacheDao {
 
     @Query("""
         UPDATE book_cache
-        SET narrator = :narrator,
+        SET narrator = COALESCE(:narrator, narrator),
             narratorEnrichedAt = :nowMs
-        WHERE id = :bookId AND (connectionId = :connectionId OR (:connectionId IS NULL AND connectionId IS NULL))
+        WHERE cacheKey = :cacheKey
     """)
-    suspend fun setNarrator(bookId: String, connectionId: String?, narrator: String?, nowMs: Long)
+    suspend fun setNarrator(cacheKey: String, narrator: String?, nowMs: Long)
 
     @Query("DELETE FROM book_cache WHERE connectionId = :connectionId")
     suspend fun deleteByConnection(connectionId: String)
@@ -654,7 +679,7 @@ interface BookCacheDao {
                author, narrator, coverUrl, duration, currentTime, isFinished,
                readProgress, epubProgress, lastReadTime, addedOn, libraryId,
                libraryName, seriesName, seriesNumber, publisher, publishedDate,
-               language, pageCount, isbn13, personalRating, goodreadsRating,
+               language, categoriesJson, pageCount, isbn13, personalRating, goodreadsRating,
                primaryFileType, isDownloaded, hideFromContinue,
                readAlongAvailable, hasAudio, hasEbook, inProgress, serverReadStatus,
                opdsAcquisitionUrl, opdsProgressionUrl, comicMetadataJson
@@ -668,7 +693,27 @@ interface BookCacheDao {
                author, narrator, coverUrl, duration, currentTime, isFinished,
                readProgress, epubProgress, lastReadTime, addedOn, libraryId,
                libraryName, seriesName, seriesNumber, publisher, publishedDate,
-               language, pageCount, isbn13, personalRating, goodreadsRating,
+               language, categoriesJson, pageCount, isbn13, personalRating, goodreadsRating,
+               primaryFileType, isDownloaded, hideFromContinue,
+               readAlongAvailable, hasAudio, hasEbook, inProgress, serverReadStatus,
+               opdsAcquisitionUrl, opdsProgressionUrl, comicMetadataJson
+        FROM book_cache
+        WHERE (libraryId IS NULL OR libraryId NOT IN (:excludedLibraryIds))
+          AND (source != 'SILO' OR isDownloaded = 1 OR inProgress = 1 OR cacheKey IN (
+              SELECT cacheKey FROM book_cache WHERE source = 'SILO'
+                AND (libraryId IS NULL OR libraryId NOT IN (:excludedLibraryIds))
+              ORDER BY cachedAt DESC LIMIT 1200
+          ))
+        ORDER BY addedOn DESC
+    """)
+    fun observeCatalogLocalBooks(excludedLibraryIds: List<String>): Flow<List<CachedBookListItem>>
+
+    @Query("""
+        SELECT cacheKey, id, connectionId, source, mediaType, title, subtitle,
+               author, narrator, coverUrl, duration, currentTime, isFinished,
+               readProgress, epubProgress, lastReadTime, addedOn, libraryId,
+               libraryName, seriesName, seriesNumber, publisher, publishedDate,
+               language, categoriesJson, pageCount, isbn13, personalRating, goodreadsRating,
                primaryFileType, isDownloaded, hideFromContinue,
                readAlongAvailable, hasAudio, hasEbook, inProgress, serverReadStatus,
                opdsAcquisitionUrl, opdsProgressionUrl, comicMetadataJson
@@ -854,6 +899,7 @@ interface BookCacheDao {
 data class BrowseGroupRow(val name: String, val count: Int)
 
 data class BookCacheIdentity(
+    val cacheKey: String,
     val id: String,
     val connectionId: String?,
     val source: String,
@@ -884,6 +930,7 @@ data class CachedBookListItem(
     val publisher: String?,
     val publishedDate: String?,
     val language: String?,
+    val categoriesJson: String = "[]",
     val pageCount: Int?,
     val isbn13: String?,
     val personalRating: Float?,
@@ -963,15 +1010,22 @@ fun CachedBook.toBook(): Book {
     )
 }
 
-fun CachedBookListItem.toBook(): Book {
+fun List<CachedBookListItem>.toBooks(): List<Book> {
+    val shared = HashMap<String, String>()
+    return map { it.toBook(shared) }
+}
+
+private fun HashMap<String, String>.share(value: String?): String? = value?.let { getOrPut(it) { it } }
+
+private fun CachedBookListItem.toBook(shared: HashMap<String, String>): Book {
     val normalizedStatus = serverReadStatus?.uppercase()
     val statusFinished = normalizedStatus in terminalServerReadStatuses
     return Book(
         id = id,
         title = title,
         subtitle = subtitle,
-        author = author,
-        narrator = narrator,
+        author = shared.share(author),
+        narrator = shared.share(narrator),
         description = null,
         coverUrl = coverUrl,
         duration = duration,
@@ -986,20 +1040,21 @@ fun CachedBookListItem.toBook(): Book {
             inProgress -> ReadStatus.IN_PROGRESS
             else -> ReadStatus.UNREAD
         },
-        seriesName = seriesName,
-        seriesNumber = seriesNumber,
-        publisher = publisher,
+        seriesName = shared.share(seriesName),
+        seriesNumber = shared.share(seriesNumber),
+        publisher = shared.share(publisher),
         publishedDate = publishedDate,
         isbn13 = isbn13,
-        language = language,
+        language = shared.share(language),
         pageCount = pageCount,
-        categories = emptyList(),
+        categories = if (categoriesJson == "[]") emptyList()
+        else runCatching { cacheJson.decodeFromString<List<String>>(categoriesJson).map { shared.getOrPut(it) { it } } }.getOrDefault(emptyList()),
         personalRating = personalRating,
         goodreadsRating = goodreadsRating,
-        primaryFileType = primaryFileType,
-        libraryId = libraryId,
-        libraryName = libraryName,
-        connectionId = connectionId,
+        primaryFileType = shared.share(primaryFileType),
+        libraryId = shared.share(libraryId),
+        libraryName = shared.share(libraryName),
+        connectionId = shared.share(connectionId),
         addedOn = addedOn,
         lastReadTime = lastReadTime,
         readProgress = readProgress,
@@ -1009,7 +1064,7 @@ fun CachedBookListItem.toBook(): Book {
         hasAudio = hasAudio || mediaType == "AUDIOBOOK" || readAlongAvailable,
         hasEbook = hasEbook || mediaType == "EBOOK" || readAlongAvailable,
         hideFromContinue = hideFromContinue,
-        serverReadStatus = normalizedStatus,
+        serverReadStatus = shared.share(normalizedStatus),
         isDownloaded = isDownloaded,
         opdsAcquisitionUrl = opdsAcquisitionUrl,
         opdsProgressionUrl = opdsProgressionUrl,

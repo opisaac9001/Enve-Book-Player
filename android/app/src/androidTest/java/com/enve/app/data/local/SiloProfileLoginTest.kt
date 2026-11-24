@@ -85,7 +85,7 @@ class SiloProfileLoginTest {
         val root = File(context.cacheDir, identity).also { it.mkdirs() }
         val job = SupervisorJob()
         val vault = CredentialVault.forProfile(context, identity)
-        val registry = ConnectionRegistry(PreferenceDataStoreFactory.create(scope = CoroutineScope(job + Dispatchers.IO)) { File(root, "connections.preferences_pb") })
+        val registry = ConnectionRegistry(PreferenceDataStoreFactory.create(scope = CoroutineScope(job + Dispatchers.IO)) { File(root, "connections.preferences_pb") }, vault)
         vault.put(CredentialVault.KEY_ACCESS_TOKEN, "access")
         vault.put("silo_profile_token_other", "original-proof")
         val client = OkHttpClient.Builder().addInterceptor { chain ->

@@ -6,26 +6,27 @@ public final class PlayerSleepTimerService: ObservableObject {
     @Published public private(set) var sleepTimer: Date?
     @Published public private(set) var remainingSeconds: TimeInterval = 0
     @Published public private(set) var isFadingOut = false
-    private let fadeWindowSeconds: TimeInterval = 30
+    private let fadeDuration: () -> TimeInterval?
     private let tickIntervalSeconds: TimeInterval = 0.25
 
     private var timerTask: Task<Void, Never>?
-    private var fadeOutTask: Task<Void, Never>?
     private let onTimerFinished: (Bool) -> Void
     private let onFadeProgress: (TimeInterval) -> Void
     private let onFadeReset: () -> Void
 
     public init(
+        fadeDuration: @escaping () -> TimeInterval?,
         onTimerFinished: @escaping (Bool) -> Void,
         onFadeProgress: @escaping (TimeInterval) -> Void = { _ in },
         onFadeReset: @escaping () -> Void = {}
     ) {
+        self.fadeDuration = fadeDuration
         self.onTimerFinished = onTimerFinished
         self.onFadeProgress = onFadeProgress
         self.onFadeReset = onFadeReset
     }
 
-    public func startTimer(minutes: Int, fadeOut: Bool) {
+    public func startTimer(minutes: Int) {
         stopTimer()
 
         let duration = TimeInterval(minutes) * 60
@@ -38,7 +39,7 @@ public final class PlayerSleepTimerService: ObservableObject {
                 let now = Date()
                 if now >= targetDate {
                     await MainActor.run {
-                        if fadeOut {
+                        if self.isFadingOut {
                             self.onFadeReset()
                             self.isFadingOut = false
                         }
@@ -54,17 +55,15 @@ public final class PlayerSleepTimerService: ObservableObject {
                 await MainActor.run {
                     self.remainingSeconds = remaining
 
-                    if fadeOut {
-                        if remaining <= self.fadeWindowSeconds {
-                            if !self.isFadingOut {
-                                self.isFadingOut = true
-                                AppLogger.player.info("[SleepTimer] Entering fade window (\(Int(self.fadeWindowSeconds))s)")
-                            }
-                            self.onFadeProgress(remaining)
-                        } else if self.isFadingOut {
-                            self.isFadingOut = false
-                            self.onFadeReset()
+                    if let fadeDuration = self.fadeDuration(), remaining <= fadeDuration {
+                        if !self.isFadingOut {
+                            self.isFadingOut = true
+                            AppLogger.player.info("[SleepTimer] Entering fade window (\(Int(fadeDuration))s)")
                         }
+                        self.onFadeProgress(remaining)
+                    } else if self.isFadingOut {
+                        self.isFadingOut = false
+                        self.onFadeReset()
                     }
                 }
 
@@ -76,8 +75,6 @@ public final class PlayerSleepTimerService: ObservableObject {
     public func stopTimer() {
         timerTask?.cancel()
         timerTask = nil
-        fadeOutTask?.cancel()
-        fadeOutTask = nil
         onFadeReset()
         sleepTimer = nil
         remainingSeconds = 0
@@ -85,6 +82,6 @@ public final class PlayerSleepTimerService: ObservableObject {
     }
 
     public func snooze() {
-        startTimer(minutes: AppConstants.SleepTimer.snoozeDurationMinutes, fadeOut: true)
+        startTimer(minutes: AppConstants.SleepTimer.snoozeDurationMinutes)
     }
 }

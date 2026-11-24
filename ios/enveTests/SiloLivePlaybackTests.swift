@@ -39,10 +39,15 @@ struct SiloLivePlaybackTests {
             try #require(await provider.validateConnection())
             session.providerConnections.connections = [connection]
             session.providerConnections[connection.id] = provider
-            var books: [Book] = []
             for library in try await provider.fetchLibraries() {
-                books += try await provider.fetchBooks(libraryId: library.id)
+                let source = try await provider.makeCatalogBatchSource(
+                    libraryId: library.id, resumeAfter: nil, expectedSnapshotIdentifier: nil
+                )
+                while let batch = try await source.next() {
+                    await session.bookStore.upsertBooks(batch.books)
+                }
             }
+            let books = await session.bookStore.searchBooks(query: config.title, limit: 200)
             let summary = try #require(books.first { $0.title == config.title })
             let book = try await provider.fetchFullBookDetails(bookId: summary.id, libraryId: summary.libraryId)
             try #require(book.audioTracks?.count == 2)

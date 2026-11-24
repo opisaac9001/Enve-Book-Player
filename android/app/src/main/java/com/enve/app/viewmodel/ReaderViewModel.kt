@@ -8,11 +8,12 @@ import com.enve.core.reader.highlightColorHex
 import androidx.compose.ui.graphics.toArgb
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
+import com.enve.app.playback.AutoMediaBrowserHelper
+import com.enve.app.playback.PlaybackState
 import com.enve.app.readium.MediaOverlayEngine
 import com.enve.app.readium.AudioTrackNarratorOutput
 import com.enve.app.readium.EbookTTSParagraph
 import com.enve.app.readium.EbookTTSService
-import com.enve.app.readium.EbookTTSState
 import com.enve.app.readium.LocalNarratorSpeaker
 import com.enve.app.readium.narrator.LocalNarratorRuntime
 import com.enve.app.readium.narrator.NarratorAudio
@@ -26,6 +27,7 @@ import com.enve.app.readium.ReadAloudLyricsBuilder
 import com.enve.app.readium.ReadAloudPlaybackCoordinator
 import com.enve.app.readium.ReadAloudPlaybackSession
 import com.enve.app.readium.ReaderNarrationStore
+import com.enve.core.reader.ReaderNarrationKey
 import com.enve.app.readium.SmilClip
 import com.enve.bookorbit.sync.BookOrbitHistorySessionSync
 import com.enve.core.data.local.PreferencesManager
@@ -33,7 +35,6 @@ import com.enve.app.data.local.ReaderDatabase
 import com.enve.core.data.model.AnnotationKind
 import com.enve.core.data.model.AnnotationMedia
 import com.enve.core.data.model.AnnotationStyle
-import com.enve.app.data.reader.LayoutPreset
 import com.enve.app.data.reader.search.EbookSearchService
 import com.enve.app.data.reader.ReaderSearchPreferences
 import com.enve.core.data.model.ReaderAnnotation
@@ -49,7 +50,6 @@ import com.enve.app.data.sync.RemoteProgressWriteKey
 import com.enve.app.data.sync.RemoteRewindTracker
 import com.enve.core.data.model.Book
 import com.enve.core.data.model.BookSource
-import com.enve.core.data.model.HistorySession
 import com.enve.core.data.provider.ProviderEbookResource
 import com.enve.core.data.sync.ProgressConflictPassage
 import com.enve.core.data.sync.SyncSnapshot
@@ -77,7 +77,6 @@ import kotlinx.coroutines.Job
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.CoroutineStart
-import kotlinx.coroutines.TimeoutCancellationException
 import kotlinx.coroutines.async
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.ensureActive
@@ -100,7 +99,6 @@ import org.readium.r2.navigator.DecorableNavigator
 import org.readium.r2.navigator.Decoration
 import org.readium.r2.navigator.epub.EpubNavigatorFragment
 import org.readium.r2.shared.ExperimentalReadiumApi
-import org.readium.r2.shared.Search
 import org.readium.r2.shared.publication.Link
 import org.readium.r2.shared.publication.Locator
 import org.readium.r2.shared.publication.Publication
@@ -108,123 +106,21 @@ import org.readium.r2.shared.publication.epub.pageList
 import org.readium.r2.shared.publication.services.positionsByReadingOrder
 import org.readium.r2.shared.publication.services.content.Content
 import org.readium.r2.shared.publication.services.content.content
-import org.readium.r2.shared.publication.services.search.SearchService
-import org.readium.r2.shared.publication.services.search.search
 import org.readium.r2.shared.util.getOrElse
 import android.util.Log
 import org.readium.r2.shared.util.Url
 import org.readium.r2.shared.util.mediatype.MediaType
-import java.util.UUID
 import javax.inject.Inject
 import android.content.Context
 import dagger.hilt.android.qualifiers.ApplicationContext
 import kotlin.math.roundToInt
-
-data class TocEntry(val id: String, val title: String, val href: String, val depth: Int)
-
-data class TocPageCount(val pages: Int, val estimated: Boolean)
-
-data class ChapterMark(val start: Float, val title: String)
-
-data class PageMark(val start: Float, val label: String)
-
-internal fun readerChapterMarks(candidates: List<Pair<Int, ChapterMark>>): List<ChapterMark> {
-    val deepest = candidates.maxOfOrNull { it.first }?.coerceAtMost(MAX_CHAPTER_DEPTH) ?: return emptyList()
-    return (deepest downTo 0).asSequence()
-        .map { depth -> mergeNearbyChapterMarks(candidates.filter { it.first <= depth }.map { it.second }) }
-        .firstOrNull { it.size <= MAX_CHAPTER_MARKS }
-        .orEmpty()
-}
-
-private fun mergeNearbyChapterMarks(marks: List<ChapterMark>): List<ChapterMark> {
-    val merged = mutableListOf<ChapterMark>()
-    marks.sortedBy { it.start }.forEach { mark ->
-        val last = merged.lastOrNull()
-        if (last != null && mark.start - last.start < CHAPTER_MERGE_DISTANCE) merged[merged.lastIndex] = last.copy(title = mark.title)
-        else merged += mark
-    }
-    return merged
-}
-
-private const val MAX_CHAPTER_DEPTH = 2
-private const val MAX_CHAPTER_MARKS = 60
-private const val CHAPTER_MERGE_DISTANCE = 0.004f
-
-private data class ReadiumTocLayout(
-    val pageCounts: Map<String, TocPageCount>,
-    val chapterMarks: List<ChapterMark>,
-    val entryStarts: Map<String, Double>,
-)
-
-private data class TocPageBoundary(
-    val position: Double,
-    val containingPage: Int,
-    val pagesBefore: Int,
-    val exactStart: Boolean,
-    val exactEnd: Boolean,
-)
 
 private data class ReadAlongFragmentSplit(
     val visibleRatio: Double,
     val offScreenRatio: Double,
 )
 
-private data class EpubPageMarker(
-    val label: String,
-    val progression: Double,
-)
-
-data class ReaderTTSVoice(
-    val name: String,
-    val label: String,
-    val title: String,
-    val detail: String,
-    val language: String,
-    val languageName: String,
-)
-
-sealed interface ReaderNarratorPackState {
-    data object NotInstalled : ReaderNarratorPackState
-    data class Downloading(val progress: Float) : ReaderNarratorPackState
-    data object Removing : ReaderNarratorPackState
-    data object Installed : ReaderNarratorPackState
-    data class Failed(val message: String) : ReaderNarratorPackState
-}
-
 private data class ViewportAnchor(val locator: Locator, val page: String?)
-
-data class ReaderSearchResult(
-    val id: String,
-    val locator: Locator,
-    val title: String,
-    val contextBefore: String,
-    val matchText: String,
-    val contextAfter: String,
-    val progressPct: Int,
-)
-
-private fun Locator.toSearchResult(index: Int): ReaderSearchResult {
-    val section = title?.takeIf { it.isNotBlank() }
-        ?: href.toString().substringAfterLast('/').substringBefore('#').ifBlank { "Result" }
-    val before = text.before.orEmpty().compactWhitespace().takeLast(90)
-    val hit = text.highlight.orEmpty().compactWhitespace()
-    val after = text.after.orEmpty().compactWhitespace().take(120)
-    val progress = ((locations.totalProgression ?: locations.progression ?: 0.0) * 100.0)
-        .roundToInt()
-        .coerceIn(0, 100)
-    return ReaderSearchResult(
-        id = "${href}#${locations.fragments.joinToString(",")}:$index",
-        locator = this,
-        title = section,
-        contextBefore = before,
-        matchText = hit,
-        contextAfter = after,
-        progressPct = progress,
-    )
-}
-
-private fun String.compactWhitespace(): String =
-    replace(Regex("\\s+"), " ").trim()
 
 private fun Locator.toJSONOrNull(): String? =
     try { toJSON().toString() } catch (_: Exception) { null }
@@ -240,108 +136,6 @@ internal fun annotationRenderColorHex(
         ReaderTheme.DARK, ReaderTheme.OLED -> "#FFFFFF"
     }
 }
-
-data class ReaderUiState(
-    val prefs:       ReaderPreferences = ReaderPreferences(),
-    val showChrome:  Boolean           = false,
-    val annotations: List<ReaderAnnotation> = emptyList(),
-    val tocEntries:  List<TocEntry>    = emptyList(),
-    val bookmarks:   List<ReaderAnnotation> = emptyList(),
-    val layoutPresets: List<LayoutPreset> = emptyList(),
-    val totalPages:  Int               = 0,
-    val currentPage: Int               = 0,
-    val hasPageList: Boolean           = false,
-    val currentPageLabel: String?      = null,
-    val lastPageLabel: String?         = null,
-    val currentSection: String         = "",
-    val currentTocEntryId: String?     = null,
-    val tocPageCounts: Map<String, TocPageCount> = emptyMap(),
-    val chapterMarks: List<ChapterMark> = emptyList(),
-    val pageMarks: List<PageMark> = emptyList(),
-    val progressPct: Int               = 0,
-    val minutesLeftInBook: Int? = null,
-    val showAppearanceSheet: Boolean   = false,
-    val showTocSheet:        Boolean   = false,
-    val showSearchSheet:     Boolean   = false,
-    val searchQuery:         String    = "",
-    val searchResults:       List<ReaderSearchResult> = emptyList(),
-    val searchLoading:       Boolean   = false,
-    val searchError:         String?   = null,
-    val searchStatus:        String?   = null,
-    val searchWholeWords:    Boolean   = true,
-    val searchOptionsAvailable: Boolean = false,
-    val searchHasMore:       Boolean   = false,
-    val showMoreMenu:        Boolean   = false,
-    val showAnnotationDialog: Boolean  = false,
-    val readAlongSupported:  Boolean   = false,
-    val readAlongActive:     Boolean   = false,
-    val readAlongPlaying:    Boolean   = false,
-    val readAlongClipIndex:  Int       = 0,
-    val readAlongClipCount:  Int       = 0,
-    val showReadAloudSheet:  Boolean   = false,
-    val showReadAloudLyrics: Boolean   = false,
-    val readAlongChapterClips: List<ReadAloudClipRow> = emptyList(),
-    val pendingSelection:    Locator?  = null,
-    val selectionText:       String    = "",
-    val selectionBounds:     ReaderSelectionBounds? = null,
-    val definition:          ReaderDefinition? = null,
-    val isReady:           Boolean           = false,
-
-    val showSelectionPopup: Boolean   = false,
-    val showAutoScrollPanel: Boolean  = false,
-    val showToolbarCustomizer: Boolean = false,
-    val autoScrollActive:   Boolean   = false,
-    val ttsPlayback: EbookTTSState = EbookTTSState(),
-    val ttsReady: Boolean = false,
-    val ttsVoices: List<ReaderTTSVoice> = emptyList(),
-    val ttsVoice: String? = null,
-    val ttsNarratorPack: NarratorPack? = null,
-    val ttsNarratorVoice: String? = null,
-    val ttsNarratorPacks: Map<NarratorPack, ReaderNarratorPackState> = emptyMap(),
-    val showTtsSheet: Boolean = false,
-    val ttsControlsVisible: Boolean = false,
-    val sliderDragging:     Boolean   = false,
-    val sliderPreviewPage:  Int       = 0,
-    val sliderPreviewPageLabel: String? = null,
-    val activeDecorationAnnotation: ReaderAnnotation? = null,
-    val undoableDelete:    ReaderAnnotation? = null,
-    val showAnnotationsSheet: Boolean = false,
-    val nextInSeries: Book? = null,
-    val pendingProgressConflict: ProgressConflictPrompt? = null,
-
-    val transientMessage: String? = null,
-
-    val readAlongPreparing: Boolean = false,
-    val liveReadAlongAvailable: Boolean = false,
-    val liveReadAlongActive: Boolean = false,
-    val liveReadAlongPlaying: Boolean = false,
-    val liveReadAlongPreparing: Boolean = false,
-    val liveReadAlongFollowing: Boolean = true,
-    val liveReadAlongStatus: String = "",
-    val liveReadAlongRetryable: Boolean = false,
-    val liveReadAlongFinding: Boolean = false,
-    val linkReturnLocator: Locator? = null,
-)
-
-data class ReaderDefinition(
-    val id: Long,
-    val term: String,
-    val locator: Locator,
-    val chapterTitle: String?,
-    val text: String? = null,
-    val loading: Boolean = true,
-    val saved: Boolean = false,
-)
-
-data class ReadAloudClipRow(
-    val index: Int,
-    val startMs: Long,
-    val skippable: Boolean,
-    val textHref: String,
-    val fragmentId: String?,
-    val resourceProgression: Double?,
-    val text: String = "",
-)
 
 data class CachedReaderProgress(
     val progress: Float,
@@ -422,7 +216,7 @@ class ReaderViewModel @Inject constructor(
     @ApplicationContext private val appContext: Context,
     private val prefs: PreferencesManager,
     private val repository: GrimmoryRepository,
-    private val bookOrbitHistorySync: BookOrbitHistorySessionSync,
+    bookOrbitHistorySync: BookOrbitHistorySessionSync,
     private val aggregatorRepository: com.enve.app.data.repository.AggregatorRepository,
     private val syncManager: SyncManager,
     private val einkManager: com.enve.app.eink.EinkManager,
@@ -438,9 +232,9 @@ class ReaderViewModel @Inject constructor(
     private val readAloudCheckpoints: ReadAloudCheckpointRepository,
     private val narrationStore: ReaderNarrationStore,
     private val epubBridgeCheckpoints: EpubBridgeCheckpointStore,
-    private val history: HistorySessionStore,
-    private val ebookSearch: EbookSearchService,
-    private val searchPreferences: ReaderSearchPreferences,
+    history: HistorySessionStore,
+    ebookSearch: EbookSearchService,
+    searchPreferences: ReaderSearchPreferences,
     @ApplicationScope private val applicationScope: CoroutineScope,
     database: ReaderDatabase,
     private val readium: ReadiumManager,
@@ -465,10 +259,7 @@ class ReaderViewModel @Inject constructor(
         private const val SPEECH_DECORATION_ID = "speech-current"
         private const val SPEECH_FOLLOW_INTERVAL_MS = 1_000L
         private const val TTS_CONTROLS_HIDE_MS = 4_000L
-        private const val SEARCH_TYPING_DEBOUNCE_MS = 350L
-        private const val MIN_TYPED_SEARCH_LENGTH = 2
         private const val READ_ALONG_WORD_DECORATION_ID = "readAlong-word"
-        private const val MAX_SEARCH_RESULTS = 100
         private const val PROGRESS_PUSH_DEBOUNCE_MS = 5_000L
         private const val PROGRESS_PUSH_MAX_WAIT_MS = 15_000L
         private const val RESTORED_SENTENCE_WINDOW_MS = 120_000L
@@ -504,13 +295,7 @@ class ReaderViewModel @Inject constructor(
         private set
     private var readiumUserInteractionPending = false
         set(value) {
-            if (value) {
-                readiumUserNavigationGeneration += 1L
-                heldReadingPosition.invalidate()
-                readiumLayoutGeneration++
-                readiumLayouts.clear()
-                viewportReanchorJob?.cancel()
-            }
+            if (value) invalidateReadiumLayoutAnchor()
             field = value
         }
     private val unleasedReadiumPosition = ReaderPositionBaseline()
@@ -520,6 +305,15 @@ class ReaderViewModel @Inject constructor(
     private var readiumScrollCaptureJob: Job? = null
     private var readiumLocatorJob: Job? = null
     private val readingSpeedTracker = com.enve.core.reader.ReadingSpeedTracker()
+    private val readingSession = ReaderReadingSession(
+        history = history,
+        grimmory = repository,
+        bookOrbitHistorySync = bookOrbitHistorySync,
+        database = database,
+        pace = readingSpeedTracker,
+        applicationScope = applicationScope,
+    )
+
     private var readiumRestoreJob: Job? = null
     private var viewportAnchor: ViewportAnchor? = null
     private var viewportReanchorJob: Job? = null
@@ -631,9 +425,10 @@ class ReaderViewModel @Inject constructor(
     private var liveReadAlongGeneration = 0
     private var definitionRequest = 0L
     var lastHighlightInk: String = "#FFF59D"
-    private var searchJob: Job? = null
-    private var searchEpubFile: java.io.File? = null
-    private var searchLimit = MAX_SEARCH_RESULTS
+    private var publicationFile: java.io.File? = null
+    private val readerSearch = ReaderSearch(viewModelScope, ebookSearch, searchPreferences) { searchState ->
+        _state.update { it.copy(search = searchState) }
+    }
 
     fun postTransientMessage(message: String) {
         _state.update { it.copy(transientMessage = message) }
@@ -644,169 +439,22 @@ class ReaderViewModel @Inject constructor(
 
     fun showSearch(show: Boolean) {
         if (!show) {
-            cancelSearch()
-            engineNavigator?.clearSearch()
-            _state.update { it.copy(showSearchSheet = false, searchLoading = false) }
+            readerSearch.dismiss()
+            _state.update { it.copy(showSearchSheet = false) }
         } else {
             _state.update { it.copy(showSearchSheet = true, showMoreMenu = false) }
         }
     }
 
-    fun updateSearchQuery(query: String) {
-        cancelSearch()
-        engineNavigator?.clearSearch()
-        _state.update {
-            it.copy(searchQuery = query.take(200), searchError = null, searchResults = emptyList(), searchHasMore = false)
-        }
-        searchTypingJob?.cancel()
-        if (query.trim().length < MIN_TYPED_SEARCH_LENGTH) return
-        searchTypingJob = viewModelScope.launch {
-            delay(SEARCH_TYPING_DEBOUNCE_MS)
-            runSearch()
-        }
-    }
+    fun updateSearchQuery(query: String) = readerSearch.updateQuery(query)
 
-    private var searchTypingJob: Job? = null
+    fun updateSearchWholeWords(wholeWords: Boolean) = readerSearch.updateWholeWords(wholeWords)
 
-    fun updateSearchWholeWords(wholeWords: Boolean) {
-        cancelSearch()
-        _state.update { it.copy(searchWholeWords = wholeWords, searchResults = emptyList(), searchHasMore = false) }
-        viewModelScope.launch { searchPreferences.setWholeWords(wholeWords) }
-        if (state.value.searchQuery.isNotBlank()) runSearch()
-    }
+    fun cancelSearch() = readerSearch.cancel()
 
-    fun cancelSearch() {
-        searchJob?.cancel()
-        searchJob = null
-        _state.update { it.copy(searchLoading = false, searchStatus = null) }
-    }
+    fun loadMoreSearchResults() = readerSearch.loadMore()
 
-    fun loadMoreSearchResults() {
-        if (state.value.searchLoading || !state.value.searchHasMore) return
-        searchLimit += MAX_SEARCH_RESULTS
-        startSearch(state.value.searchQuery, keepResults = true)
-    }
-
-    fun runSearch(query: String = state.value.searchQuery) {
-        searchLimit = MAX_SEARCH_RESULTS
-        startSearch(query, keepResults = false)
-    }
-
-    @OptIn(ExperimentalReadiumApi::class, Search::class)
-    private fun startSearch(query: String, keepResults: Boolean) {
-        val trimmed = query.trim()
-        cancelSearch()
-        if (trimmed.isEmpty() || trimmed.length > 200) {
-            engineNavigator?.clearSearch()
-            _state.update {
-                it.copy(
-                    searchQuery = query,
-                    searchResults = emptyList(),
-                    searchLoading = false,
-                    searchError = if (trimmed.isBlank()) null else "Use at most 200 characters.",
-                    searchHasMore = false,
-                )
-            }
-            return
-        }
-        val alternateEngine = engineNavigator
-        val pub = publication
-        val epubFile = searchEpubFile
-        val wholeWords = state.value.searchWholeWords
-        val limit = searchLimit
-        if (alternateEngine == null && pub == null) {
-            _state.update { it.copy(searchLoading = false, searchError = "Search is not ready yet.") }
-            return
-        }
-        _state.update {
-            it.copy(
-                searchQuery = query,
-                searchResults = if (keepResults) it.searchResults else emptyList(),
-                searchLoading = true,
-                searchError = null,
-                searchStatus = "Searching…",
-                searchHasMore = false,
-            )
-        }
-        searchJob = viewModelScope.launch {
-            try {
-                if (alternateEngine != null) {
-                    val locators = alternateEngine.search(trimmed, limit + 1)
-                    ensureActive()
-                    _state.update {
-                        it.copy(
-                            searchResults = locators.take(limit).mapIndexed { index, locator -> locator.toSearchResult(index) },
-                            searchHasMore = locators.size > limit,
-                        )
-                    }
-                } else if (epubFile != null) {
-                    ebookSearch.search(pub!!, epubFile, trimmed, wholeWords, limit).collect { update ->
-                        ensureActive()
-                        _state.update {
-                            it.copy(
-                                searchResults = update.results.mapIndexed { index, locator -> locator.toSearchResult(index) },
-                                searchHasMore = update.hasMore,
-                                searchStatus = if (update.indexing) {
-                                    "Preparing search index: ${update.indexedSections}/${update.totalSections} sections"
-                                } else "Searching…",
-                            )
-                        }
-                    }
-                } else {
-                    withContext(Dispatchers.IO) {
-                        val iterator = pub!!.search(
-                            trimmed,
-                            SearchService.Options(caseSensitive = false, diacriticSensitive = false),
-                        ) ?: error("Search is unavailable for this book.")
-                        try {
-                            val collected = mutableListOf<ReaderSearchResult>()
-                            while (collected.size <= limit) {
-                                ensureActive()
-                                val page = iterator.next().getOrElse { error ->
-                                    throw IllegalStateException(error.message)
-                                } ?: break
-                                ensureActive()
-                                for (locator in page.locators) {
-                                    collected += locator.toSearchResult(collected.size)
-                                    if (collected.size > limit) break
-                                }
-                                _state.update {
-                                    it.copy(searchResults = collected.take(limit), searchHasMore = collected.size > limit)
-                                }
-                            }
-                        } finally {
-                            iterator.close()
-                        }
-                    }
-                }
-                ensureActive()
-                _state.update {
-                    it.copy(
-                        searchLoading = false,
-                        searchStatus = if (it.searchHasMore) "Showing first ${it.searchResults.size} matches" else null,
-                        searchError = if (it.searchResults.isEmpty()) "Nothing found for “$trimmed”." else null,
-                    )
-                }
-            } catch (_: TimeoutCancellationException) {
-                ensureActive()
-                _state.update {
-                    it.copy(searchLoading = false, searchStatus = null, searchError = "Search timed out. Try a more specific phrase.")
-                }
-            } catch (error: CancellationException) {
-                throw error
-            } catch (error: Exception) {
-                ensureActive()
-                Log.w(TAG, "EPUB search failed", error)
-                _state.update {
-                    it.copy(
-                        searchLoading = false,
-                        searchStatus = null,
-                        searchError = "Search could not finish. Please try again.",
-                    )
-                }
-            }
-        }
-    }
+    fun runSearch(query: String = state.value.search.query) = readerSearch.run(query)
 
     fun seekToSearchResult(result: ReaderSearchResult) {
         readingSpeedTracker.pause()
@@ -880,18 +528,10 @@ class ReaderViewModel @Inject constructor(
         viewModelScope.launch {
             ttsPlayback.state.map { it.spoken }.distinctUntilChanged().collect(::applySpeechHighlight)
         }
-        viewModelScope.launch {
-            searchPreferences.wholeWords.collect { wholeWords ->
-                _state.update { it.copy(searchWholeWords = wholeWords) }
-            }
-        }
-        startReadingSession()
-        val startedAt = sessionStartedAtMs
+        val startedAt = readingSession.start()
         viewModelScope.launch {
             val initialProgress = cachedReaderProgress()?.progress ?: currentReadingProgress().toFloat()
-            if (sessionStartedAtMs == startedAt) {
-                sessionStartProgress = initialProgress
-            }
+            readingSession.recordStartProgress(startedAt, initialProgress)
             loadPreferences()
             loadAnnotations()
             loadLayoutPresets()
@@ -1181,7 +821,7 @@ class ReaderViewModel @Inject constructor(
 
     private fun loadAnnotations() {
         viewModelScope.launch {
-            annotationRepo.byBook(bookId).collect { list ->
+            annotationRepo.byBook(bookId, bookConnectionId).collect { list ->
                 val annotations = list.filter { AnnotationKind.parse(it.kind) != AnnotationKind.BOOKMARK }
                 val bookmarks   = list.filter { AnnotationKind.parse(it.kind) == AnnotationKind.BOOKMARK }
                 _state.update { it.copy(annotations = annotations, bookmarks = bookmarks) }
@@ -1201,9 +841,8 @@ class ReaderViewModel @Inject constructor(
         stopLiveReadAlong()
         liveReadAlongBooks = null
         _state.update { it.copy(liveReadAlongAvailable = false) }
-        cancelSearch()
-        searchEpubFile = null
-        _state.update { it.copy(searchOptionsAvailable = false) }
+        readerSearch.attach(engine)
+        publicationFile = null
         readiumRestoreJob?.cancel()
         readiumRestoreJob = null
         readiumUserInteractionPending = false
@@ -1356,7 +995,7 @@ class ReaderViewModel @Inject constructor(
         if (!foliateRestoreConfirmed) return
         if (!location.userInitiated) return
         readerMovedSinceOpen = true
-        if (sessionResumedAtMs != null && !_state.value.readAlongActive) {
+        if (readingSession.isRunning && !_state.value.readAlongActive) {
             recordReadingPace(checkpoint.totalProgression ?: 0.0)
         }
         foliateCheckpointSync.submit(checkpoint)
@@ -1389,9 +1028,8 @@ class ReaderViewModel @Inject constructor(
         setReadiumScrollActive(false)
         heldReadingPosition.retire()
         readingSpeedTracker.pause()
-        cancelSearch()
-        searchEpubFile = epubFile
-        _state.update { it.copy(searchOptionsAvailable = epubFile != null) }
+        readerSearch.attach(pub, epubFile)
+        publicationFile = epubFile
         readiumRestoreJob?.cancel()
         readiumRestoreJob = null
         readiumUserInteractionPending = false
@@ -1596,7 +1234,7 @@ class ReaderViewModel @Inject constructor(
                         captureHeldReadingPosition(nav, locator, captureGeneration, userMoved)
                     }
                 }
-                if (readiumUserInteractionPending && sessionResumedAtMs != null && !_state.value.readAlongActive) {
+                if (readiumUserInteractionPending && readingSession.isRunning && !_state.value.readAlongActive) {
                     recordReadingPace(locator.locations.totalProgression ?: 0.0)
                 }
 
@@ -1827,37 +1465,12 @@ class ReaderViewModel @Inject constructor(
             observedAt = 0L,
         ).let(EpubBridgeCheckpointCodec::encode)
 
-    private fun findCurrentTocEntry(locator: Locator): TocEntry? {
-        val locatorHref = normalizePublicationHref(locator.href.toString()) ?: return null
-        val candidates = _state.value.tocEntries.filter { entry ->
-            val entryHref = normalizePublicationHref(entry.href)
-            entryHref == locatorHref || entryHref?.endsWith(locatorHref) == true || locatorHref.endsWith(entryHref.orEmpty())
-        }
-        if (candidates.isEmpty()) return null
-
-        val locatorFragments = locator.locations.fragments.toSet()
-        val progression = locator.locations.totalProgression
-        return candidates.firstOrNull { entry ->
-            entry.href.substringAfter('#', missingDelimiterValue = "") in locatorFragments
-        } ?: progression?.let { current ->
-            candidates.lastOrNull { entry -> readiumTocStarts[entry.id]?.let { it <= current + 0.0005 } == true }
-        } ?: candidates.firstOrNull { it.title == locator.title } ?: candidates.first()
-    }
+    private fun findCurrentTocEntry(locator: Locator): TocEntry? =
+        currentTocEntry(_state.value.tocEntries, readiumTocStarts, locator)
 
     private fun buildToc(pub: Publication) {
         viewModelScope.launch {
-            val entries = buildList {
-                fun append(links: List<org.readium.r2.shared.publication.Link>, depth: Int) {
-                    links.forEach { link ->
-                        val href = link.url().toString()
-                        val title = link.title?.trim().takeUnless { it.isNullOrEmpty() }
-                            ?: href.substringBefore('#').substringAfterLast('/').ifBlank { "Untitled" }
-                        add(TocEntry(id = "${size}:$depth:$href", title = title, href = href, depth = depth))
-                        append(link.children, depth + 1)
-                    }
-                }
-                append(pub.tableOfContents, 0)
-            }
+            val entries = publicationTocEntries(pub)
             _state.update { it.copy(tocEntries = entries) }
             refreshReadiumTocPageCounts(pub)
             lastLocator?.let { locator ->
@@ -1892,158 +1505,11 @@ class ReaderViewModel @Inject constructor(
         }
     }
 
-    private suspend fun readiumTocLayout(
-        pub: Publication,
-        entries: List<TocEntry>,
-        positions: List<Locator>,
-        pageMarkers: List<EpubPageMarker>,
-    ): ReadiumTocLayout {
-        val resourceIndex = pub.readingOrder.withIndex().mapNotNull { (index, link) ->
-            normalizePublicationHref(link.url().toString())?.let { it to index }
-        }.toMap()
-        val targets = entries.map { entry ->
-            resourceIndex[normalizePublicationHref(entry.href)]?.let { resource ->
-                resource to parsePublicationHref(entry.href)?.fragment?.takeIf(String::isNotEmpty)
-            }
-        }
-        val fragmentFractions = HashMap<Pair<Int, String>, Double>()
-        targets.mapNotNull { target -> target?.second?.let { target.first to it } }
-            .groupBy({ it.first }, { it.second })
-            .forEach { (resource, fragments) ->
-                val html = readResourceText(pub, pub.readingOrder[resource]) ?: return@forEach
-                fragments.distinct().forEach { fragment ->
-                    fragmentFraction(html, fragment)?.let { fragmentFractions[resource to fragment] = it }
-                }
-            }
-        val firstPositionOfResource = HashMap<Int, Int>()
-        val positionCountOfResource = HashMap<Int, Int>()
-        positions.forEachIndexed { index, locator ->
-            resourceIndex[normalizePublicationHref(locator.href.toString())]?.let { resource ->
-                firstPositionOfResource.putIfAbsent(resource, index)
-                positionCountOfResource.merge(resource, 1, Int::plus)
-            }
-        }
-        fun positionOf(resource: Int, fragment: String?): Double? {
-            val first = firstPositionOfResource[resource] ?: return null
-            val fraction = if (fragment == null) 0.0 else fragmentFractions[resource to fragment] ?: return null
-            return first + fraction * positionCountOfResource.getValue(resource)
-        }
-        val totalPositions = positions.size.toDouble()
-        val entryStarts = entries.zip(targets).mapNotNull { (entry, target) ->
-            target?.let { (resource, fragment) -> positionOf(resource, fragment) }?.let { entry.id to it / totalPositions }
-        }.toMap()
-        val chapterMarks = readerChapterMarks(entries.mapNotNull { entry ->
-            entryStarts[entry.id]?.let { entry.depth to ChapterMark(it.toFloat(), entry.title) }
-        })
-
-        val pageList = pub.pageList
-        val pageResources = pageList.mapNotNull { resourceIndex[normalizePublicationHref(it.url().toString())] }
-        val pageResourcesOrdered = pageResources.isNotEmpty() &&
-            pageResources.size == pageList.size &&
-            pageMarkers.size == pageList.size &&
-            pageResources.zipWithNext().all { (previous, next) -> next >= previous }
-        if (!pageResourcesOrdered) {
-            val counts = tocPageCounts(
-                entries = entries,
-                starts = targets.map { target -> target?.let { (resource, fragment) -> positionOf(resource, fragment) } },
-                bookEnd = totalPositions,
-            ) { start, end -> estimatedTocPageCount(start, end, totalPositions) }
-            return ReadiumTocLayout(counts, chapterMarks, entryStarts)
-        }
-
-        var page = 0
-        val firstPageOfResource = IntArray(pub.readingOrder.size) { resource ->
-            while (page < pageResources.size && pageResources[page] < resource) page++
-            page
-        }
-        fun progressionAt(position: Double): Double? {
-            val index = position.toInt().coerceIn(0, positions.lastIndex)
-            val base = positions[index].locations.totalProgression ?: return null
-            val next = positions.getOrNull(index + 1)?.locations?.totalProgression ?: 1.0
-            return (base + (position - index) * (next - base)).takeIf { it.isFinite() }
-        }
-        fun boundaryOf(resource: Int, fragment: String?): TocPageBoundary? {
-            val position = positionOf(resource, fragment) ?: return null
-            if (fragment == null) {
-                val firstPage = firstPageOfResource[resource]
-                val firstPageInResource = firstPage < pageResources.size && pageResources[firstPage] == resource
-                val pageAtResourceStart = firstPageInResource && pageList[firstPage].url().fragment == null
-                return TocPageBoundary(
-                    position = position,
-                    containingPage = if (pageAtResourceStart) firstPage else firstPage - 1,
-                    pagesBefore = firstPage,
-                    exactStart = pageAtResourceStart || !firstPageInResource,
-                    exactEnd = true,
-                )
-            }
-            val progression = progressionAt(position) ?: return null
-            return TocPageBoundary(
-                position = position,
-                containingPage = pageMarkers.indexOfLast { it.progression <= progression },
-                pagesBefore = pageMarkers.count { it.progression < progression },
-                exactStart = false,
-                exactEnd = false,
-            )
-        }
-        val counts = tocPageCounts(
-            entries = entries,
-            starts = targets.map { target -> target?.let { (resource, fragment) -> boundaryOf(resource, fragment) } },
-            bookEnd = TocPageBoundary(totalPositions, pageList.lastIndex, pageList.size, exactStart = true, exactEnd = true),
-        ) { start, end ->
-            val pages = end.pagesBefore - start.containingPage.coerceAtLeast(0)
-            TocPageCount(pages, estimated = !start.exactStart || !end.exactEnd)
-                .takeIf { end.position > start.position && pages > 0 }
-        }
-        return ReadiumTocLayout(counts, chapterMarks, entryStarts)
-    }
-
-    private fun fragmentFraction(html: String, fragment: String): Double? {
-        val attribute = Regex("""\s(?:id|name)\s*=\s*(["'])${Regex.escape(fragment)}\1""").find(html) ?: return null
-        val tagStart = html.lastIndexOf('<', attribute.range.first)
-        if (tagStart < 0) return null
-        return tagStart.toDouble() / html.length
-    }
-
     private fun refreshFoliateTocPageCounts() {
-        val total = _state.value.totalPages.toDouble()
-        val counts = tocPageCounts(
-            entries = _state.value.tocEntries,
-            starts = foliateTocProgressions.map { it?.times(total) },
-            bookEnd = total,
-        ) { start, end -> estimatedTocPageCount(start, end, total) }
-        val marks = readerChapterMarks(_state.value.tocEntries.zip(foliateTocProgressions)
-            .mapNotNull { (entry, start) -> start?.let { entry.depth to ChapterMark(it.toFloat(), entry.title) } })
+        val entries = _state.value.tocEntries
+        val counts = foliateTocPageCounts(entries, foliateTocProgressions, _state.value.totalPages)
+        val marks = foliateChapterMarks(entries, foliateTocProgressions)
         _state.update { it.copy(tocPageCounts = counts, chapterMarks = marks) }
-    }
-
-    private fun estimatedTocPageCount(start: Double, end: Double, total: Double): TocPageCount? {
-        if (!start.isFinite() || !end.isFinite() || start < 0.0 || end > total || end <= start) return null
-        val pages = (end - start).roundToInt()
-        return TocPageCount(pages, estimated = true).takeIf { pages > 0 }
-    }
-
-    private fun <T : Any> tocPageCounts(
-        entries: List<TocEntry>,
-        starts: List<T?>,
-        bookEnd: T,
-        count: (start: T, end: T) -> TocPageCount?,
-    ): Map<String, TocPageCount> {
-        if (starts.size != entries.size) return emptyMap()
-        val counts = HashMap<String, TocPageCount>()
-        fun close(index: Int, end: T?) {
-            val start = starts[index] ?: return
-            if (end == null) return
-            count(start, end)?.let { counts[entries[index].id] = it }
-        }
-        val open = ArrayDeque<Int>()
-        entries.forEachIndexed { index, entry ->
-            while (open.isNotEmpty() && entries[open.last()].depth >= entry.depth) {
-                close(open.removeLast(), starts[index])
-            }
-            open.addLast(index)
-        }
-        while (open.isNotEmpty()) close(open.removeLast(), bookEnd)
-        return counts
     }
 
     fun navigateTo(entry: TocEntry) {
@@ -2645,7 +2111,7 @@ class ReaderViewModel @Inject constructor(
         val books = liveReadAlongBooks ?: return
         val audiobook = books.second
         val nav = navigator ?: return
-        if (searchEpubFile == null) return
+        if (publicationFile == null) return
         keepChromeAlive()
         liveReadAlongHandoffJob?.cancel()
         liveReadAlongHandoffJob = viewModelScope.launch {
@@ -2752,7 +2218,7 @@ class ReaderViewModel @Inject constructor(
 
     private fun startLiveReadAlong(holdPlayback: Boolean = false) {
         val pair = liveReadAlongBooks ?: return
-        val epub = searchEpubFile ?: return
+        val epub = publicationFile ?: return
         val nav = navigator ?: return
         stopLiveReadAlong()
         stopTts()
@@ -2765,17 +2231,14 @@ class ReaderViewModel @Inject constructor(
         liveReadAlongJob = viewModelScope.launch {
             try {
                 var lastLinkProbe = 0L
-                val opening = playbackFacade.nowPlaying.value?.bookKey != audiobook.uniqueKey
-                if (opening) {
-                    playbackFacade.open(audiobook)
-                    kotlinx.coroutines.withTimeout(15_000) {
-                        playbackFacade.nowPlaying.first { it?.bookKey == audiobook.uniqueKey }
-                    }
-                }
+                fun isLinkedAudiobook(state: PlaybackState): Boolean =
+                    state.mediaId?.let(AutoMediaBrowserHelper::cacheKeyFrom) == audiobook.uniqueKey
+
+                val current = audioPlaybackManager.state.value
+                val opening = !isLinkedAudiobook(current) || current.playbackCompleted || current.errorMessage != null
+                if (opening) playbackFacade.open(audiobook)
                 kotlinx.coroutines.withTimeout(15_000) {
-                    audioPlaybackManager.state.first {
-                        it.isReady && it.mediaId == audioPlaybackManager.nowPlayingMetadata.value?.mediaId
-                    }
+                    audioPlaybackManager.state.first { it.isReady && isLinkedAudiobook(it) }
                 }
                 if (holdPlayback && opening) {
                     kotlinx.coroutines.withTimeoutOrNull(1_500) { audioPlaybackManager.state.first { it.isPlaying } }
@@ -2786,7 +2249,7 @@ class ReaderViewModel @Inject constructor(
                     isForeground = { liveReadAlongForeground },
                     onUpdate = update@{ prepared ->
                         kotlinx.coroutines.currentCoroutineContext().ensureActive()
-                        if (generation != liveReadAlongGeneration || navigator !== nav || playbackFacade.nowPlaying.value?.bookKey != audiobook.uniqueKey) {
+                        if (generation != liveReadAlongGeneration || navigator !== nav || !isLinkedAudiobook(audioPlaybackManager.state.value)) {
                             throw CancellationException("Read-along playback changed")
                         }
                         val now = android.os.SystemClock.elapsedRealtime()
@@ -2832,24 +2295,22 @@ class ReaderViewModel @Inject constructor(
                         readiumUserInteractionPending = false
                         audioIsNavigating = true
                         try {
-                            if (nav.go(locator, animated = false)) {
-                                val reached = kotlinx.coroutines.withTimeoutOrNull(10_000) {
-                                    nav.currentLocator.first {
-                                        normalizePublicationHref(it.href.toString()) == normalizePublicationHref(locator.href.toString())
-                                    }
-                                    nav.evaluateJavascript("true")
-                                    true
-                                } ?: false
-                                kotlinx.coroutines.currentCoroutineContext().ensureActive()
-                                if (!reached || generation != liveReadAlongGeneration || navigator !== nav || !_state.value.liveReadAlongFollowing) return@update
-                                applyReadAlongHighlight(locator)
-                                liveReadAlongSentence = mapping.sentence
-                                liveReadAlongLocator = locator
-                                applyLiveReadAlongWord(mapping, prepared.word)
-                                if (epubCheckpointLease == null) scheduleSync(locator) else {
-                                    readiumCheckpointDirty = true
-                                    scheduleReadiumCheckpointSync(nav)
-                                }
+                            invalidateReadiumLayoutAnchor()
+                            readerMovedSinceOpen = true
+                            if (!nav.go(locator, animated = false)) return@update
+                            val reached = kotlinx.coroutines.withTimeoutOrNull(10_000) {
+                                nav.currentLocator.first { it.href.isEquivalent(base.href) }
+                                nav.evaluateJavascript("true")
+                                true
+                            } == true
+                            if (!reached || generation != liveReadAlongGeneration || navigator !== nav || !_state.value.liveReadAlongFollowing) return@update
+                            applyReadAlongHighlight(locator)
+                            liveReadAlongSentence = mapping.sentence
+                            liveReadAlongLocator = locator
+                            applyLiveReadAlongWord(mapping, prepared.word)
+                            if (epubCheckpointLease == null) scheduleSync(locator) else {
+                                readiumCheckpointDirty = true
+                                scheduleReadiumCheckpointSync(nav)
                             }
                         } finally { if (generation == liveReadAlongGeneration) audioIsNavigating = false }
                     },
@@ -3089,15 +2550,6 @@ class ReaderViewModel @Inject constructor(
         return readResourceText(pub, link)
     }
 
-    private suspend fun readResourceText(pub: Publication, link: Link): String? = withContext(Dispatchers.IO) {
-        val resource = pub.get(link) ?: return@withContext null
-        try {
-            resource.read().getOrNull()?.toString(Charsets.UTF_8)
-        } finally {
-            resource.close()
-        }
-    }
-
     fun showReadAloudLyrics(show: Boolean) {
         _state.update { it.copy(showReadAloudLyrics = show, showChrome = if (show) true else it.showChrome) }
         if (show) loadReadAlongChapterClips()
@@ -3313,6 +2765,8 @@ class ReaderViewModel @Inject constructor(
         }
     }
 
+    private fun narrationKey() = ReaderNarrationKey(bookSource, bookConnectionId, bookId)
+
     private fun submitCurrentReadAloudCheckpoint() {
         val engine = mediaOverlayEngine ?: return
         val token = readAloudCheckpointToken ?: return
@@ -3327,7 +2781,7 @@ class ReaderViewModel @Inject constructor(
         val progress = (locator.locations.totalProgression ?: currentReadingProgress()).toFloat().coerceIn(0f, 1f)
         latestReadAloudLocator = locator
         val audioPositionMs = engine.currentAbsoluteAudioPositionMs() ?: return
-        narrationStore.recordNarration(bookId, audioPositionMs / 1000.0)
+        narrationStore.recordNarration(narrationKey(), audioPositionMs / 1000.0)
         val json = runCatching { locator.toJSON().toString() }.getOrNull()
             ?: return
         readAloudCheckpointRevision += 1L
@@ -3368,7 +2822,7 @@ class ReaderViewModel @Inject constructor(
     private fun handleReadAlongStopped(clearHighlight: Boolean) {
         cancelScheduledProgressPush()
         syncJob = null
-        narrationStore.clearNarration(bookId)
+        narrationStore.clearNarration(narrationKey())
         readAlongSyncJob?.cancel()
         readAlongStartJob?.cancel()
         readAlongStartJob = null
@@ -3575,11 +3029,6 @@ class ReaderViewModel @Inject constructor(
         nav.evaluateJavascript(script)
     }
 
-    private fun parsePublicationHref(href: String?): Url? {
-        if (href.isNullOrBlank()) return null
-        return Url(href) ?: Url.fromDecodedPath(href)
-    }
-
     private fun decodeJavaScriptStringResult(result: String?): String? {
         if (result.isNullOrBlank() || result == "null") return null
         return runCatching {
@@ -3587,8 +3036,14 @@ class ReaderViewModel @Inject constructor(
         }.getOrNull()?.takeIf { it.isNotBlank() }
     }
 
-    private fun normalizePublicationHref(href: String?): String? =
-        parsePublicationHref(href)?.normalize()?.removeFragment()?.toString()
+    private fun invalidateReadiumLayoutAnchor() {
+        readiumUserNavigationGeneration++
+        heldReadingPosition.invalidate()
+        readiumLayoutGeneration++
+        readiumLayouts.clear()
+        viewportAnchor = null
+        viewportReanchorJob?.cancel()
+    }
 
     internal fun beginReadiumLayout(): Long {
         val generation = ++readiumLayoutGeneration
@@ -3604,7 +3059,8 @@ class ReaderViewModel @Inject constructor(
 
     fun preserveReadiumPositionAcross(viewportChange: () -> Unit) {
         val nav = navigator
-        if (nav == null || engineNavigator != null || (!readiumRestoreConfirmed && epubCheckpointLease != null)) {
+        if (nav == null || engineNavigator != null || (!readiumRestoreConfirmed && epubCheckpointLease != null) ||
+            (_state.value.liveReadAlongActive && _state.value.liveReadAlongFollowing)) {
             viewportChange()
             return
         }
@@ -3807,7 +3263,7 @@ class ReaderViewModel @Inject constructor(
         val nav = navigator ?: return
         if (_state.value.liveReadAlongActive) _state.update { it.copy(liveReadAlongFollowing = false) }
         readiumScrollCaptureJob = viewModelScope.launch {
-            while (navigator === nav && sessionResumedAtMs != null && !readiumLayoutInProgress) {
+            while (navigator === nav && readingSession.isRunning && !readiumLayoutInProgress) {
                 captureHeldReadingPosition(nav, nav.currentLocator.value, heldReadingPosition.generation, userMoved = true)
                 delay(120)
             }
@@ -3954,6 +3410,7 @@ class ReaderViewModel @Inject constructor(
                        else AnnotationKind.HIGHLIGHT
             annotationRepo.create(
                 bookId = bookId,
+                connectionId = bookConnectionId,
                 kind = kind,
                 media = AnnotationMedia.EPUB,
                 style = style,
@@ -4067,6 +3524,7 @@ class ReaderViewModel @Inject constructor(
         viewModelScope.launch {
             annotationRepo.create(
                 bookId = bookId,
+                connectionId = bookConnectionId,
                 kind = AnnotationKind.BOOKMARK,
                 media = AnnotationMedia.EPUB,
                 style = AnnotationStyle.NONE,
@@ -4088,6 +3546,7 @@ class ReaderViewModel @Inject constructor(
         viewModelScope.launch {
             val row = annotationRepo.create(
                 bookId = bookId,
+                connectionId = bookConnectionId,
                 kind = AnnotationKind.NOTE,
                 media = AnnotationMedia.EPUB,
                 style = AnnotationStyle.NONE,
@@ -4336,7 +3795,7 @@ class ReaderViewModel @Inject constructor(
                 createdAt = now,
             ))
         }
-        takeReadingSession()?.let { history.append(it) }
+        readingSession.checkpoint(readingSessionBook(), currentReadingProgress().toFloat(), _state.value.totalPages)
     }
 
     fun flushProgress() {
@@ -4572,7 +4031,7 @@ class ReaderViewModel @Inject constructor(
         ebookProgressSync.setReaderActive(false)
         applicationScope.launch { ebookProgressSync.flush() }
         submitCurrentReadAloudCheckpoint()
-        narrationStore.clearNarration(bookId)
+        narrationStore.clearNarration(narrationKey())
         super.onCleared()
         savePrefsJob?.cancel()
         syncJob?.cancel()
@@ -4602,144 +4061,26 @@ class ReaderViewModel @Inject constructor(
         if (ttsPubToClose != null && ttsPubToClose !== pubToClose) {
             applicationScope.launch(Dispatchers.IO) { ttsPubToClose.close() }
         }
-        closeReadingSession()
-    }
-
-    private var sessionStartedAtMs: Long? = null
-    private var sessionResumedAtMs: Long? = null
-    private var sessionAccumulatedMs: Long = 0
-    private var sessionStartProgress: Float? = null
-
-    private fun startReadingSession() {
-        if (sessionStartedAtMs != null) return
-        readingSpeedTracker.reset()
-        val now = System.currentTimeMillis()
-        sessionStartedAtMs = now
-        sessionResumedAtMs = now
-        sessionAccumulatedMs = 0
-        sessionStartProgress = null
-    }
-
-    fun pauseReadingSession() {
-        readingSpeedTracker.pause()
-        val resumed = sessionResumedAtMs ?: return
-        val now = System.currentTimeMillis()
-        if (now > resumed) sessionAccumulatedMs += now - resumed
-        sessionResumedAtMs = null
-    }
-
-    fun resumeReadingSession() {
-        ebookProgressSync.setReaderActive(true)
-        if (sessionStartedAtMs == null) return
-        if (sessionResumedAtMs != null) return
-        sessionResumedAtMs = System.currentTimeMillis()
-    }
-
-    private fun takeReadingSession(): HistorySession? {
-        val startedAt = sessionStartedAtMs ?: return null
-        pauseReadingSession()
-        val durationMs = sessionAccumulatedMs
-        val endAt = System.currentTimeMillis()
-        sessionStartedAtMs = null
-        sessionResumedAtMs = null
-        sessionAccumulatedMs = 0
-
-        if (durationMs < 5_000L) return null
-        val capturedBookId = bookId
-        val capturedSource = bookSource
-        val capturedConnectionId = bookConnectionId
-        val startProgress = sessionStartProgress
-        val endProgress = currentReadingProgress().toFloat()
-        val totalPages = _state.value.totalPages
-        val pagesRead = startProgress?.let { start ->
-            val delta = endProgress - start
-            if (totalPages > 0 && delta > 0f) {
-                (delta * totalPages).roundToInt().coerceAtLeast(1)
-            } else {
-                null
-            }
-        }
-        sessionStartProgress = null
-        return HistorySession(
-            id = UUID.randomUUID().toString(),
-            bookId = capturedBookId,
-            bookKey = "${capturedConnectionId ?: capturedSource.name}:$capturedBookId",
-            connectionId = capturedConnectionId,
-            source = capturedSource,
-            mediaType = com.enve.core.data.model.AppMediaType.EBOOK,
-            startTimeMs = startedAt,
-            endTimeMs = endAt,
-            activeDurationSeconds = durationMs / 1_000L,
-            startProgress = startProgress,
-            endProgress = endProgress,
-            pagesRead = pagesRead,
+        readingSession.close(
+            book = readingSessionBook(),
+            endProgress = currentReadingProgress().toFloat(),
+            totalPages = _state.value.totalPages,
+            endPage = _state.value.currentPage,
         )
     }
 
-    private fun closeReadingSession() {
-        val historySession = takeReadingSession() ?: return
-        val capturedBookId = historySession.bookId
-        val capturedSource = historySession.source
-        val capturedConnectionId = historySession.connectionId
-        val startedAt = historySession.startTimeMs
-        val endAt = historySession.endTimeMs
-        val durationMs = historySession.activeDurationSeconds * 1_000L
-        val startProgress = historySession.startProgress
-        val endProgress = historySession.endProgress
-        applicationScope.launch(Dispatchers.IO) {
-            history.append(historySession)
-            try {
-                when (capturedSource) {
-                    BookSource.GRIMMORY -> {
-                        val fileType = db?.bookCacheDao()?.getById(capturedBookId)?.primaryFileType
-                        val block: suspend () -> Unit = {
-                            repository.createReadingSession(
-                                fileType = fileType,
-                                bookId = capturedBookId,
-                                startTime = java.time.Instant.ofEpochMilli(startedAt),
-                                endTime = java.time.Instant.ofEpochMilli(endAt),
-                                durationMs = durationMs,
-                                mediaType = com.enve.core.data.model.AppMediaType.EBOOK,
-                                startProgress = startProgress,
-                                endProgress = endProgress,
-                                endLocation = _state.value.currentPage.takeIf { it > 0 }?.toString(),
-                            ).getOrThrow()
-                        }
-                        if (capturedConnectionId == null) {
-                            block()
-                        } else {
-                            withContext(
-                                com.enve.core.data.remote.ConnectionScope.asContextElement(capturedConnectionId),
-                            ) { block() }
-                        }
-                    }
-                    BookSource.BOOKORBIT -> {
-                        val block: suspend () -> Unit = {
-                            bookOrbitHistorySync.submit(
-                                book = Book(
-                                    id = capturedBookId,
-                                    title = bookTitle,
-                                    source = capturedSource,
-                                    mediaType = com.enve.core.data.model.AppMediaType.EBOOK,
-                                    connectionId = capturedConnectionId,
-                                ),
-                                session = historySession,
-                            )
-                        }
-                        if (capturedConnectionId == null) {
-                            block()
-                        } else {
-                            withContext(
-                                com.enve.core.data.remote.ConnectionScope.asContextElement(capturedConnectionId),
-                            ) { block() }
-                        }
-                    }
-                    else -> Unit
-                }
-            } catch (e: CancellationException) {
-                throw e
-            } catch (_: Exception) {
-            }
-        }
+    private fun readingSessionBook() = Book(
+        id = bookId,
+        title = bookTitle,
+        source = bookSource,
+        mediaType = com.enve.core.data.model.AppMediaType.EBOOK,
+        connectionId = bookConnectionId,
+    )
+
+    fun pauseReadingSession() = readingSession.pause()
+
+    fun resumeReadingSession() {
+        ebookProgressSync.setReaderActive(true)
+        readingSession.resume()
     }
 }

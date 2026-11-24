@@ -11,6 +11,8 @@ Reference material for the Android app. Start with the root files for anything t
 
 ## Architecture
 
+- [architecture/silo-catalog-browsing.md](architecture/silo-catalog-browsing.md) — paged server search, genre/language typeahead, cached-only filters and offline files
+
 - [architecture/listening-position-sharing.md](architecture/listening-position-sharing.md) — cross-platform QR contract, matching, confirmation, image limits and progress application
 
 - [architecture/profiles-plan.md](architecture/profiles-plan.md) — proposed adult and child profiles, storage isolation, migration, switching, and verification
@@ -24,6 +26,8 @@ Reference material for the Android app. Start with the root files for anything t
 
 ## Guides
 
+- [guides/grimmory-api-retirement.md](guides/grimmory-api-retirement.md) — nightly API migration and outstanding upstream progress requirements
+- [guides/reader-tools.md](guides/reader-tools.md) — downloadable fonts, imports, Calibre, Readwise, exports, goals, recaps, and page curl
 - [guides/reading-and-sync.md](guides/reading-and-sync.md) — page controls, home customisation, sync intervals, and Hardcover permissions
 
 - [guides/automation.md](guides/automation.md) — Tasker and broadcast-intent playback control

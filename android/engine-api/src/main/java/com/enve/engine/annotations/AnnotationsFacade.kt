@@ -8,7 +8,7 @@ import kotlinx.coroutines.flow.Flow
 interface AnnotationsFacade {
     val knownTags: Flow<List<String>>
 
-    fun annotationsForBook(bookId: String): Flow<List<ReaderAnnotation>>
+    fun annotationsForBook(book: Book): Flow<List<ReaderAnnotation>>
     fun tagsFor(annotation: ReaderAnnotation): List<String>
 
     suspend fun refresh(book: Book)

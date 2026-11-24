@@ -127,25 +127,26 @@ final class ProviderFixVerificationUITests: XCTestCase {
     }
 
     @MainActor
-    private func launchLibrary() throws -> XCUIApplication {
+    private func launchLibrary(screen: String = "library") throws -> XCUIApplication {
         let app = XCUIApplication()
         let external = ProcessInfo.processInfo.environment["ENVE_PROVIDER_UI_EXTERNAL_CONTROL"] == "1"
-        app.launchArguments = external ? [] : ["-imagineScreen", "library"]
+        app.launchArguments = external ? [] : ["-imagineScreen", screen]
         app.launch()
         _ = allowLocalNetworkIfPresented()
         let later = app.buttons["Maybe later"].firstMatch
         if later.exists { later.tap() }
-        if external { try visibleButton("Library", in: app).tap() }
+        if external {
+            try visibleButton(screen == "settings" ? "Settings" : "Library", in: app).tap()
+        }
         return app
     }
 
     @MainActor
     private func form(_ provider: String, port: Int, username: String, password: String) throws -> XCUIApplication {
         continueAfterFailure = false
-        let app = try launchLibrary()
-        try visibleButton("Settings", in: app).tap()
+        let app = try launchLibrary(screen: "settings")
         try visibleButton("Add a source", in: app).tap()
-        try visibleButton("Set up manually", in: app).tap()
+        try visibleButton("Browse all sources", in: app).tap()
         try visibleButton(provider, in: app).tap()
         let scheme = app.buttons["https://"].firstMatch
         if scheme.waitForExistence(timeout: 3) {

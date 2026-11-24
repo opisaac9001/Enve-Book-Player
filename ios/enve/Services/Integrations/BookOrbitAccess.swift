@@ -2,8 +2,10 @@ import Foundation
 
 @MainActor
 enum BookOrbitAccess {
+    private static var appState: AppState { ProfileSwitchCoordinator.shared.activeSession.appState }
+
     static var connections: [ServerConnection] {
-        AppState.shared.providerConnections.connections
+        appState.providerConnections.connections
             .filter { $0.type == .bookOrbit && $0.isConnected && !$0.isArchived }
             .sorted { $0.name.localizedCaseInsensitiveCompare($1.name) == .orderedAscending }
     }
@@ -11,7 +13,7 @@ enum BookOrbitAccess {
     static var isAvailable: Bool { !connections.isEmpty }
 
     static func provider(_ connectionId: UUID) -> BookOrbitProvider? {
-        AppState.shared.getProvider(connectionId) as? BookOrbitProvider
+        appState.getProvider(connectionId) as? BookOrbitProvider
     }
 
     static func provider(for book: Book) -> BookOrbitProvider? {
@@ -22,7 +24,7 @@ enum BookOrbitAccess {
     static func localBooks(connectionId: UUID, remoteIds: [Int]) async -> [Int: Book] {
         guard !remoteIds.isEmpty else { return [:] }
         let uniqueIds = Set(remoteIds.map { "\(connectionId)_\($0)" })
-        let found = await AppState.shared.bookStore.booksByAnyIds(uniqueIds)
+        let found = await appState.bookStore.booksByAnyIds(uniqueIds)
         var result: [Int: Book] = [:]
         for book in found.values {
             if let remoteId = Int(book.id), book.providerId == connectionId {

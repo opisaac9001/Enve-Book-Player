@@ -5,7 +5,7 @@ import androidx.lifecycle.viewModelScope
 import com.enve.app.data.repository.AnnotationRepository
 import com.enve.app.data.repository.TagIndexStore
 import com.enve.core.data.local.BookCacheDao
-import com.enve.core.data.local.toBook
+import com.enve.core.data.local.toBooks
 import com.enve.core.data.model.AnnotationKind
 import com.enve.core.data.model.AnnotationStyle
 import com.enve.core.data.model.Book
@@ -66,7 +66,7 @@ class AnnotationsViewModel @Inject constructor(
     init {
         viewModelScope.launch {
             combine(repo.all(), bookCacheDao.observeAllForList()) { annotations, books ->
-                annotations to books.map { it.toBook() }.associateBy { it.id }
+                annotations to books.toBooks().associateBy { it.id }
             }.collect { (annotations, booksById) ->
                 _state.update {
                     it.copy(

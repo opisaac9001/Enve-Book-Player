@@ -103,13 +103,17 @@ It reaches the navigator, publication, engine adapter, bridge session, and reade
 
 **Search**: `func search(query: String)` → `ReaderSearchModel` → `Services/Reader/EbookSearchService.swift`, which uses Readium's search service and returns locator-backed results.
 
+**Highlight export**: `ReaderExportSheet` shares Markdown, plain text, JSON, CSV, or a paginated PDF through `AnnotationExporter` and `AnnotationExportFile`. Files retain chapter names and notes; temporary files live through the share sheet and are removed on release. PDF uses CoreText pagination with selectable text. Readwise is a separate explicit Send action for the current book's non-placeholder highlights. `ProfileSession.readwise` owns the connection and export task, so profile retirement cancels work. Confirmed highlight IDs and payload hashes are persisted per profile to resume partial sends and update edited text or notes. Export does not synchronize book metadata changes, pull highlights, or delete remote highlights.
+
 ---
 
 ## 3. Theming — Readium preferences API + JS injection (both)
 
 - Settings struct: `ClassicReaderAppearance` (`Reader/Engine/ClassicReaderAppearance.swift`), persisted under `enve.ebookReaderAppearance.v2`. `ReaderAppearance.swift` remains for migration.
 - Applied via **Readium preferences**: `appearance.readiumPreferences` / `readiumPreferencesForFixedLayout` build `EPUBPreferences`; live changes go through `nav.submitPreferences(...)` (debounced 100 ms Combine pipeline on `$appearance`). Theme maps to Readium `.light/.sepia/.dark` + explicit `backgroundColor/textColor` for paper/eink.
-- **JS/CSS injection on top** (per chapter, re-run on `locationDidChange`): custom-font `@font-face` base64 injection (`injectCustomFontCSS`), bionic reading (`ReaderBionicScript.makeScript`), safe-area CSS fix. Fonts: `Services/ReaderFontLibrary.swift` — Google Fonts download/import, `readiumDeclarations: [AnyHTMLFontFamilyDeclaration]` fed into `EPUBNavigatorViewController.Configuration(fontFamilyDeclarations:)`.
+- **JS/CSS injection on top** (per chapter, re-run on `locationDidChange`): custom-font `@font-face` base64 injection (`injectCustomFontCSS`), bionic reading (`ReaderBionicScript.makeScript`), safe-area CSS fix. Fonts: `Services/Reader/ReaderFontLibrary.swift` — Google Fonts download/import, `readiumDeclarations: [AnyHTMLFontFamilyDeclaration]` fed into `EPUBNavigatorViewController.Configuration(fontFamilyDeclarations:)`.
+- **Font browser:** Appearance → Browse fonts opens `ReaderFontBrowser`, with search and serif/sans-serif/monospace filters. `ReaderFontCatalog` stores family names only. Selecting an undownloaded family explicitly downloads it; installed files supply the previews and remain available offline. Downloads validate font data, expose cancellation/retry, and retain a separate license copy when available. TTF/OTF import is in the same browser.
+- **Selection lookups:** The EPUB annotation toolbar's More menu includes Translate and Search Wikipedia. Translation uses Apple's presentation on iOS 17.4+; older systems and Catalyst show an availability message. Translation output requires device testing because Simulator does not support it. Wikipedia opens an in-app Safari search in the preferred language; long selections first show an editable, shortened query. Neither action changes book content or annotations.
 - UI chrome colors (`shellBackgroundColor`, `accentColor`, `panelBackgroundColor`, …) are computed on the appearance struct so the SwiftUI shell matches the page.
 
 ---
@@ -178,6 +182,16 @@ Formats (`enum EbookFormat`, `Models/LocalLibrary.swift:396`): `epub`, `pdf`, `c
 - **EPUB** → Readium (`openPublication(at:)`), with `copyToCanonicalLocation` retry for local imports.
 
 ---
+
+## Ebook Shortcuts and Spotlight
+
+`Services/System/EbookIntents.swift` exposes **Open Ebook** and **Continue Reading** alongside the audiobook shortcuts. Entity searches use the full saved ebook database (up to 50 matches per query), not the library's loaded page. Suggestions show up to 20 books. Continue Reading prefers the last opened visible, unfinished ebook, then the existing continue-reading query. Comics and PDFs follow the same ebook-opening path.
+
+`EbookSystemService` owns a pending request within its `ProfileSession`. `AppRootView` waits for bootstrap and incoming-file imports, dismisses existing presentations, re-resolves the book, and opens the reader without supplying an explicit locator. This preserves the reader's normal saved-position reconciliation. Hidden/deleted books cannot resolve through the system entry points.
+
+The initial Spotlight scope is the last opened ebook, up to 20 continue-reading books, and up to 50 downloaded ebooks, deduplicated by stable ID. It does not index the entire server catalog. The named, device-protected index stores title/author metadata only; provider URLs, tokens, cover URLs, and book contents are not donated. Donations and removal are serialized. Library changes, preferences, reader opens, and system-access activation refresh the index; lock/switch revocation removes its domain. Both system surfaces require the unlocked adult owner profile with reading enabled. Saved user-created Shortcuts can retain their chosen book labels even when Enve no longer resolves that book.
+
+Apple references: [OpenIntent](https://developer.apple.com/documentation/appintents/openintent), [EntityStringQuery](https://developer.apple.com/documentation/appintents/entitystringquery), [Core Spotlight indexing](https://developer.apple.com/documentation/corespotlight/adding-your-app-s-content-to-spotlight-indexes).
 
 ## The contract a new reader UI would code against
 

@@ -3,6 +3,9 @@ package com.enve.silo.api
 import com.enve.silo.dto.SiloAdminServerStatusDto
 import com.enve.silo.dto.SiloAdminStatsDto
 import com.enve.silo.dto.SiloAdminUserDto
+import com.enve.silo.dto.SiloCatalogQueryRequest
+import com.enve.silo.dto.SiloCatalogSearchCapabilities
+import com.enve.silo.dto.SiloFacetValuesResponse
 import com.enve.silo.dto.SiloCatalogItemDto
 import com.enve.silo.dto.SiloCollection
 import com.enve.silo.dto.SiloEbookProgressEnvelope
@@ -77,7 +80,28 @@ interface SiloApi {
         @Query("cursor") cursor: String?,
         @Query("limit") limit: Int,
         @Query("skip_total") skipTotal: Boolean = true,
+        @Query("q") search: String? = null,
+        @Query("type") type: String? = null,
     ): Response<SiloCollection<SiloCatalogItemDto>>
+
+    @POST("api/v2/catalog/query")
+    suspend fun catalogQuery(
+        @Header("X-Profile-Id") profileId: String,
+        @Body request: SiloCatalogQueryRequest,
+    ): Response<SiloCollection<SiloCatalogItemDto>>
+
+    @GET("api/v2/catalog/search/capabilities")
+    suspend fun catalogSearchCapabilities(@Header("X-Profile-Id") profileId: String): Response<SiloCatalogSearchCapabilities>
+
+    @GET("api/v2/catalog/filters/search")
+    suspend fun catalogFilterSearch(
+        @Header("X-Profile-Id") profileId: String,
+        @Query("library_id") libraryId: String,
+        @Query("type") type: String?,
+        @Query("q") search: String?,
+        @Query("facet") facet: String,
+        @Query("limit") limit: Int = 24,
+    ): Response<SiloFacetValuesResponse>
 
     @GET("api/v2/catalog/items/{id}")
     suspend fun itemDetail(

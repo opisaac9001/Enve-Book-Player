@@ -9,7 +9,6 @@ import java.security.cert.X509Certificate
 import javax.net.ssl.HostnameVerifier
 import javax.net.ssl.HttpsURLConnection
 import javax.net.ssl.SSLEngine
-import javax.net.ssl.SSLSession
 import javax.net.ssl.TrustManagerFactory
 import javax.net.ssl.X509ExtendedTrustManager
 import javax.net.ssl.X509TrustManager
@@ -117,6 +116,4 @@ object PrivateNetworkTrust {
         return false
     }
 
-    @Suppress("UNUSED_PARAMETER")
-    private fun _unusedSession(session: SSLSession?) = Unit
 }

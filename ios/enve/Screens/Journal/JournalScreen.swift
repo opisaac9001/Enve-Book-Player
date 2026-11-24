@@ -14,6 +14,7 @@ struct JournalScreen: View {
     @State private var weekReading: TimeInterval = 0
     @State private var streak = 0
     @State private var daily: [String: TimeInterval] = [:]
+    @State private var dailyReading: [String: TimeInterval] = [:]
     @State private var hasHeatmap = false
     @State private var quotes: [JournalQuote] = []
     @State private var finished: [Book] = []
@@ -32,6 +33,19 @@ struct JournalScreen: View {
             ScrollView {
                 VStack(alignment: .leading, spacing: 32) {
                     header
+
+                    NavigationLink {
+                        JournalRecapScreen(profileSession: session)
+                    } label: {
+                        JournalLinkRow(glyph: "calendar", title: "Recaps", subtitle: "Your month and year, ready to share")
+                    }
+                    .buttonStyle(PressableStyle())
+                    .padding(.horizontal, 24)
+
+                    if loaded, session.preferences.readingEnabled {
+                        JournalReadingGoalCard(store: session.readingGoal, dailySeconds: dailyReading)
+                            .padding(.horizontal, 24)
+                    }
 
                     if loaded && isJournalEmpty {
                         Text("The journal opens when the reading begins.")
@@ -264,6 +278,8 @@ struct JournalScreen: View {
         }
     }
 
+    private var session: ProfileSession { profileSession ?? .owner }
+
     private var isJournalEmpty: Bool {
         weekListening <= 0 && weekReading <= 0 && streak == 0 && !hasHeatmap
             && quotes.isEmpty && finished.isEmpty
@@ -275,6 +291,7 @@ struct JournalScreen: View {
 
         weekListening = JournalStats.weekTotal(listening.dailySeconds)
         weekReading = JournalStats.weekTotal(reading.dailySecondsRead)
+        dailyReading = reading.dailySecondsRead
         daily = listening.dailySeconds.merging(reading.dailySecondsRead, uniquingKeysWith: +)
         streak = JournalStats.streak(daily)
         hasHeatmap = JournalStats.hasActivity(daily, withinDays: JournalHeatmap.weeks * 7)

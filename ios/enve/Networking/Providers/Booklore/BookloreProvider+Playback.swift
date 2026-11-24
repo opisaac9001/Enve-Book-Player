@@ -35,27 +35,7 @@ extension BookloreProvider {
         return headers
     }
 
-    private func fetchBookDetailForPlayback(bookId: String) async -> BookloreBookDetail? {
-        if let request = try? makeRequest(path: "/api/v1/app/books/\(bookId)"),
-            let (data, response) = try? await performAuthorizedRequest(request),
-            response.statusCode == 200,
-            let detail = try? JSONDecoder().decode(BookloreBookDetail.self, from: data)
-        {
-            return detail
-        }
-
-        if let request = try? makeRequest(path: "/api/v1/books/\(bookId)"),
-            let (data, response) = try? await performAuthorizedRequest(request),
-            response.statusCode == 200,
-            let detail = try? JSONDecoder().decode(BookloreBookDetail.self, from: data)
-        {
-            return detail
-        }
-
-        return nil
-    }
-
-    private func isLikelyAudioFile(_ file: BookloreBookFile) -> Bool {
+    private func isLikelyAudioFile(_ file: BookloreLegacyBookFile) -> Bool {
         let ext = (file.fileExtension ?? "").trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
         if ["mp3", "m4a", "m4b", "mp4", "aac", "flac", "ogg", "oga", "opus", "wav"].contains(ext) {
             return true
@@ -76,17 +56,15 @@ extension BookloreProvider {
         let infoBookFileId = mapping?.bookFileId
 
         if tracks.count <= 1,
-            let detail = await fetchBookDetailForPlayback(bookId: grimmoryNumericId(book))
+            let detail = try? await fetchGrimmoryBook(bookId: grimmoryNumericId(book))
         {
-            if let fileId = (detail.files?.first(where: { $0.isPrimary == true }) ?? detail.files?.first)?.id?.stringValue,
+            if let fileId = detail.files.first(where: { isLikelyAudioFile($0) })?.id?.stringValue,
                 let intId = Int(fileId), intId > 0
             {
                 progressClient.cacheAudiobookFileId(intId, for: book.id)
             }
 
-            let detailDuration = detail.durationSeconds.map(Double.init) ?? detail.duration ?? 0
-            let totalDuration = max(serverDuration, detailDuration)
-            let audioFiles = (detail.files ?? []).filter { isLikelyAudioFile($0) }
+            let audioFiles = detail.files.filter { isLikelyAudioFile($0) }
 
             if audioFiles.count > 1 {
                 let sortedFiles = audioFiles.sorted { lhs, rhs in
@@ -96,8 +74,8 @@ extension BookloreProvider {
                 }
 
                 let fallbackPerTrackDuration =
-                    totalDuration > 0
-                    ? totalDuration / Double(sortedFiles.count)
+                    serverDuration > 0
+                    ? serverDuration / Double(sortedFiles.count)
                     : 3600
 
                 var rebuiltTracks: [AudioTrackInfo] = []
@@ -147,13 +125,10 @@ extension BookloreProvider {
                     if chapters.isEmpty {
                         chapters = rebuiltChapters
                     }
-                    if serverDuration <= 0 {
-                        serverDuration = totalDuration
-                    }
                 }
             }
 
-            let hasFolderBasedFile = (detail.files ?? []).contains { $0.folderBased == true }
+            let hasFolderBasedFile = detail.files.contains { $0.folderBased == true }
             if tracks.count <= 1, hasFolderBasedFile,
                 let probed = await probeMultiTrackURLs(for: book)
             {

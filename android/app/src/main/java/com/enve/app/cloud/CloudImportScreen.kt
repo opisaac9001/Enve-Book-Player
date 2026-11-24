@@ -105,7 +105,7 @@ fun CloudImportScreen(
             ScreenBackButton(onClick = onBack)
             Column(Modifier.padding(start = DS.Spacing.MD.scaled(metrics))) {
                 Text(
-                    text = "CLOUD STORAGE",
+                    text = if (service == CloudStorageService.INCOMING_FILES) "ON DEVICE" else "CLOUD STORAGE",
                     color = colors.secondaryText,
                     fontSize = DS.FontSize.Caption2.scaled(metrics),
                     fontWeight = FontWeight.Bold,
@@ -224,6 +224,10 @@ fun CloudImportScreen(
 }
 
 private fun serviceExplanation(service: CloudStorageService): String = buildString {
+    if (service == CloudStorageService.INCOMING_FILES) {
+        append("Review the shared files, then tap Import. Enve copies selected books into the current profile for offline reading. The original files stay unchanged.")
+        return@buildString
+    }
     append("Enve isn't signed in to ${service.displayName}. ")
     append("The Android Files chooser shows ${service.displayName} only when its app is installed and signed in on this device, ")
     append("and some providers don't let you choose a whole folder. ")

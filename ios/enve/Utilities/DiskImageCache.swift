@@ -408,7 +408,7 @@ struct CachedAsyncCoverImage: View {
                         DiskImageCache.shared.save(img, for: url)
                         DiskImageCache.shared.clearRemoteFetchFailure(for: url)
                         await AppCache.shared.setCoverData(data, for: identityBook)
-                        _ = try? LocalStorageManager.shared.saveCoverOverride(for: identityBook.downloadKey, imageData: data)
+                        _ = try? LocalStorageManager.shared.saveCoverOverride(for: identityBook.downloadKey, imageData: data, sourceURL: url)
                         await MainActor.run {
                             self.image = img
                             self.isLoading = false
@@ -425,6 +425,7 @@ struct CachedAsyncCoverImage: View {
                     AppLogger.library.error("[CoverImage] Kavita cover fetch failed for \(identityBook.id): \(error.localizedDescription)")
                     DiskImageCache.shared.markRemoteFetchFailure(for: url)
                     await MainActor.run { isLoading = false }
+                    await loadFromPersistentStorage(book: identityBook)
                 }
                 return
             }
@@ -573,6 +574,11 @@ struct CachedAsyncCoverImage: View {
     }
 
     nonisolated static func coverOverrideIsCurrent(at fileURL: URL, for sourceURL: URL) -> Bool {
+        if let revision = URLComponents(url: sourceURL, resolvingAgainstBaseURL: false)?.queryItems?
+            .first(where: { $0.name == "enveCoverRevision" })?.value {
+            let saved = try? String(contentsOf: fileURL.appendingPathExtension("revision"), encoding: .utf8)
+            return saved == revision
+        }
         guard let version = URLComponents(url: sourceURL, resolvingAgainstBaseURL: false)?.queryItems?
             .first(where: { $0.name == "v" })?.value,
             let updatedAt = FlexibleDate.parse(version)

@@ -308,7 +308,7 @@ class KomgaProvider: IncrementalCatalogProvider, EbookProgressProvider, EbookDow
     }
 
     func downloadEbook(for book: Book, onProgress: (@Sendable (Double) -> Void)? = nil) async throws -> URL {
-        if let cached = ebooks.cachedEbook(forBookId: book.id) {
+        if let cached = ebooks.cachedEbook(for: book) {
             onProgress?(1)
             return cached
         }
@@ -364,7 +364,7 @@ class KomgaProvider: IncrementalCatalogProvider, EbookProgressProvider, EbookDow
             return try ebooks.cacheRemoteEbook(
                 tempURL: tempURL,
                 preferredFilename: filename,
-                bookIdentifier: book.id
+                bookIdentifier: book.ebookStorageID
             )
         } catch {
             AppLogger.network.error("[Komga] Download failed: \(error)")

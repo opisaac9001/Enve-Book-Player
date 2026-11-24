@@ -130,23 +130,15 @@ class GrimmoryToolsRepository @Inject constructor(
 
     suspend fun notes(limit: Int): Result<List<GrimmoryNote>?> = runSuspendCatching {
         val requests = OptionalRequests()
-        val books = requests.get { api.getNotebookBooks(page = 0, size = NOTEBOOK_BOOKS) }
+        val entries = requests.get { api.getNotebookEntries(size = limit.coerceAtLeast(1)) }?.content.orEmpty()
         requests.requireSupported()
-        val notebookBooks = books?.content.orEmpty()
-        buildList {
-            for (book in notebookBooks) {
-                if (size >= limit) break
-                val entries = requests.get { api.getNotebookEntries(book.bookId, page = 0, size = NOTEBOOK_ENTRIES) }
-                    ?.content
-                    .orEmpty()
-                entries.forEach { entry ->
-                    add(entry.toNote(book.bookTitle, book.authors?.joinToString(", ")))
-                }
-            }
+        val bookIds = entries.map { it.bookId }.filter(String::isNotBlank).distinct()
+        val authors = if (bookIds.isEmpty()) emptyMap() else {
+            requests.list { api.getBooksBatch(bookIds.joinToString(",")) }
+                .associate { book -> book.id to book.metadata?.authors?.joinToString(", ") }
         }
+        entries.map { entry -> entry.toNote(authors[entry.bookId]) }
             .filter { it.text.isNotBlank() }
-            .sortedByDescending { it.createdAt.orEmpty() }
-            .take(limit)
     }
 
     suspend fun recommendedBookIds(bookId: String, limit: Int): Result<List<String>?> = runSuspendCatching {
@@ -165,7 +157,7 @@ class GrimmoryToolsRepository @Inject constructor(
             .distinct()
     }
 
-    private fun NotebookEntryDto.toNote(bookTitle: String?, author: String?): GrimmoryNote = GrimmoryNote(
+    private fun NotebookEntryDto.toNote(author: String?): GrimmoryNote = GrimmoryNote(
         id = id,
         bookTitle = bookTitle?.takeIf { it.isNotBlank() },
         author = author?.takeIf { it.isNotBlank() },
@@ -193,10 +185,5 @@ class GrimmoryToolsRepository @Inject constructor(
         fun requireSupported() {
             if (!supported) throw ServerFeatureUnsupportedException()
         }
-    }
-
-    private companion object {
-        const val NOTEBOOK_BOOKS = 6
-        const val NOTEBOOK_ENTRIES = 10
     }
 }

@@ -76,6 +76,9 @@ keeps the hinge's clearance on both sides), never at a presumed halfway line.
   facing page instead of pushing its top row above the screen.
 - `enve/Screens/Reader/ReaderScreen.swift` and `ReaderSpreadPolicy`: the facing-page spread, the lectern,
   and the side chrome (close at the top of the column, Contents, Appearance, Search and More at its foot).
+  The reader spine uses the measured vertical fold in the reader canvas. Spread content balances the
+  outer margins around that fold so the trailing status column cannot offset the page gutter from the
+  shadow. Without a vertical fold both stay at the reader canvas midpoint.
   The lectern keeps the engine's view in one place in the tree and only resizes it above the controls
   panel, so folding the phone never rebuilds the navigator or loses the locator; the panel leads with
   Previous page and Next page (labels follow the book's page progression) so the flat half turns pages
@@ -88,6 +91,17 @@ keeps the hinge's clearance on both sides), never at a presumed halfway line.
   only honours two columns from 60em up, so `ClassicReaderModel` injects a stylesheet lifting the floor
   while the spread is requested, and the Foliate runtime caps a column at half the view so its paginator
   splits the page.
+
+## Reader spine verification — 2026-11-17
+
+- Duo / iOS 27.1: checked the page gutter and shadow against the fold in open and partially folded
+  landscape poses, with Paper and Sepia pages; page turns worked and Ink was restored afterward.
+- The `enve` simulator build passed without warnings or errors. The focused `AllTests` selection of
+  `ReaderSpreadPolicyTests`, `DuoShellLayoutTests`, and `ReaderLayoutRuntimeTests` passed all 20 tests on Air.
+- The Air reader rotation UI smoke test stalled during runner launch and was interrupted after three
+  minutes; it is not a passing check. The full test plans and physical devices were not exercised.
+- During verification, initial opening sometimes retained one text column until an appearance change
+  triggered reflow. That reader-engine behavior remains unresolved by this geometry change.
 
 ## The facing page
 

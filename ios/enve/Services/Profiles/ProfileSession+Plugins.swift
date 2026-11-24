@@ -71,7 +71,8 @@ extension ProfileSession {
     }
 
     func configureSyncPlugins() {
-        registry.register(sink: ProviderSyncSink(providerResolver: providerConnections, pendingSync: pendingSync))
+        registry.register(sink: ProviderSyncSink(providerResolver: providerConnections,
+            storytellerPositions: { [unowned self] in playback.storytellerPositions }, pendingSync: pendingSync))
         registry.register(sink: koreaderSink)
         if isOwner && PlatformRuntime.cloudKitEnabled {
             registry.register(sink: cloudKit)

@@ -11,6 +11,7 @@ import androidx.work.WorkerParameters
 import com.enve.engine.impl.R
 import com.enve.app.data.offline.DownloadRunOutcome
 import com.enve.app.profiles.ProfileRuntimeRegistry
+import com.enve.app.work.enterForeground
 import com.enve.core.data.local.DEFAULT_ADULT_PROFILE_ID
 import com.enve.core.data.remote.ConnectionScope
 import dagger.assisted.Assisted
@@ -25,14 +26,17 @@ class AudiobookDownloadWorker @AssistedInject constructor(
 ) : CoroutineWorker(appContext, params) {
 
     override suspend fun doWork(): Result {
-        val bookId = inputData.getString(KEY_BOOK_ID) ?: return Result.failure()
         val profileId = inputData.getString(KEY_PROFILE_ID) ?: DEFAULT_ADULT_PROFILE_ID
         return runtimes.withProfile(profileId) { runtime ->
             val manager = runtime.downloads()
-            val book = runtime.audioStorage().getPendingRequest(bookId) ?: return@withProfile Result.failure()
+            val key = inputData.getString(KEY_DOWNLOAD_KEY) ?: run {
+                manager.recoverQueuedDownloads()
+                return@withProfile Result.success()
+            }
+            val book = runtime.audioStorage().getPendingRequest(key) ?: return@withProfile Result.failure()
             val requireWifi = inputData.getBoolean(KEY_REQUIRE_WIFI, false)
 
-            setForeground(foregroundInfo(book.title))
+            if (!enterForeground(foregroundInfo(book.title))) return@withProfile Result.retry()
 
             val scopeElement = book.connectionId?.let { ConnectionScope.asContextElement(it) }
             val finalAttempt = runAttemptCount + 1 >= MAX_ATTEMPTS
@@ -66,7 +70,7 @@ class AudiobookDownloadWorker @AssistedInject constructor(
 
     companion object {
         const val CHANNEL_ID = "enve_downloads"
-        const val KEY_BOOK_ID = "book_id"
+        const val KEY_DOWNLOAD_KEY = "download_key"
         const val KEY_PROFILE_ID = "profile_id"
         const val KEY_REQUIRE_WIFI = "require_wifi"
         private const val NOTIFICATION_ID = 0xD0

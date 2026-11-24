@@ -17,6 +17,7 @@ extension BookloreProvider {
                 resolved.hasAlternateFormat = false
             }
             if resolved.mediaType == .ebook,
+                resolved.ebookFormat == EbookFormat.epub.rawValue,
                 resolved.epub3Features == nil,
                 let features = await fetchEPUB3Features(bookId: bookId)
             {
@@ -44,25 +45,11 @@ extension BookloreProvider {
             return await finalize(mapKomgaBookToBook(book, libraryId: libraryId))
         }
 
-        func fetchAppStyleDetail(path: String) async throws -> BookloreBookDetail {
-            let request = try makeRequest(path: path)
-            let (data, response) = try await performAuthorizedRequest(request)
-            guard response.statusCode == 200 else {
-                throw ProviderError.serverError("Failed to fetch book details (HTTP \(response.statusCode))")
-            }
-            try guardJSON(data, response: response, endpoint: path)
-            return try JSONDecoder().decode(BookloreBookDetail.self, from: data)
-        }
-
-        if let detail = try? await fetchAppStyleDetail(path: "/api/v1/app/books/\(bookId)") {
+        if let detail = try? await fetchGrimmoryBook(bookId: bookId, withDescription: true) {
             return await finalize(mapToBook(detail, fallbackLibraryId: libraryId))
         }
 
-        if let detail = try? await fetchAppStyleDetail(path: "/api/v1/books/\(bookId)") {
-            return await finalize(mapToBook(detail, fallbackLibraryId: libraryId))
-        }
-
-        AppLogger.network.info("[Booklore] Full book details app endpoints unavailable - falling back to legacy detail endpoint")
+        AppLogger.network.info("[Booklore] Full book details unavailable - falling back to legacy detail endpoint")
         let request = try makeRequest(path: "/api/v1/libraries/\(libraryId)/book/\(bookId)")
         let (data, response) = try await performAuthorizedRequest(request)
         guard response.statusCode == 200 else {
@@ -237,22 +224,27 @@ extension BookloreProvider {
         }
     }
 
-    func fetchGrimmorySyncDetail(bookId: Int) async throws -> BookloreSyncBookDetail {
-        let request = try makeRequest(path: "/api/v1/app/books/\(bookId)")
+    func fetchGrimmoryBook(bookId: String, withDescription: Bool = false) async throws -> BookloreLegacyBook {
+        let path = "/api/v1/books/\(bookId)"
+        let request = try makeRequest(
+            path: path,
+            queryItems: withDescription ? [URLQueryItem(name: "withDescription", value: "true")] : []
+        )
         let (data, response) = try await performAuthorizedRequest(request)
         guard response.statusCode == 200 else {
             if response.statusCode == 401 || response.statusCode == 403 {
                 throw ProviderError.unauthorized
             }
             throw ProviderError.serverError(
-                "Failed to resolve Grimmory ebook files (HTTP \(response.statusCode))"
+                "Failed to fetch Grimmory book (HTTP \(response.statusCode))"
             )
         }
-        return try JSONDecoder().decode(BookloreSyncBookDetail.self, from: data)
+        try guardJSON(data, response: response, endpoint: path)
+        return try JSONDecoder().decode(BookloreLegacyBook.self, from: data)
     }
 
     private func grimmoryEbookFormat(
-        for file: BookloreBookFile,
+        for file: BookloreLegacyBookFile,
         preferredFormat: String?
     ) -> String? {
         let candidates = [
@@ -281,10 +273,10 @@ extension BookloreProvider {
     func selectedGrimmoryEbookResource(
         for book: Book,
         bookId: Int,
-        detail: BookloreSyncBookDetail
+        detail: BookloreLegacyBook
     ) throws -> GrimmoryEbookResource? {
         let declaredFormat = BookloreBookMapper.normalizedEbookFormat(book.ebookFormat)
-        let files = detail.files ?? []
+        let files = detail.files
         let cacheKey = "\(book.id):\(declaredFormat ?? "primary")"
         if let cached = cachedEbookResources[cacheKey],
             cached.bookId == bookId,
@@ -310,7 +302,7 @@ extension BookloreProvider {
             return fileFormat == declaredFormat
         }
         guard
-            let selected = matchingFiles.first(where: { $0.isPrimary == true })
+            let selected = matchingFiles.first(where: { detail.isPrimary($0) })
                 ?? matchingFiles.first,
             let rawFileId = selected.id?.stringValue,
             let fileId = Int(rawFileId),
@@ -322,7 +314,7 @@ extension BookloreProvider {
         return GrimmoryEbookResource(
             bookId: bookId,
             fileId: fileId,
-            isPrimary: selected.isPrimary == true,
+            isPrimary: detail.isPrimary(selected),
             fileName: selected.fileName,
             format: grimmoryEbookFormat(for: selected, preferredFormat: declaredFormat)
         )
@@ -342,7 +334,7 @@ extension BookloreProvider {
         guard let bookId = resolveGrimmoryBookId(for: book) else {
             throw ProviderError.invalidResponse
         }
-        let detail = try await fetchGrimmorySyncDetail(bookId: bookId)
+        let detail = try await fetchGrimmoryBook(bookId: String(bookId))
         let resource = try selectedGrimmoryEbookResource(
             for: book,
             bookId: bookId,
@@ -366,7 +358,7 @@ extension BookloreProvider {
         let cacheIdentifier =
             resource.map {
                 grimmoryResourceCacheIdentifier(for: book, resource: $0)
-            } ?? book.id
+            } ?? book.ebookStorageID
         let expectedExtension = resource?.format
             ?? BookloreBookMapper.normalizedEbookFormat(book.ebookFormat)
 

@@ -15,8 +15,8 @@ struct EnveTVApp: App {
         providerConnections: ProviderConnectionStore,
         bookStore: any BookStoreRepository
     ) {
-        PluginRegistry.shared.register(sink: ProviderSyncSink(providerResolver: providerConnections))
-        PluginRegistry.shared.register(sink: BookloreKoreaderSink.shared)
+        PluginRegistry.shared.register(sink: ProviderSyncSink(providerResolver: providerConnections, storytellerPositions: { .shared }))
+        PluginRegistry.shared.register(sink: ProfileSession.owner.koreaderSink)
         PluginRegistry.shared.register(sink: CloudKitProgressSync.shared)
 
         let registry = PluginRegistry.shared

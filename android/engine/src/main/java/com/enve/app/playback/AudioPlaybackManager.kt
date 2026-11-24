@@ -70,6 +70,20 @@ internal fun resolveTrackDurationMs(
     else -> 0L
 }
 
+internal fun resolveCheckpointPositionMs(
+    localPositionMs: Long,
+    currentIndex: Int,
+    itemCount: Int,
+    trackDurationsMs: List<Long>,
+): Long? {
+    val localPosition = localPositionMs.coerceAtLeast(0L)
+    if (currentIndex !in 0 until itemCount) return null
+    if (itemCount == 1) return localPosition
+    val previousDurationsMs = trackDurationsMs.take(currentIndex)
+    if (previousDurationsMs.size != currentIndex) return null
+    return knownAbsolutePositionMs(previousDurationsMs, localPosition)
+}
+
 internal data class QueueSeekTarget(
     val mediaItemIndex: Int,
     val positionMs: Long,
@@ -133,6 +147,8 @@ data class PlaybackState(
     val playbackCompleted: Boolean = false,
     val mediaId: String? = null,
     val errorMessage: String? = null,
+    val checkpointPositionMs: Long? = null,
+    val checkpointDurationMs: Long = 0L,
 )
 
 @Singleton
@@ -172,7 +188,13 @@ class AudioPlaybackManager @Inject constructor(
 
     private fun resetTransientStateForNewBook(bookId: String) {
         if (_currentBookId.value != bookId) {
-            _state.value = _state.value.copy(currentPositionMs = 0L, durationMs = 0L, playbackCompleted = false)
+            _state.value = _state.value.copy(
+                currentPositionMs = 0L,
+                durationMs = 0L,
+                checkpointPositionMs = null,
+                checkpointDurationMs = 0L,
+                playbackCompleted = false,
+            )
         }
     }
 
@@ -200,25 +222,64 @@ class AudioPlaybackManager @Inject constructor(
     }
 
     fun connect() {
-        if (controller != null) return
+        runOnMain(::connectOnMain)
+    }
+
+    private fun connectOnMain() {
+        if (!scope.isActive) return
+        controller?.let { current ->
+            if (current.isConnected) return
+            releaseController()
+        }
         if (controllerFuture != null) return
         val sessionToken = SessionToken(context, ComponentName(context, PlaybackService::class.java))
-        controllerFuture = MediaController.Builder(context, sessionToken).buildAsync().also { future ->
-            future.addListener({
-                scope.launch(Dispatchers.Main) {
-                    try {
-                        controller = future.get()
-                        setupPlayerListener()
-                        pendingPlayback.getAndSet(null)?.let(::playPending)
-                    } catch (e: kotlinx.coroutines.CancellationException) {
-                        throw e
-                    } catch (e: Exception) {
-                        controllerFuture = null
-                        Log.w("AudioPlaybackManager", "MediaController connection failed", e)
-                    }
+        lateinit var future: ListenableFuture<MediaController>
+        future = MediaController.Builder(context, sessionToken)
+            .setListener(object : MediaController.Listener {
+                override fun onDisconnected(disconnected: MediaController) {
+                    onControllerDisconnected(future)
                 }
-            }, MoreExecutors.directExecutor())
+            })
+            .buildAsync()
+        controllerFuture = future
+        future.addListener({ scope.launch { onControllerFutureDone(future) } }, MoreExecutors.directExecutor())
+    }
+
+    private fun onControllerFutureDone(future: ListenableFuture<MediaController>) {
+        if (controllerFuture !== future) return
+        val connected = try {
+            future.get()
+        } catch (e: kotlinx.coroutines.CancellationException) {
+            throw e
+        } catch (e: Exception) {
+            controllerFuture = null
+            Log.w("AudioPlaybackManager", "MediaController connection failed", e)
+            failPlayback(e.message ?: e::class.java.simpleName)
+            return
         }
+        controller = connected
+        setupPlayerListener()
+        pendingPlayback.getAndSet(null)?.let(::playPending)
+    }
+
+    private fun onControllerDisconnected(future: ListenableFuture<MediaController>) {
+        if (controllerFuture !== future) return
+        Log.w("AudioPlaybackManager", "MediaController disconnected")
+        releaseController()
+        failPlayback(CONTROLLER_DISCONNECTED)
+    }
+
+    private fun failPlayback(message: String) {
+        pendingPlayback.set(null)
+        _state.value = _state.value.copy(isPlaying = false, isBuffering = false, isReady = false, errorMessage = message)
+    }
+
+    private fun releaseController() {
+        positionJob?.cancel()
+        val future = controllerFuture
+        controllerFuture = null
+        controller = null
+        future?.let { MediaController.releaseFuture(it) }
     }
 
     fun play(
@@ -269,7 +330,7 @@ class AudioPlaybackManager @Inject constructor(
         _state.value = _state.value.copy(errorMessage = null)
 
         val cacheKey = AutoMediaBrowserHelper.cacheKeyFrom(mediaId) ?: bookId
-        val cachedArtwork = autoArtworkCache.cachedUriFor(bookId, cacheKey, coverUrl)
+        val cachedArtwork = autoArtworkCache.cachedUriFor(null, cacheKey, coverUrl)
         val metadata = MediaMetadata.Builder()
             .setTitle(title)
             .setArtist(author)
@@ -324,12 +385,12 @@ class AudioPlaybackManager @Inject constructor(
     }
 
     private fun submitPlayback(pending: PendingPlayback) {
-        if (pending.requestJob?.isCancelled == true) return
+        if (!scope.isActive || pending.requestJob?.isCancelled == true) return
         pendingPlayback.set(pending)
         runOnMain {
             if (pendingPlayback.get() !== pending) return@runOnMain
-            if (controller == null) {
-                connect()
+            if (controller?.isConnected != true) {
+                connectOnMain()
             } else if (pendingPlayback.compareAndSet(pending, null)) {
                 playPending(pending)
             }
@@ -358,7 +419,7 @@ class AudioPlaybackManager @Inject constructor(
         _state.value = _state.value.copy(errorMessage = null)
 
         val cacheKey = AutoMediaBrowserHelper.cacheKeyFrom(mediaId) ?: bookId
-        val cachedArtwork = autoArtworkCache.cachedUriFor(bookId, cacheKey, coverUrl)
+        val cachedArtwork = autoArtworkCache.cachedUriFor(null, cacheKey, coverUrl)
         val mediaItems = tracks.mapIndexed { index, track ->
             val itemMediaId = if (mediaId.isNotBlank() && tracks.size > 1) "$mediaId#track=$index" else mediaId
             val resolvedUrl = connectionStreamUrl(withAuthToken(track.url, authToken), connectionId)
@@ -526,9 +587,7 @@ class AudioPlaybackManager @Inject constructor(
         runOnMain {
             controller?.stop()
             controller?.clearMediaItems()
-            controllerFuture?.let { MediaController.releaseFuture(it) }
-            controller = null
-            controllerFuture = null
+            releaseController()
             scope.cancel()
         }
     }
@@ -575,16 +634,7 @@ class AudioPlaybackManager @Inject constructor(
         positionJob = scope.launch {
             while (isActive) {
                 controller?.let { player ->
-                    refreshTrackOffsetsFromQueue(player)
-                    val absolutePositionMs = resolveAbsolutePositionMs(player)
-                    val absoluteDurationMs = resolveAbsoluteDurationMs(player)
-                    _state.value = _state.value.copy(
-                        currentPositionMs = absolutePositionMs,
-                        durationMs = absoluteDurationMs,
-                        currentMediaItemIndex = player.currentMediaItemIndex,
-                        mediaItemCount = player.mediaItemCount,
-                        mediaId = player.currentMediaItem?.mediaId?.takeIf { it.isNotBlank() },
-                    )
+                    _state.value = _state.value.withTimeline(player)
                 }
                 delay(250)
             }
@@ -593,16 +643,31 @@ class AudioPlaybackManager @Inject constructor(
 
     private fun syncPlaybackSnapshot(player: MediaController) {
         val playbackState = player.playbackState
-        refreshTrackOffsetsFromQueue(player)
-        _state.value = _state.value.copy(
+        _state.value = _state.value.withTimeline(player).copy(
             isPlaying = player.isPlaying,
             isBuffering = playbackState == Player.STATE_BUFFERING,
-            currentPositionMs = resolveAbsolutePositionMs(player),
-            durationMs = resolveAbsoluteDurationMs(player),
-            currentMediaItemIndex = player.currentMediaItemIndex,
-            mediaItemCount = player.mediaItemCount,
             playbackSpeed = player.playbackParameters.speed,
             isReady = playbackState == Player.STATE_READY,
+        )
+    }
+
+    private fun PlaybackState.withTimeline(player: MediaController): PlaybackState {
+        refreshTrackOffsetsFromQueue(player)
+        val itemCount = player.mediaItemCount
+        val absoluteDurationMs = resolveAbsoluteDurationMs(player)
+        val completeTimeline = itemCount <= 1 || hasReliableMultiTrackTimeline(itemCount, activeTrackDurationsMs)
+        return copy(
+            currentPositionMs = resolveAbsolutePositionMs(player),
+            durationMs = absoluteDurationMs,
+            checkpointPositionMs = resolveCheckpointPositionMs(
+                localPositionMs = player.currentPosition,
+                currentIndex = player.currentMediaItemIndex,
+                itemCount = itemCount,
+                trackDurationsMs = activeTrackDurationsMs,
+            ),
+            checkpointDurationMs = if (completeTimeline) absoluteDurationMs else 0L,
+            currentMediaItemIndex = player.currentMediaItemIndex,
+            mediaItemCount = itemCount,
             mediaId = player.currentMediaItem?.mediaId?.takeIf { it.isNotBlank() },
         )
     }
@@ -697,7 +762,7 @@ class AudioPlaybackManager @Inject constructor(
         queueKey: String?,
     ) {
         scope.launch {
-            val artworkUri = autoArtworkCache.uriFor(bookId, cacheKey, coverUrl) ?: return@launch
+            val artworkUri = autoArtworkCache.uriFor(null, cacheKey, coverUrl) ?: return@launch
             val player = controller ?: return@launch
             if (currentBookId != bookId || activeQueueKey != queueKey) return@launch
             for (index in 0 until player.mediaItemCount) {
@@ -792,6 +857,7 @@ class AudioPlaybackManager @Inject constructor(
     }
 
     companion object {
+        private const val CONTROLLER_DISCONNECTED = "Playback service disconnected"
 
         internal fun withAuthToken(url: String, token: String?): String {
             val trimmed = token?.trim().orEmpty()

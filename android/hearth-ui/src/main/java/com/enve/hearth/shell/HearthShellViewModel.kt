@@ -9,6 +9,7 @@ import com.enve.engine.downloads.DownloadTransfer
 import com.enve.engine.eink.EinkFacade
 import com.enve.engine.eink.EinkState
 import com.enve.engine.library.LibraryFacade
+import com.enve.engine.library.PendingBookMutationsFacade
 import com.enve.engine.playback.NowPlaying
 import com.enve.engine.playback.PlaybackFacade
 import com.enve.engine.playback.PlaybackTransport
@@ -37,6 +38,7 @@ class HearthShellViewModel @Inject constructor(
     library: LibraryFacade,
     lastOpenedBookStore: LastOpenedBookStore,
     downloadActivity: DownloadActivityFacade,
+    private val bookEdits: PendingBookMutationsFacade,
 ) : ViewModel() {
 
     val activeDownloads: StateFlow<List<DownloadTransfer>> =
@@ -66,6 +68,8 @@ class HearthShellViewModel @Inject constructor(
     }
 
     fun requestEinkRefresh(view: android.view.View) = eink.requestFullRefresh(view)
+
+    fun replayPendingEdits() = bookEdits.replayOnForeground()
 
     val currentChapter: StateFlow<String?> =
         combine(session.chapters, session.currentChapterIndex) { chapters, idx ->

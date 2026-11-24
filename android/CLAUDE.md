@@ -60,7 +60,7 @@ These have bitten this project before — keep them in mind:
 - **Persisting UI state.** ViewModel state is in-memory only. Anything the user sets via the UI that should survive process death (sort order, filters, layout, theme, e-ink prefs) must be wired through `PreferencesManager` (DataStore) — read in `init`, write in every `set*` call.
 - **Cover URLs and auth.** `resolveCoverUrl` does **not** append `?token=`. Coil shares the OkHttpClient, and `AuthInterceptor` adds the `Authorization` header. Baking tokens into URLs persists stale JWTs into the on-disk book index cache.
 - **Audiobook duration & title.** `BookSummaryDto.durationMs` and `BookDetailDto.durationMs` both exist — Bookloore's audiobook duration lives on `/api/v1/audiobooks/{id}/info` (not the detail endpoint). Title for ambiguous audiobooks comes from `primaryFile.fileName`.
-- **Logging.** Release builds use `HttpLoggingInterceptor.Level.BASIC`; debug uses `HEADERS`. Never log `Authorization` headers in release — they reach `adb logcat`.
+- **Logging.** Debug and release builds use `HttpLoggingInterceptor.Level.BASIC`; request URLs are sanitized and header values are not logged. Never log `Authorization` headers in release — they reach `adb logcat`.
 - **CancellationException must propagate** in any fire-and-forget coroutine on a long-lived scope. `runCatching { ... }` and `catch (e: Exception)` both catch `CancellationException`, which breaks structured concurrency. Always rethrow it: `try { ... } catch (e: CancellationException) { throw e } catch (e: Exception) { ... }`. ViewModelScope launches are usually fine but the pattern is still preferred.
 
 ---

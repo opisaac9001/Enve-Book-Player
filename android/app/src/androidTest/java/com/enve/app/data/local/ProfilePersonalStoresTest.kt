@@ -76,7 +76,23 @@ class ProfilePersonalStoresTest {
         child.deleteBookmark(book, childBookmark)
         assertTrue(PlayerBookmarkService(locations("child-one")).loadBookmarks(book).isEmpty())
         assertTrue(owner.loadBookmarks(book).contains(ownerBookmark))
-        assertTrue(File(root, "files/audiobook-bookmarks/same-book.json").isFile)
+        assertEquals(1, File(root, "files/audiobook-bookmarks").listFiles()!!.size)
+    }
+
+    @Test
+    fun sameBookIdBookmarksStayWithTheirConnectionAfterReopen() = runBlocking {
+        val storage = locations(DEFAULT_ADULT_PROFILE_ID)
+        val service = PlayerBookmarkService(storage)
+        val a = book.copy(connectionId = "a")
+        val b = book.copy(connectionId = "b")
+        val first = service.addBookmark(a, 10, "A", null, null)
+        val second = service.addBookmark(b, 20, "B", null, null)
+        val reopened = PlayerBookmarkService(storage)
+        assertEquals(listOf(first), reopened.loadBookmarks(a))
+        assertEquals(listOf(second), reopened.loadBookmarks(b))
+        reopened.deleteBookmark(a, first)
+        assertTrue(reopened.loadBookmarks(a).isEmpty())
+        assertEquals(listOf(second), reopened.loadBookmarks(b))
     }
 
     @Test
@@ -147,7 +163,7 @@ class ProfilePersonalStoresTest {
         val ownerLocations = locations(DEFAULT_ADULT_PROFILE_ID)
         val ownerBookmarks = PlayerBookmarkService(ownerLocations)
         ownerBookmarks.addBookmark(book, 10, "Owner", null, null)
-        val bookmarkFile = File(ownerLocations.filesDirectory, "audiobook-bookmarks/same-book.json")
+        val bookmarkFile = File(ownerLocations.filesDirectory, "audiobook-bookmarks").listFiles()!!.single()
         val bookmarkBytes = bookmarkFile.readBytes()
         val childLocations = locations("child-blocked")
         check(childLocations.filesDirectory.parentFile!!.mkdirs())
@@ -167,11 +183,11 @@ class ProfilePersonalStoresTest {
         val ownerLocations = locations(DEFAULT_ADULT_PROFILE_ID)
         val owner = PlayerBookmarkService(ownerLocations)
         val bookmark = owner.addBookmark(book, 80, "Owner", null, null)
-        val ownerFile = File(ownerLocations.filesDirectory, "audiobook-bookmarks/same-book.json")
+        val ownerFile = File(ownerLocations.filesDirectory, "audiobook-bookmarks").listFiles()!!.single()
         val ownerBytes = ownerFile.readBytes()
         val childLocations = locations("child-corrupt")
         val child = PlayerBookmarkService(childLocations)
-        val childFile = File(childLocations.filesDirectory, "audiobook-bookmarks/same-book.json")
+        val childFile = File(childLocations.filesDirectory, "audiobook-bookmarks/${ownerFile.name}")
         childFile.writeText("corrupt bookmarks")
         try {
             child.loadBookmarks(book)

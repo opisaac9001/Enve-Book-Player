@@ -2,50 +2,29 @@ package com.enve.app.data.repository
 
 import com.enve.app.data.repository.grimmory.resolveCoverUrl
 import com.enve.core.data.local.ConnectionRegistry
-import com.enve.core.auth.CredentialVault
 import com.enve.core.data.local.PreferencesManager
 import com.enve.core.data.model.AppMediaType
-import com.enve.core.data.model.AudioTrack
-import com.enve.core.data.model.Book
 import com.enve.core.data.model.BookSource
 import com.enve.core.data.model.BookSummary
-import com.enve.core.data.model.GrimmoryAuthorDetail
 import com.enve.core.data.model.BookSummaryPage
-import com.enve.core.data.model.GrimmoryFilterOptions
-import com.enve.core.data.model.GrimmoryGroupPage
 import com.enve.core.data.model.GrimmoryLibrary
 import com.enve.core.data.model.GrimmoryMagicShelf
 import com.enve.core.data.model.GrimmoryShelf
-import com.enve.core.data.model.GrimmoryUser
-import com.enve.core.data.model.BrowseGroup
-import com.enve.core.data.model.Chapter
-import com.enve.core.data.model.LanguageOption
-import com.enve.core.data.model.NamedCount
-import com.enve.core.data.model.ProviderConnection
 import com.enve.core.data.model.ReadStatus
 import com.enve.app.data.offline.ComicOfflineService
 import com.enve.app.data.offline.OfflineDownloadManager
-import com.enve.app.data.remote.GrimmoryAppApi
+import com.enve.app.data.remote.GRIMMORY_MAX_PAGE_SIZE
 import com.enve.app.data.remote.GrimmoryApi
+import com.enve.app.data.remote.dto.GrimmoryBrowsePage
+import com.enve.app.data.remote.dto.LegacyBookloreBookDto
+import com.enve.app.data.remote.dto.MagicShelfDto
+import com.enve.app.data.remote.dto.ShelfDto
 import com.enve.core.data.remote.ConnectionScope
-import com.enve.app.data.remote.dto.grimmoryapp.AppAuthorSummaryDto
-import com.enve.app.data.remote.dto.grimmoryapp.AppBookDetailDto
-import com.enve.app.data.remote.dto.grimmoryapp.AppBookSummaryDto
-import com.enve.app.data.remote.dto.grimmoryapp.AppFilterOptionsDto
-import com.enve.app.data.remote.dto.grimmoryapp.AppMagicShelfSummaryDto
-import com.enve.app.data.remote.dto.grimmoryapp.AppPageDto
-import com.enve.app.data.remote.dto.grimmoryapp.AppSeriesSummaryDto
-import com.enve.app.data.remote.dto.grimmoryapp.AppShelfSummaryDto
-import com.enve.app.data.remote.dto.grimmoryapp.AudiobookInfoDto
-import com.enve.app.data.remote.dto.grimmoryapp.UpdateRatingRequest
-import com.enve.app.data.remote.dto.grimmoryapp.UpdateStatusRequest
-import com.enve.app.data.repository.grimmory.companionAudiobook
+import com.enve.app.data.repository.grimmory.catalogReadProgress
+import com.enve.app.data.repository.grimmory.grimmoryBrowseSort
 import com.enve.app.data.repository.grimmory.grimmoryCompanionAudiobookId
-import com.enve.app.data.repository.grimmory.GrimmoryListProgress
-import com.enve.app.data.repository.grimmory.GrimmoryListProgressResolver
+import com.enve.app.data.repository.grimmory.grimmoryFacet
 import com.enve.app.data.repository.grimmory.grimmoryPercentFraction
-import com.enve.app.data.repository.grimmory.grimmoryReadProgressFraction
-import com.enve.app.data.repository.grimmory.grimmoryServerBookId
 import com.enve.app.data.repository.grimmory.isGrimmoryAudioType
 import com.enve.app.data.repository.grimmory.isGrimmoryEbookType
 import com.enve.app.data.repository.grimmory.shouldUseLegacyGrimmoryCatalog
@@ -61,39 +40,35 @@ import kotlinx.coroutines.sync.withLock
 import kotlinx.coroutines.withContext
 import kotlinx.serialization.KSerializer
 import kotlinx.serialization.builtins.ListSerializer
-import kotlinx.serialization.builtins.serializer
 import kotlinx.serialization.json.Json
+import retrofit2.Response
 import javax.inject.Inject
 import javax.inject.Singleton
 
 @Singleton
 class GrimmoryAppRepository @Inject constructor(
-    private val api: GrimmoryAppApi,
-
-    private val legacyApi: GrimmoryApi,
+    private val api: GrimmoryApi,
     private val connectionRegistry: ConnectionRegistry,
     private val prefs: PreferencesManager,
-    private val vault: CredentialVault,
     private val cache: GrimmoryDiskCache,
     private val offlineAudio: OfflineDownloadManager,
     private val offlineComic: ComicOfflineService,
-    private val listProgress: GrimmoryListProgressResolver,
 ) {
     private val json = Json { ignoreUnknownKeys = true; encodeDefaults = true }
     private val connectionMutex = Mutex()
 
-    private enum class ApiTier { APP, LEGACY }
+    private enum class ApiTier { BROWSE, LEGACY }
     private val connectionTier = java.util.concurrent.ConcurrentHashMap<String, ApiTier>()
     private fun tierFor(connectionId: String): ApiTier =
-        connectionTier[connectionId] ?: ApiTier.APP
+        connectionTier[connectionId] ?: ApiTier.BROWSE
 
-    val downloadedIds: Flow<Set<String>> = combine(
-        offlineAudio.downloadedBookIds,
-        offlineComic.downloadedBookIds,
+    val downloadedKeys: Flow<Set<String>> = combine(
+        offlineAudio.downloadedKeys,
+        offlineComic.downloadedKeys,
     ) { audio, comic -> audio + comic }
 
-    fun isDownloaded(bookId: String): Boolean =
-        offlineAudio.isDownloaded(bookId) || offlineComic.isDownloaded(bookId)
+    fun isDownloaded(downloadKey: String): Boolean =
+        offlineAudio.isDownloaded(downloadKey) || offlineComic.isDownloaded(downloadKey)
 
     suspend fun getLibraries(connectionId: String): Result<List<GrimmoryLibrary>> {
         val key = "libraries:$connectionId"
@@ -121,54 +96,38 @@ class GrimmoryAppRepository @Inject constructor(
         dir: String = "desc",
         status: ReadStatus? = null,
         search: String? = null,
-        fileType: String? = null,
-        authors: String? = null,
-        language: String? = null,
-        minRating: Int? = null,
-        maxRating: Int? = null,
     ): Result<BookSummaryPage> = withConnection(connectionId) {
-        val ctx = resolveContext(connectionId)
+        val serverUrl = serverUrl(connectionId)
+        val query = search?.takeIf { it.isNotBlank() }
+        val hasFilters = shelfId != null || status != null || query != null
+        var browseTierUnavailable = false
 
-        val hasFilters = shelfId != null || status != null || !search.isNullOrBlank() ||
-            fileType != null || authors != null || language != null || minRating != null || maxRating != null
-        var appTierUnavailable = false
-
-        if (tierFor(connectionId) == ApiTier.APP) {
-            val appResp = runSuspendCatching {
-                api.getBooks(
-                    libraryId = libraryId,
-                    shelfId = shelfId,
-                    status = status?.toGrimmoryWireStatus(),
-                    search = search?.takeIf { it.isNotBlank() },
-                    fileType = fileType,
-                    minRating = minRating,
-                    maxRating = maxRating,
-                    authors = authors,
-                    language = language,
-                    page = page,
-                    size = size,
-                    sort = sort,
-                    dir = dir,
-                )
+        if (tierFor(connectionId) == ApiTier.BROWSE) {
+            val facets = buildList {
+                libraryId?.let { add(grimmoryFacet("library", it)) }
+                shelfId?.let { add(grimmoryFacet("shelf", it)) }
+                status?.let { add(grimmoryFacet("read_status", it.toGrimmoryWireStatus())) }
+            }
+            val browseResp = runSuspendCatching {
+                browse(facets, query, grimmoryBrowseSort(sort, dir), page, size)
             }.getOrNull()
 
             when {
-                appResp == null -> {
-                    android.util.Log.w("GrimmoryAppRepo", "getBooks APP threw for $connectionId lib=$libraryId; trying legacy")
+                browseResp == null -> {
+                    android.util.Log.w("GrimmoryAppRepo", "getBooks browse threw for $connectionId lib=$libraryId; trying legacy")
                 }
-                appResp.isSuccessful -> {
-                    val body = appResp.body()
-                    if (page > 0 || hasFilters || !shouldUseLegacyGrimmoryCatalog(appResp.code(), body?.content?.size)) {
+                browseResp.isSuccessful -> {
+                    val body = browseResp.body()
+                    if (page > 0 || hasFilters || !shouldUseLegacyGrimmoryCatalog(browseResp.code(), body?.content?.size)) {
                         if (body == null) return@withConnection Result.failure(Exception("Empty body"))
-                        return@withConnection Result.success(body.toBookPage(connectionId, ctx.serverUrl))
+                        return@withConnection Result.success(body.toBookPage(connectionId, serverUrl, libraryId?.toString()))
                     }
-                    appTierUnavailable = true
-                    android.util.Log.i("GrimmoryAppRepo", "getBooks APP returned an empty first page for $connectionId lib=$libraryId; trying legacy")
+                    browseTierUnavailable = true
+                    android.util.Log.i("GrimmoryAppRepo", "getBooks browse returned an empty first page for $connectionId lib=$libraryId; trying legacy")
                 }
                 else -> {
-
-                    appTierUnavailable = appResp.code() == 404 || appResp.code() >= 500
-                    android.util.Log.i("GrimmoryAppRepo", "getBooks APP HTTP ${appResp.code()} for $connectionId lib=$libraryId; trying legacy")
+                    browseTierUnavailable = browseResp.code() == 404 || browseResp.code() >= 500
+                    android.util.Log.i("GrimmoryAppRepo", "getBooks browse HTTP ${browseResp.code()} for $connectionId lib=$libraryId; trying legacy")
                 }
             }
         }
@@ -176,7 +135,6 @@ class GrimmoryAppRepository @Inject constructor(
         val targetLibraries: List<Long> = when {
             libraryId != null -> listOf(libraryId)
             else -> {
-
                 val libs = getLibrariesUncached(connectionId).getOrElse {
                     return@withConnection Result.failure(it)
                 }
@@ -190,12 +148,11 @@ class GrimmoryAppRepository @Inject constructor(
 
         val merged = mutableListOf<BookSummary>()
         for (libId in targetLibraries) {
-
             val pageSize = 500
             var legacyPage = 0
             var libraryTotal = 0
             while (legacyPage < 200) {
-                val callResult = runSuspendCatching { legacyApi.getBooksLegacy(libId.toString(), legacyPage, pageSize) }
+                val callResult = runSuspendCatching { api.getBooksLegacy(libId.toString(), legacyPage, pageSize) }
                 val resp = callResult.getOrNull()
                 if (resp == null) {
                     val message = callResult.exceptionOrNull()?.message ?: "request failed"
@@ -208,12 +165,8 @@ class GrimmoryAppRepository @Inject constructor(
                 }
                 val list = resp.body().orEmpty()
                 if (list.isEmpty()) break
-                val fractions = listProgress.fractions(
-                    connectionId,
-                    list.map { GrimmoryListProgress(it.id, it.readProgress, it.lastReadTime.orEmpty()) },
-                )
                 list.forEach { dto ->
-                    merged += dto.toBookSummariesFromLegacy(connectionId, ctx.serverUrl, libId.toString(), fractions.getValue(dto.id))
+                    merged += dto.toBookSummaries(connectionId, serverUrl, libId.toString())
                 }
                 libraryTotal += list.size
                 if (list.size < pageSize) break
@@ -221,10 +174,10 @@ class GrimmoryAppRepository @Inject constructor(
             }
             android.util.Log.i("GrimmoryAppRepo", "Legacy /libraries/$libId/book yielded $libraryTotal books across ${legacyPage + 1} pages on $connectionId")
         }
-        if (appTierUnavailable) connectionTier[connectionId] = ApiTier.LEGACY
+        if (browseTierUnavailable) connectionTier[connectionId] = ApiTier.LEGACY
 
-        val filtered = if (!search.isNullOrBlank()) {
-            val needle = search.lowercase()
+        val filtered = if (query != null) {
+            val needle = query.lowercase()
             merged.filter {
                 it.title.lowercase().contains(needle) ||
                     it.authors.any { a -> a.lowercase().contains(needle) }
@@ -242,7 +195,7 @@ class GrimmoryAppRepository @Inject constructor(
     }
 
     private suspend fun getLibrariesUncached(connectionId: String): Result<List<GrimmoryLibrary>> = withConnection(connectionId) {
-        val resp = legacyApi.getLibraries()
+        val resp = api.getLibraries()
         if (!resp.isSuccessful) return@withConnection Result.failure(Exception("HTTP ${resp.code()}"))
         Result.success(resp.body().orEmpty().mapNotNull { dto ->
             val numericId = dto.id.toLongOrNull() ?: return@mapNotNull null
@@ -256,11 +209,31 @@ class GrimmoryAppRepository @Inject constructor(
         })
     }
 
-    private fun com.enve.app.data.remote.dto.LegacyBookloreBookDto.toBookSummariesFromLegacy(
+    private suspend fun browse(
+        facets: List<String>,
+        query: String?,
+        sort: String,
+        page: Int,
+        size: Int,
+    ): Response<GrimmoryBrowsePage<LegacyBookloreBookDto>> =
+        api.getBooksPage(facets = facets, query = query, sort = sort, page = page, size = size.coerceIn(1, GRIMMORY_MAX_PAGE_SIZE))
+
+    private fun GrimmoryBrowsePage<LegacyBookloreBookDto>.toBookPage(
         connectionId: String,
         serverUrl: String,
-        fallbackLibraryId: String,
-        progressFraction: Float,
+        fallbackLibraryId: String?,
+    ) = BookSummaryPage(
+        items = content.flatMap { it.toBookSummaries(connectionId, serverUrl, fallbackLibraryId) },
+        page = page.number,
+        totalPages = page.totalPages,
+        totalElements = page.totalElements,
+        hasNext = page.hasNext,
+    )
+
+    private fun LegacyBookloreBookDto.toBookSummaries(
+        connectionId: String,
+        serverUrl: String,
+        fallbackLibraryId: String?,
     ): List<BookSummary> {
         val primaryFileType = primaryFile?.bookType
         val mediaType = primaryFileTypeToMediaType(primaryFileType)
@@ -286,23 +259,26 @@ class GrimmoryAppRepository @Inject constructor(
             thumbnailUrl = resolveCoverUrl(serverUrl, metadata?.thumbnailUrl, id, mediaType),
             seriesName = metadata?.seriesName,
             seriesNumber = metadata?.seriesNumber,
-            readProgress = progressFraction,
+            readProgress = grimmoryPercentFraction(catalogReadProgress()) ?: 0f,
             readStatus = parseReadStatus(readStatus),
             serverReadStatus = readStatus?.uppercase(),
-            personalRating = null,
+            personalRating = personalRating?.div(2f),
             primaryFileType = primaryFileType,
             mediaType = mediaType,
             addedOn = parseLegacyDate(addedOn),
             lastReadTime = parseLegacyDate(lastReadTime),
-            isPhysical = false,
+            isPhysical = isPhysical == true,
             libraryId = libraryId ?: fallbackLibraryId,
             hideFromContinue = readStatus.equals("ABANDONED", ignoreCase = true),
             hasAudio = hasAudio,
             hasEbook = hasEbook,
+            publishedDate = metadata?.publishedDate,
+            goodreadsRating = metadata?.goodreadsRating,
             narrator = metadata?.narrator,
             publisher = metadata?.publisher,
+            categories = metadata?.categories.orEmpty(),
             language = metadata?.language,
-            isbn13 = metadata?.isbn13,
+            isbn13 = metadata?.isbn13 ?: metadata?.isbn10,
             pageCount = metadata?.pageCount,
         )
         if (mediaType != AppMediaType.EBOOK || !hasAudio) return listOf(summary)
@@ -332,48 +308,6 @@ class GrimmoryAppRepository @Inject constructor(
             .getOrDefault(0L)
     }
 
-    suspend fun getBookDetail(connectionId: String, bookId: String): Result<Book> = withConnection(connectionId) {
-        val rawBookId = bookId.grimmoryServerBookId()
-        val resp = api.getBookDetail(rawBookId)
-        if (!resp.isSuccessful) return@withConnection Result.failure(Exception("HTTP ${resp.code()}"))
-        val dto = resp.body() ?: return@withConnection Result.failure(Exception("Empty body"))
-        val ctx = resolveContext(connectionId)
-        val mapped = dto.toBook(connectionId, ctx.serverUrl)
-        Result.success(if (rawBookId != bookId) mapped.companionAudiobook(ctx.serverUrl) ?: mapped else mapped)
-    }
-
-    suspend fun searchBooks(
-        connectionId: String,
-        query: String,
-        page: Int = 0,
-        size: Int = 30,
-    ): Result<BookSummaryPage> = withConnection(connectionId) {
-        val resp = api.searchBooks(query = query, page = page, size = size)
-        if (!resp.isSuccessful) return@withConnection Result.failure(Exception("HTTP ${resp.code()}"))
-        val ctx = resolveContext(connectionId)
-        Result.success(resp.body()!!.toBookPage(connectionId, ctx.serverUrl))
-    }
-
-    suspend fun getSeriesPage(
-        connectionId: String,
-        libraryId: Long? = null,
-        page: Int = 0,
-        size: Int = 30,
-        sort: String = "name",
-        dir: String = "asc",
-        search: String? = null,
-        status: String? = null,
-    ): Result<GrimmoryGroupPage> = withConnection(connectionId) {
-        val resp = api.getSeries(
-            page = page, size = size, sort = sort, dir = dir,
-            libraryId = libraryId, search = search?.takeIf { it.isNotBlank() }, status = status,
-        )
-        if (!resp.isSuccessful) return@withConnection Result.failure(Exception("HTTP ${resp.code()}"))
-        val body = resp.body() ?: return@withConnection Result.failure(Exception("Empty body"))
-        val ctx = resolveContext(connectionId)
-        Result.success(body.toGroupPage { it.toBrowseGroup(ctx.serverUrl) })
-    }
-
     suspend fun getSeriesBooks(
         connectionId: String,
         seriesName: String,
@@ -381,61 +315,14 @@ class GrimmoryAppRepository @Inject constructor(
         size: Int = 30,
         libraryId: Long? = null,
     ): Result<BookSummaryPage> = withConnection(connectionId) {
-        val resp = api.getSeriesBooks(
-            seriesName = seriesName, page = page, size = size,
-            libraryId = libraryId,
-        )
+        val facets = listOfNotNull(
+            grimmoryFacet("series", seriesName),
+            libraryId?.let { grimmoryFacet("library", it) },
+        ).let { if (it.size == 1 && ',' in seriesName) it + it else it }
+        val resp = browse(facets, query = null, sort = "seriesNumber", page = page, size = size)
         if (!resp.isSuccessful) return@withConnection Result.failure(Exception("HTTP ${resp.code()}"))
-        val ctx = resolveContext(connectionId)
-        Result.success(resp.body()!!.toBookPage(connectionId, ctx.serverUrl))
-    }
-
-    suspend fun getAuthorsPage(
-        connectionId: String,
-        libraryId: Long? = null,
-        page: Int = 0,
-        size: Int = 30,
-        sort: String = "name",
-        dir: String = "asc",
-        search: String? = null,
-        hasPhoto: Boolean? = null,
-    ): Result<GrimmoryGroupPage> = withConnection(connectionId) {
-        val resp = api.getAuthors(
-            page = page, size = size, sort = sort, dir = dir,
-            libraryId = libraryId, search = search?.takeIf { it.isNotBlank() }, hasPhoto = hasPhoto,
-        )
-        if (!resp.isSuccessful) return@withConnection Result.failure(Exception("HTTP ${resp.code()}"))
-        val ctx = resolveContext(connectionId)
-        Result.success(resp.body()!!.toGroupPage { it.toBrowseGroup(ctx.serverUrl) })
-    }
-
-    suspend fun getAuthorDetail(connectionId: String, authorId: String): Result<GrimmoryAuthorDetail> = withConnection(connectionId) {
-        val resp = api.getAuthorDetail(authorId)
-        if (!resp.isSuccessful) return@withConnection Result.failure(Exception("HTTP ${resp.code()}"))
-        val dto = resp.body()!!
-        Result.success(GrimmoryAuthorDetail(
-            id = dto.id, name = dto.name, description = dto.description,
-            asin = dto.asin, bookCount = dto.bookCount, hasPhoto = dto.hasPhoto,
-        ))
-    }
-
-    suspend fun getFilterOptions(
-        connectionId: String,
-        libraryId: Long? = null,
-    ): Result<GrimmoryFilterOptions> {
-        val key = "filters:$connectionId:${libraryId ?: "all"}"
-        cache.read(key, TTL_SHORT)?.let {
-            runCatching {
-                json.decodeFromString(GrimmoryFilterOptions.serializer(), it.payloadJson)
-            }.getOrNull()?.let { return Result.success(it) }
-        }
-        return withConnection(connectionId) {
-            val resp = api.getFilterOptions(libraryId = libraryId)
-            if (!resp.isSuccessful) return@withConnection Result.failure(Exception("HTTP ${resp.code()}"))
-            val opts = resp.body()!!.toModel()
-            cache.write(key, json.encodeToString(GrimmoryFilterOptions.serializer(), opts))
-            Result.success(opts)
-        }
+        val body = resp.body() ?: return@withConnection Result.failure(Exception("Empty body"))
+        Result.success(body.toBookPage(connectionId, serverUrl(connectionId), libraryId?.toString()))
     }
 
     suspend fun getShelves(connectionId: String): Result<List<GrimmoryShelf>> {
@@ -444,7 +331,7 @@ class GrimmoryAppRepository @Inject constructor(
             withConnection(connectionId) {
                 val resp = api.getShelves()
                 if (!resp.isSuccessful) return@withConnection Result.failure(Exception("HTTP ${resp.code()}"))
-                val shelves = resp.body().orEmpty().map { it.toModel() }
+                val shelves = resp.body().orEmpty().mapNotNull { it.toModel() }
                 cache.write(key, json.encodeToString(ListSerializer(GrimmoryShelf.serializer()), shelves))
                 Result.success(shelves)
             }
@@ -463,7 +350,7 @@ class GrimmoryAppRepository @Inject constructor(
             withConnection(connectionId) {
                 val resp = api.getMagicShelves()
                 if (!resp.isSuccessful) return@withConnection Result.failure(Exception("HTTP ${resp.code()}"))
-                val shelves = resp.body().orEmpty().map { it.toModel() }
+                val shelves = resp.body().orEmpty().mapNotNull { it.toModel() }
                 cache.write(key, json.encodeToString(ListSerializer(GrimmoryMagicShelf.serializer()), shelves))
                 Result.success(shelves)
             }
@@ -489,91 +376,17 @@ class GrimmoryAppRepository @Inject constructor(
         page: Int = 0,
         size: Int = 30,
     ): Result<BookSummaryPage> = withConnection(connectionId) {
-        val resp = api.getMagicShelfBooks(magicShelfId = magicShelfId, page = page, size = size)
+        val resp = browse(listOf(grimmoryFacet("shelf", "magic:$magicShelfId")), query = null, sort = "-addedOn", page = page, size = size)
         if (!resp.isSuccessful) return@withConnection Result.failure(Exception("HTTP ${resp.code()}"))
-        val ctx = resolveContext(connectionId)
-        Result.success(resp.body()!!.toBookPage(connectionId, ctx.serverUrl))
-    }
-
-    suspend fun getContinueListening(connectionId: String, limit: Int = 10): Result<List<BookSummary>> = withConnection(connectionId) {
-        val resp = api.getContinueListening(limit)
-        if (!resp.isSuccessful) return@withConnection Result.failure(Exception("HTTP ${resp.code()}"))
-        val ctx = resolveContext(connectionId)
-        Result.success(resp.body().orEmpty().toBookSummaries(connectionId, ctx.serverUrl))
-    }
-
-    suspend fun getContinueReading(connectionId: String, limit: Int = 10): Result<List<BookSummary>> = withConnection(connectionId) {
-        val resp = api.getContinueReading(limit)
-        if (!resp.isSuccessful) return@withConnection Result.failure(Exception("HTTP ${resp.code()}"))
-        val ctx = resolveContext(connectionId)
-        Result.success(resp.body().orEmpty().toBookSummaries(connectionId, ctx.serverUrl))
-    }
-
-    suspend fun getRecentlyAdded(connectionId: String, limit: Int = 10): Result<List<BookSummary>> = withConnection(connectionId) {
-        val resp = api.getRecentlyAdded(limit)
-        if (!resp.isSuccessful) return@withConnection Result.failure(Exception("HTTP ${resp.code()}"))
-        val ctx = resolveContext(connectionId)
-        Result.success(resp.body().orEmpty().toBookSummaries(connectionId, ctx.serverUrl))
-    }
-
-    suspend fun getCurrentUser(connectionId: String): Result<GrimmoryUser> = withConnection(connectionId) {
-        val resp = api.getCurrentUser()
-        if (!resp.isSuccessful) return@withConnection Result.failure(Exception("HTTP ${resp.code()}"))
-        val dto = resp.body()!!
-        Result.success(GrimmoryUser(
-            isAdmin = dto.isAdmin, canUpload = dto.canUpload, canDownload = dto.canDownload,
-            canAccessBookdrop = dto.canAccessBookdrop, maxFileUploadSizeMb = dto.maxFileUploadSizeMb,
-        ))
-    }
-
-    suspend fun updateReadStatus(connectionId: String, bookId: String, status: ReadStatus): Result<Unit> = withConnection(connectionId) {
-        val resp = api.updateBookStatus(bookId.grimmoryServerBookId(), UpdateStatusRequest(status.toGrimmoryWireStatus()))
-        if (resp.isSuccessful) Result.success(Unit) else Result.failure(Exception("HTTP ${resp.code()}"))
-    }
-
-    suspend fun updateRating(connectionId: String, bookId: String, rating: Int): Result<Unit> = withConnection(connectionId) {
-        val serverId = bookId.grimmoryServerBookId().toLongOrNull()
-            ?: return@withConnection Result.failure(Exception("Unrecognized Grimmory book id"))
-
-        val resp = api.updateBookRating(UpdateRatingRequest(ids = listOf(serverId), rating = rating.coerceIn(1, 5) * 2))
-        if (resp.isSuccessful) Result.success(Unit) else Result.failure(Exception("HTTP ${resp.code()}"))
-    }
-
-    suspend fun getAudiobookInfo(connectionId: String, bookId: String): Result<AudiobookInfoDto> = withConnection(connectionId) {
-        val resp = api.getAudiobookInfo(bookId.grimmoryServerBookId())
-        if (!resp.isSuccessful) return@withConnection Result.failure(Exception("HTTP ${resp.code()}"))
-        Result.success(resp.body()!!)
-    }
-
-    fun coverUrl(serverUrl: String, bookId: String): String =
-        "${serverUrl.trimEnd('/')}/api/v1/media/book/$bookId/cover"
-
-    fun audiobookCoverUrl(serverUrl: String, bookId: String): String =
-        "${serverUrl.trimEnd('/')}/api/v1/media/book/$bookId/audiobook-cover"
-
-    suspend fun invalidateCachesFor(connectionId: String) {
-        cache.invalidate("libraries:$connectionId")
-        cache.invalidate("shelves:$connectionId")
-        cache.invalidate("magic_shelves:$connectionId")
-        cache.invalidate("filters:$connectionId")
+        val body = resp.body() ?: return@withConnection Result.failure(Exception("Empty body"))
+        Result.success(body.toBookPage(connectionId, serverUrl(connectionId), fallbackLibraryId = null))
     }
 
     suspend fun invalidateAllCaches() = cache.invalidate(prefix = null)
 
-    private data class ResolvedContext(
-        val connection: ProviderConnection,
-        val serverUrl: String,
-        val token: String,
-    )
-
-    private fun resolveContext(connectionId: String): ResolvedContext {
-        val conn = connectionRegistry.getConnectionsSync().find { it.id == connectionId }
+    private fun serverUrl(connectionId: String): String =
+        connectionRegistry.getConnectionsSync().find { it.id == connectionId }?.serverUrl
             ?: error("Connection $connectionId not found")
-        val token = vault.get(CredentialVault.accessTokenKey(connectionId))
-            ?: vault.get(CredentialVault.passwordKey(connectionId))
-            ?: ""
-        return ResolvedContext(conn, conn.serverUrl, token)
-    }
 
     private suspend fun <T> withConnection(connectionId: String, block: suspend () -> Result<T>): Result<T> {
         val conn = connectionRegistry.connections.first().find { it.id == connectionId }
@@ -594,225 +407,12 @@ class GrimmoryAppRepository @Inject constructor(
         }
     }
 
-    private fun AppShelfSummaryDto.toModel() = GrimmoryShelf(
-        id = id, name = name, icon = icon, bookCount = bookCount, publicShelf = publicShelf,
-    )
-
-    private fun AppMagicShelfSummaryDto.toModel() = GrimmoryMagicShelf(
-        id = id, name = name, icon = icon, iconType = iconType, publicShelf = publicShelf,
-    )
-
-    private suspend fun AppPageDto<AppBookSummaryDto>.toBookPage(connectionId: String, serverUrl: String) = BookSummaryPage(
-        items = content.toBookSummaries(connectionId, serverUrl),
-        page = page, totalPages = totalPages, totalElements = totalElements, hasNext = hasNext,
-    )
-
-    private inline fun <DTO> AppPageDto<DTO>.toGroupPage(map: (DTO) -> BrowseGroup) = GrimmoryGroupPage(
-        items = content.map(map),
-        page = page, totalPages = totalPages, totalElements = totalElements, hasNext = hasNext,
-    )
-
-    private suspend fun List<AppBookSummaryDto>.toBookSummaries(connectionId: String, serverUrl: String): List<BookSummary> {
-        val fractions = listProgress.fractions(
-            connectionId,
-            map { GrimmoryListProgress(it.id, it.readProgress, it.lastReadTime.toString()) },
-        )
-        return flatMap { it.toBookSummaries(connectionId, serverUrl, fractions.getValue(it.id)) }
+    private fun ShelfDto.toModel() = id.toLongOrNull()?.let { shelfId ->
+        GrimmoryShelf(id = shelfId, name = name, icon = icon, bookCount = bookCount ?: 0, publicShelf = publicShelf)
     }
 
-    private fun AppBookSummaryDto.toBookSummaries(connectionId: String, serverUrl: String, progressFraction: Float): List<BookSummary> {
-        val primaryType = primaryFile?.resolvedType ?: primaryFileType
-        val mediaType = primaryFileTypeToMediaType(primaryType)
-        val hasAudio = mediaType == AppMediaType.AUDIOBOOK || hasAudioFormat()
-        val hasEbook = mediaType == AppMediaType.EBOOK || hasEbookFormat()
-        val resolvedTitle = if (mediaType == AppMediaType.AUDIOBOOK) {
-            titleFromPrimaryFileName(primaryFileName) ?: title
-        } else {
-            title
-        }
-        val summary = BookSummary(
-            id = id,
-            connectionId = connectionId,
-            source = BookSource.GRIMMORY,
-            title = resolvedTitle.ifBlank { "Untitled" },
-            authors = authors,
-            thumbnailUrl = resolveCoverUrl(serverUrl, thumbnailUrl, id, mediaType),
-            seriesName = seriesName,
-            seriesNumber = seriesNumber,
-            readProgress = progressFraction,
-            readStatus = parseReadStatus(readStatus),
-            serverReadStatus = readStatus?.uppercase(),
-            personalRating = personalRating?.div(2f),
-            primaryFileType = primaryType,
-            mediaType = mediaType,
-            addedOn = addedOn,
-            lastReadTime = lastReadTime,
-            isPhysical = isPhysical,
-            libraryId = libraryId?.toString(),
-            hideFromContinue = readStatus.equals("ABANDONED", ignoreCase = true),
-            hasAudio = hasAudio,
-            hasEbook = hasEbook,
-            publishedDate = publishedDate,
-            goodreadsRating = goodreadsRating,
-            narrator = narrator,
-            publisher = publisher,
-            categories = categories,
-            language = language,
-            isbn13 = isbn13 ?: isbn10,
-            pageCount = pageCount,
-        )
-        if (mediaType != AppMediaType.EBOOK || !hasAudio) return listOf(summary)
-        return listOf(
-            summary,
-            summary.copy(
-                id = grimmoryCompanionAudiobookId(id),
-                thumbnailUrl = resolveCoverUrl(serverUrl, null, id, AppMediaType.AUDIOBOOK),
-                primaryFileType = "AUDIOBOOK",
-                mediaType = AppMediaType.AUDIOBOOK,
-                hasAudio = true,
-                hasEbook = true,
-            ),
-        )
-    }
-
-    private fun AppBookSummaryDto.hasAudioFormat(): Boolean {
-        val types = buildList {
-            add(primaryFileType)
-            add(primaryFile?.resolvedType)
-            addAll(fileTypes)
-            files.mapNotNull { it.resolvedType }.let { addAll(it) }
-        }
-        return types.any(::isGrimmoryAudioType) ||
-            audiobookCoverUpdatedOn > 0L ||
-            thumbnailUrl?.contains("/audiobook-", ignoreCase = true) == true
-    }
-
-    private fun AppBookSummaryDto.hasEbookFormat(): Boolean {
-        val types = buildList {
-            add(primaryFileType)
-            add(primaryFile?.resolvedType)
-            addAll(fileTypes)
-            files.mapNotNull { it.resolvedType }.let { addAll(it) }
-        }
-        return types.any(::isGrimmoryEbookType)
-    }
-
-    private fun AppBookDetailDto.hasAudioFormat(): Boolean {
-        val types = buildList {
-            add(primaryFileType)
-            addAll(fileTypes)
-            files.mapNotNull { it.resolvedType }.let { addAll(it) }
-        }
-        return types.any(::isGrimmoryAudioType) ||
-            audiobookProgress != null ||
-            thumbnailUrl?.contains("/audiobook-", ignoreCase = true) == true
-    }
-
-    private fun AppBookDetailDto.hasEbookFormat(): Boolean {
-        val types = buildList {
-            add(primaryFileType)
-            addAll(fileTypes)
-            files.mapNotNull { it.resolvedType }.let { addAll(it) }
-        }
-        return types.any(::isGrimmoryEbookType) || epubProgress != null || pdfProgress != null || cbxProgress != null
-    }
-
-    private fun AppSeriesSummaryDto.toBrowseGroup(serverUrl: String): BrowseGroup {
-        val coverBookId = coverBooks.firstOrNull()?.id
-        val coverUrl = coverBookId?.let { coverUrl(serverUrl, it) }
-        val secondary = if (booksRead > 0) "$booksRead of $bookCount read" else null
-        return BrowseGroup(
-            key = seriesName,
-            name = seriesName,
-            count = bookCount,
-            coverUrl = coverUrl,
-            secondary = secondary,
-        )
-    }
-
-    private fun AppAuthorSummaryDto.toBrowseGroup(serverUrl: String): BrowseGroup {
-        val photoUrl = if (hasPhoto) "${serverUrl.trimEnd('/')}/api/v1/media/author/$id/photo" else null
-        return BrowseGroup(
-            key = id,
-            name = name,
-            count = bookCount,
-            coverUrl = photoUrl,
-            secondary = null,
-        )
-    }
-
-    private fun AppFilterOptionsDto.toModel() = GrimmoryFilterOptions(
-        authors = authors.map { NamedCount(it.name, it.count) },
-        narrators = narrators.map { NamedCount(it.name, it.count) },
-        categories = categories.map { NamedCount(it.name, it.count) },
-        languages = languages.map { LanguageOption(it.code, it.label, it.count) },
-        readStatuses = readStatuses.map { NamedCount(it.name, it.count) },
-        fileTypes = fileTypes.map { NamedCount(it.name, it.count) },
-        publishers = publishers.map { NamedCount(it.name, it.count) },
-    )
-
-    private fun AppBookDetailDto.toBook(connectionId: String, serverUrl: String): Book {
-        val primaryFile = files.firstOrNull { it.isPrimary == true || it.primary == true } ?: files.firstOrNull()
-        val resolvedPrimaryFileType = primaryFile?.resolvedType ?: primaryFileType
-        val mediaType = primaryFileTypeToMediaType(resolvedPrimaryFileType)
-        val hasAudio = mediaType == AppMediaType.AUDIOBOOK || hasAudioFormat()
-        val hasEbook = mediaType == AppMediaType.EBOOK || hasEbookFormat()
-        val authorString = authors.joinToString(", ").takeIf { it.isNotBlank() }
-        val downloaded = isDownloaded(id)
-        val resolvedTitle = if (mediaType == AppMediaType.AUDIOBOOK) {
-            titleFromPrimaryFileName(primaryFile?.fileName) ?: title
-        } else {
-            title
-        }
-
-        val unifiedProgress = grimmoryPercentFraction(audiobookProgress?.percentage)
-            ?: grimmoryPercentFraction(epubProgress?.percentage)
-            ?: grimmoryPercentFraction(pdfProgress?.percentage)
-            ?: grimmoryPercentFraction(cbxProgress?.percentage)
-            ?: grimmoryReadProgressFraction(readProgress, koreaderProgress != null)
-            ?: 0f
-        return Book(
-            id = id,
-            title = resolvedTitle.ifBlank { "Untitled" },
-            subtitle = subtitle,
-            author = authorString,
-            description = description,
-            coverUrl = resolveCoverUrl(serverUrl, thumbnailUrl, id, mediaType),
-            duration = 0L,
-            currentTime = audiobookProgress?.let {
-
-                (it.positionMs / 1000L)
-            } ?: 0L,
-            isFinished = parseReadStatus(readStatus) == ReadStatus.COMPLETED,
-            source = BookSource.GRIMMORY,
-            mediaType = mediaType,
-            readStatus = parseReadStatus(readStatus),
-            seriesName = seriesName,
-            seriesNumber = seriesNumber,
-            publisher = publisher,
-            publishedDate = publishedDate,
-            isbn13 = isbn13,
-            language = language,
-            pageCount = pageCount,
-            categories = categories,
-            personalRating = personalRating?.div(2f),
-            goodreadsRating = goodreadsRating,
-            primaryFileType = resolvedPrimaryFileType,
-            libraryId = libraryId?.let { "$connectionId::$it" },
-            libraryName = libraryName,
-            connectionId = connectionId,
-            addedOn = addedOn,
-            lastReadTime = lastReadTime,
-            readProgress = unifiedProgress,
-            epubProgress = grimmoryPercentFraction(epubProgress?.percentage),
-            epubLocator = epubProgress?.cfi,
-            readAlongAvailable = false,
-            hasEbook = hasEbook,
-            hasAudio = hasAudio,
-            hideFromContinue = readStatus.equals("ABANDONED", ignoreCase = true),
-            isDownloaded = downloaded,
-            shelves = shelves.map { it.name },
-        )
+    private fun MagicShelfDto.toModel() = id.toLongOrNull()?.let { shelfId ->
+        GrimmoryMagicShelf(id = shelfId, name = name, icon = icon, iconType = iconType, publicShelf = isPublic)
     }
 
     private fun primaryFileTypeToMediaType(primaryFileType: String?): AppMediaType {
@@ -831,45 +431,7 @@ class GrimmoryAppRepository @Inject constructor(
         }
     }
 
-    fun extractChapters(info: AudiobookInfoDto): List<Chapter> = info.chapters.map { c ->
-        Chapter(
-            index = c.index,
-            title = c.title ?: "Chapter ${c.index + 1}",
-            startTime = c.startTimeMs / 1000L,
-            endTime = c.endTimeMs / 1000L,
-        )
-    }
-
-    fun buildAudioTracks(info: AudiobookInfoDto, serverUrl: String, bookId: String): List<AudioTrack> {
-        val base = serverUrl.trimEnd('/')
-        return if (info.tracks.isNotEmpty()) {
-            info.tracks.map { t ->
-                AudioTrack(
-                    index = t.index,
-                    fileName = t.fileName ?: t.title ?: "Track ${t.index + 1}",
-                    title = t.title ?: t.fileName,
-                    durationMs = t.durationMs ?: 0L,
-                    fileSizeBytes = t.fileSizeBytes ?: 0L,
-                    cumulativeStartMs = t.cumulativeStartMs ?: 0L,
-                    contentUrl = "$base/api/v1/audiobooks/$bookId/track/${t.index}/stream",
-                )
-            }
-        } else {
-
-            listOf(
-                AudioTrack(
-                    index = 0,
-                    fileName = info.title ?: "Audiobook",
-                    title = info.title,
-                    durationMs = info.durationMs,
-                    contentUrl = "$base/api/v1/audiobooks/$bookId/stream",
-                )
-            )
-        }
-    }
-
     companion object {
-        private const val TTL_SHORT = 5L * 60 * 1000
         private const val TTL_LONG = 24L * 60 * 60 * 1000
     }
 }

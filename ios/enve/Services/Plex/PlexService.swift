@@ -7,6 +7,7 @@ import UIKit
 
 private func withTimeout<T: Sendable>(seconds: TimeInterval, operation: @Sendable @escaping () async throws -> T) async throws -> T {
     try await withThrowingTaskGroup(of: T.self) { group in
+        defer { group.cancelAll() }
         group.addTask {
             try await operation()
         }
@@ -332,7 +333,7 @@ public class PlexService: @unchecked Sendable {
                     let type = conn.local ? "LAN" : (conn.isRelay ? "Relay" : "WAN")
                     let secure = conn.isSecure ? "HTTPS" : "HTTP"
                     let direct = conn.isPlexDirect ? " (plex.direct)" : ""
-                    AppLogger.network.info("\(idx + 1). [\(type)] \(secure)\(direct): \(conn.uri)")
+                    AppLogger.network.info("\(idx + 1). [\(type)] \(secure)\(direct)")
                 }
 
                 return server
@@ -499,116 +500,93 @@ public class PlexService: @unchecked Sendable {
         return port.isEmpty ? host : "\(host):\(port)"
     }
 
-    func verifyConnection(url: String, token: String) async -> Bool {
-        guard let baseURL = URL(string: url) else {
+    func verifyConnection(url: String, token: String, serverIdentifier: String? = nil) async -> Bool {
+        guard !Task.isCancelled, let baseURL = URL(string: url) else { return false }
+        do {
+            // A request timeout alone does not bound waitsForConnectivity.
+            return try await withTimeout(seconds: 4) { @MainActor in
+                if let serverIdentifier {
+                    var identity = URLRequest(url: baseURL.appendingPathComponent("identity"))
+                    identity.setValue("application/json", forHTTPHeaderField: "Accept")
+                    identity.cachePolicy = .reloadIgnoringLocalCacheData
+                    let (data, response) = try await self.session.data(for: identity)
+                    guard (response as? HTTPURLResponse)?.statusCode == 200,
+                          let object = try JSONSerialization.jsonObject(with: data) as? [String: Any],
+                          let container = object["MediaContainer"] as? [String: Any],
+                          container["machineIdentifier"] as? String == serverIdentifier else { return false }
+                }
+                try Task.checkCancellation()
+                var request = URLRequest(url: baseURL.appendingPathComponent("library/sections"))
+                request.setValue("application/json", forHTTPHeaderField: "Accept")
+                self.applyPlexHeaders(&request, token: token)
+                request.cachePolicy = .reloadIgnoringLocalCacheData
+                let (_, response) = try await self.session.data(for: request)
+                return !Task.isCancelled && (response as? HTTPURLResponse)?.statusCode == 200
+            }
+        } catch {
             return false
         }
-        let redactedURL = baseURL.redacted.absoluteString
-
-        let probePaths = ["/library/sections", "/identity"]
-
-        for path in probePaths {
-            guard let probeURL = URL(string: path, relativeTo: baseURL) else { continue }
-
-            var components = URLComponents(url: probeURL, resolvingAgainstBaseURL: true)
-            var items = components?.queryItems ?? []
-            items.append(URLQueryItem(name: "X-Plex-Token", value: token))
-            components?.queryItems = items
-
-            guard let finalURL = components?.url else { continue }
-
-            var request = URLRequest(url: finalURL)
-            request.setValue("application/xml", forHTTPHeaderField: "Accept")
-            applyPlexHeaders(&request, token: token)
-            request.timeoutInterval = 3.0
-
-            do {
-                let (_, response) = try await session.data(for: request)
-                if let httpResponse = response as? HTTPURLResponse {
-                    let success = httpResponse.statusCode == 200
-                    AppLogger.network.error("Tested \(redactedURL)\(path): \(success ? " OK" : " Failed (\(httpResponse.statusCode))")")
-                    if success {
-                        return true
-                    }
-                    continue
-                }
-
-                AppLogger.network.info("Tested \(redactedURL)\(path): Non-HTTP response")
-            } catch {
-                let nsError = error as NSError
-                AppLogger.network.error(
-                    "Tested \(redactedURL)\(path): Failed (\(nsError.domain) \(nsError.code)) \(nsError.localizedDescription)"
-                )
-            }
-        }
-
-        return false
     }
 
-    func findBestConnection(server: PlexServer) async -> String? {
-        AppLogger.network.info("Finding best connection for server: \(server.name)")
-        AppLogger.network.info("Testing all Plex connections; local addresses are not assumed reachable")
-
-        let sortedConnections = server.connections.sorted { conn1, conn2 in
-            let conn1SecureRemote = conn1.isSecure && !conn1.local && !conn1.isRelay
-            let conn2SecureRemote = conn2.isSecure && !conn2.local && !conn2.isRelay
-            if conn1SecureRemote != conn2SecureRemote {
-                return conn1SecureRemote
-            }
-
-            let conn1SecureLocal = conn1.isSecure && conn1.local && !conn1.isRelay
-            let conn2SecureLocal = conn2.isSecure && conn2.local && !conn2.isRelay
-            if conn1SecureLocal != conn2SecureLocal {
-                return conn1SecureLocal
-            }
-
-            let conn1InsecureRemote = !conn1.isSecure && !conn1.local && !conn1.isRelay
-            let conn2InsecureRemote = !conn2.isSecure && !conn2.local && !conn2.isRelay
-            if conn1InsecureRemote != conn2InsecureRemote {
-                return conn1InsecureRemote
-            }
-
-            let conn1InsecureLocal = !conn1.isSecure && conn1.local && !conn1.isRelay
-            let conn2InsecureLocal = !conn2.isSecure && conn2.local && !conn2.isRelay
-            if conn1InsecureLocal != conn2InsecureLocal {
-                return conn1InsecureLocal
-            }
-
-            if conn1.isRelay != conn2.isRelay {
-                return !conn1.isRelay
-            }
-
-            return false
+    func findBestConnection(server: PlexServer, persistSelection: Bool = true) async -> String? {
+        let tiers = Dictionary(grouping: server.connections) { connection in
+            if connection.isRelay { return 4 }
+            return (connection.local ? 0 : 2) + (connection.isSecure ? 0 : 1)
         }
-
-        AppLogger.network.info("Testing \(sortedConnections.count) connection(s) in priority order...")
-
-        for (index, connection) in sortedConnections.enumerated() {
-            let connectionType: String
-            if connection.isRelay {
-                connectionType = "Relay"
-            } else if connection.local {
-                connectionType = connection.isSecure ? "Local HTTPS" : "Local HTTP"
-            } else {
-                connectionType = connection.isSecure ? "Remote HTTPS" : "Remote HTTP"
+        // Probe together, but hold a lower-priority success until better routes finish.
+        let workingURL = await withTaskGroup(of: (Int, String?).self, returning: String?.self) { group in
+            var pending = tiers.mapValues(\.count)
+            var best: (tier: Int, url: String)?
+            for (tier, candidates) in tiers {
+                for connection in candidates {
+                    group.addTask {
+                        let reachable = await self.verifyConnection(
+                            url: connection.uri, token: server.accessToken, serverIdentifier: server.id
+                        )
+                        return (tier, reachable ? connection.uri : nil)
+                    }
+                }
             }
-
-            AppLogger.network.info("[\(index + 1)/\(sortedConnections.count)] Testing \(connectionType): \(connection.uri)")
-
-            if await verifyConnection(url: connection.uri, token: server.accessToken) {
-                AppLogger.network.info("Found working connection: \(connection.uri)")
-                AppLogger.network.info("Type: \(connectionType)")
-                PlexAuthStore.shared.saveServerUrl(connection.uri)
-                PlexAuthStore.shared.saveMachineIdentifier(server.id)
-                PlexAuthStore.shared.saveServerAccessToken(server.accessToken)
-                return connection.uri
-            } else {
-                AppLogger.network.error("Connection failed - trying next...")
+            for await (tier, url) in group {
+                pending[tier, default: 0] -= 1
+                if let url, tier < (best?.tier ?? Int.max) { best = (tier, url) }
+                if let best, !pending.contains(where: { $0.key < best.tier && $0.value > 0 }) {
+                    group.cancelAll()
+                    return best.url
+                }
             }
+            return nil
         }
+        guard let workingURL, !Task.isCancelled else { return nil }
+        if persistSelection {
+            PlexAuthStore.shared.saveServerUrl(workingURL)
+            PlexAuthStore.shared.saveMachineIdentifier(server.id)
+            PlexAuthStore.shared.saveServerAccessToken(server.accessToken)
+        }
+        return workingURL
+    }
 
-        AppLogger.network.info("No working connection found after testing all \(sortedConnections.count) connection(s)")
-        return nil
+    func recoverConnection(_ connection: ServerConnection) async throws -> String? {
+        guard let token = connection.effectivePlexToken,
+              let discoveryToken = connection.plexOwnerToken ?? connection.token else { return nil }
+        return try await withTimeout(seconds: 6) { @MainActor in
+            let servers = try await self.getPlexServers(token: discoveryToken)
+            try Task.checkCancellation()
+            let target = self.normalizedServerURL(connection.url)
+            let matches = servers.filter { server in
+                self.normalizedServerURL(server.uri) == target || server.connections.contains {
+                    self.normalizedServerURL($0.uri) == target
+                }
+            }
+            // Never guess by name or use another server on the same Plex account.
+            guard matches.count == 1, let server = matches.first else { return nil }
+            let scopedServer = PlexServer(
+                id: server.id, name: server.name, uri: server.uri, local: server.local,
+                httpsRequired: server.httpsRequired, owned: server.owned, synced: server.synced,
+                accessToken: token, connections: server.connections
+            )
+            return await self.findBestConnection(server: scopedServer, persistSelection: false)
+        }
     }
 
     func getChapters(serverUrl: String, token: String, ratingKey: String) async throws -> [Chapter] {

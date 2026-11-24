@@ -131,6 +131,14 @@ struct ProviderLiveSyncTests {
                 record("LAB BookOrbit full catalog and representative details passed books=\(books.count)")
             }
             if let bookOrbit = provider as? BookOrbitProvider {
+                stage = "dashboard widgets"
+                let current = try await bookOrbit.fetchUserMediaProgress(libraryId: "")
+                _ = try await bookOrbit.fetchReadingStreakWidget()
+                _ = try await bookOrbit.fetchReadingGoalWidget()
+                _ = try await bookOrbit.fetchYearProjectionWidget()
+                _ = try await bookOrbit.fetchMonthlyChallengeWidget()
+                _ = try await bookOrbit.fetchHighlightOfTheDayWidget()
+                record("LAB BookOrbit six dashboard widgets passed currentlyReading=\(current.count)")
                 if ProcessInfo.processInfo.environment["ENVE_LAB_EXPECT_NON_ADMIN"] == "1" {
                     #expect(try await bookOrbit.currentUserIsAdmin() == false)
                 }
@@ -616,25 +624,22 @@ struct ProviderLiveSyncTests {
     ) async throws -> Book {
         var pageNumber = 0
         while true {
-            let request = try provider.makeRequest(
-                path: "/api/v1/app/books",
-                queryItems: [
-                    URLQueryItem(name: "fileType", value: serverType),
-                    URLQueryItem(name: "search", value: search),
-                    URLQueryItem(name: "page", value: String(pageNumber)),
-                    URLQueryItem(name: "size", value: "100"),
-                ]
+            let request = try provider.browsePageRequest(
+                facets: ["file_type:\(serverType)"],
+                sort: "-addedOn",
+                query: search,
+                page: pageNumber,
+                size: 100
             )
             let (data, response) = try await URLSession.shared.data(for: request)
             guard (response as? HTTPURLResponse)?.statusCode == 200 else { throw LabError.rejected }
-            let page = try JSONDecoder().decode(BooklorePage<BookloreBookSummary>.self, from: data)
-            if let summary = page.content.first(where: { summary in
-                let file = summary.primaryFile
-                return (summary.primaryFileName ?? file?.fileName)?.caseInsensitiveCompare(fileName) == .orderedSame
+            let page = try JSONDecoder().decode(BooklorePage<BookloreLegacyBook>.self, from: data)
+            if let record = page.content.first(where: { record in
+                record.files.contains { $0.fileName?.caseInsensitiveCompare(fileName) == .orderedSame }
             }) {
-                let libraryId = try #require(summary.libraryId?.stringValue)
+                let libraryId = try #require(record.libraryId?.stringValue)
                 return try await provider.fetchFullBookDetails(
-                    bookId: summary.id.stringValue,
+                    bookId: record.id.stringValue,
                     libraryId: libraryId
                 )
             }

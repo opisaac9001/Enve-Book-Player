@@ -44,7 +44,7 @@ class SiloLiveRepositoryTest {
         val vault = CredentialVault.forProfile(context, identity)
         val registry = ConnectionRegistry(PreferenceDataStoreFactory.create(scope = CoroutineScope(job + Dispatchers.IO)) {
             File(root, "connections.preferences_pb")
-        })
+        }, vault)
         val json = Json { ignoreUnknownKeys = true; encodeDefaults = true }
         val transport = OkHttpClient()
         val login = JSONObject().put("username", config.getString("username")).put("password", config.getString("password"))
@@ -107,9 +107,27 @@ class SiloLiveRepositoryTest {
                 } finally { repository.stopPlaybackSession(audio).getOrThrow() }
                 stage = "offline progress replay"
                 repository.invalidateCaches()
-                val queued = audio.copy(lastReadTime = System.currentTimeMillis())
+                suspend fun serverTimeMs(): Long {
+                    val response = api.profiles()
+                    check(response.isSuccessful) { "Could not read the verification server clock" }
+                    return checkNotNull(response.headers().getDate("Date")).time
+                }
+                val stoppedAt = serverTimeMs()
+                val replayAt = withTimeout(8_000L) {
+                    var now = stoppedAt
+                    while (now <= stoppedAt) {
+                        delay(300)
+                        now = serverTimeMs()
+                    }
+                    now
+                }
+                val queued = audio.copy(lastReadTime = replayAt)
                 repository.syncAudiobookProgress(queued, 27, 0.3f).getOrThrow()
-                repeat(2) { repository.syncAudiobookProgress(queued.copy(lastReadTime = queued.lastReadTime - 60_000), 4, 0.04f).getOrThrow() }
+                assertEquals(27_000L, checkNotNull(repository.fetchAudiobookProgress(audio).getOrThrow()).positionMs)
+                val stalePosition = (audio.duration / 2).coerceAtLeast(28L)
+                repeat(2) {
+                    repository.syncAudiobookProgress(queued.copy(lastReadTime = replayAt - 60_000), stalePosition, 0.5f).getOrThrow()
+                }
                 assertEquals(27_000L, checkNotNull(repository.fetchAudiobookProgress(audio).getOrThrow()).positionMs)
                 stage = "annotation conflict"
                 val annotation = ReaderAnnotation(id = UUID.randomUUID().toString(), bookId = ebook.id,

@@ -14,6 +14,7 @@ import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
+import androidx.compose.foundation.layout.sizeIn
 import androidx.compose.foundation.layout.statusBarsPadding
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.lazy.LazyColumn
@@ -38,7 +39,9 @@ import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.draw.alpha
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.semantics.Role
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.input.KeyboardType
 import androidx.compose.ui.text.input.PasswordVisualTransformation
@@ -95,6 +98,12 @@ fun HearthOpdsCatalogScreen(
             title = state.page?.title?.takeIf { it.isNotBlank() } ?: sourceName,
             subtitle = state.page?.pagination?.summary(),
             onBack = { if (!vm.back()) onBack() },
+            selectLabel = when {
+                state.challenge != null || state.selectableBooks.isEmpty() -> null
+                state.isSelecting -> "Done"
+                else -> "Select"
+            },
+            onToggleSelect = { vm.setSelecting(!state.isSelecting) },
         )
 
         state.notice?.let { notice ->
@@ -130,21 +139,47 @@ fun HearthOpdsCatalogScreen(
                 onAction = vm::reload,
             )
 
-            else -> CatalogBody(
-                page = state.page,
-                query = state.query,
-                isLoading = state.isLoading,
-                onQueryChange = vm::setQuery,
-                onSearch = { state.page?.search?.let(vm::search) },
-                onOpen = vm::open,
-                onOpenEntry = vm::openEntry,
-                onSelectBook = vm::selectBook,
-            )
+            else -> {
+                Box(Modifier.weight(1f)) {
+                    CatalogBody(
+                        page = state.page,
+                        query = state.query,
+                        isLoading = state.isLoading,
+                        selection = state.selection.takeIf { state.isSelecting },
+                        onQueryChange = vm::setQuery,
+                        onSearch = { state.page?.search?.let(vm::search) },
+                        onOpen = vm::open,
+                        onOpenEntry = vm::openEntry,
+                        onSelectBook = if (state.isSelecting) vm::toggleSelection else vm::selectBook,
+                    )
+                }
+                if (state.isSelecting) {
+                    SelectionBar(
+                        selectedCount = state.selection.size,
+                        selectableCount = state.selectableBooks.size,
+                        onSelectAll = vm::selectAllOnPage,
+                        onClear = vm::clearSelection,
+                        onImport = vm::reviewSelection,
+                    )
+                }
+            }
         }
     }
 
     state.sheet?.let { sheet ->
         AcquisitionSheet(sheet = sheet, onDismiss = vm::dismissBook, onChoose = vm::choose)
+    }
+
+    state.bulk?.let { bulk ->
+        OpdsBulkImportDialog(
+            bulk = bulk,
+            onChoose = vm::chooseBulkAcquisition,
+            onChooseFormat = vm::chooseBulkFormat,
+            onSkip = vm::skipBulkItem,
+            onStart = vm::startBulkImport,
+            onCancel = vm::cancelBulk,
+            onDismiss = vm::dismissBulk,
+        )
     }
 
     LaunchedEffect(state.externalUrl) {
@@ -162,7 +197,13 @@ fun HearthOpdsCatalogScreen(
 private const val NOTICE_DURATION_MS = 4_000L
 
 @Composable
-private fun CatalogTopBar(title: String, subtitle: String?, onBack: () -> Unit) {
+private fun CatalogTopBar(
+    title: String,
+    subtitle: String?,
+    onBack: () -> Unit,
+    selectLabel: String?,
+    onToggleSelect: () -> Unit,
+) {
     val palette = Hearth.palette
     Row(
         Modifier.fillMaxWidth().statusBarsPadding().padding(Hearth.Spacing.S),
@@ -190,6 +231,53 @@ private fun CatalogTopBar(title: String, subtitle: String?, onBack: () -> Unit) 
             )
             subtitle?.let { Text(it, style = HearthText.Caption, color = palette.textTertiary) }
         }
+        selectLabel?.let { label ->
+            Text(
+                label,
+                style = HearthText.Label,
+                color = palette.ember,
+                modifier = Modifier
+                    .sizeIn(minWidth = 48.dp, minHeight = 48.dp)
+                    .clip(RoundedCornerShape(Hearth.Radius.Inner))
+                    .clickable(role = Role.Button, onClick = onToggleSelect)
+                    .padding(Hearth.Spacing.M),
+            )
+        }
+    }
+}
+
+@Composable
+private fun SelectionBar(
+    selectedCount: Int,
+    selectableCount: Int,
+    onSelectAll: () -> Unit,
+    onClear: () -> Unit,
+    onImport: () -> Unit,
+) {
+    val palette = Hearth.palette
+    Column(
+        Modifier
+            .fillMaxWidth()
+            .background(palette.bgElevated)
+            .padding(horizontal = Hearth.Spacing.XL, vertical = Hearth.Spacing.M)
+            .padding(bottom = LocalMantelInset.current),
+        verticalArrangement = Arrangement.spacedBy(Hearth.Spacing.S),
+    ) {
+        Text(
+            if (selectedCount == 0) "Choose books on this page to download" else "$selectedCount of $selectableCount selected",
+            style = HearthText.Caption,
+            color = palette.textSecondary,
+        )
+        Row(horizontalArrangement = Arrangement.spacedBy(Hearth.Spacing.S), verticalAlignment = Alignment.CenterVertically) {
+            QuietButton(if (selectedCount < minOf(selectableCount, OPDS_BULK_LIMIT)) "Select all" else "Clear", onClick = {
+                if (selectedCount < minOf(selectableCount, OPDS_BULK_LIMIT)) onSelectAll() else onClear()
+            })
+            EmberButton(
+                if (selectedCount == 1) "Download 1" else "Download $selectedCount",
+                onClick = { if (selectedCount > 0) onImport() },
+                modifier = Modifier.weight(1f).alpha(if (selectedCount > 0) 1f else 0.5f),
+            )
+        }
     }
 }
 
@@ -198,6 +286,7 @@ private fun CatalogBody(
     page: OpdsCatalogPage?,
     query: String,
     isLoading: Boolean,
+    selection: Set<String>?,
     onQueryChange: (String) -> Unit,
     onSearch: () -> Unit,
     onOpen: (String) -> Unit,
@@ -276,18 +365,24 @@ private fun CatalogBody(
 
         page.shelves.forEachIndexed { shelfIndex, shelf ->
             item("shelf-$shelfIndex") {
-                ShelfRow(shelf, onOpen = onOpen, onOpenEntry = onOpenEntry, onSelectBook = onSelectBook)
+                ShelfRow(shelf, selection, onOpen = onOpen, onOpenEntry = onOpenEntry, onSelectBook = onSelectBook)
             }
         }
 
         page.singlePublication?.let { book ->
-            item("single-${book.id}") { PublicationCard(book, onClick = { onSelectBook(book) }) }
+            item("single-${book.id}") {
+                if (selection != null) {
+                    PublicationRow(book, selected = book.id in selection, onClick = { onSelectBook(book) })
+                } else {
+                    PublicationCard(book, onClick = { onSelectBook(book) })
+                }
+            }
         }
 
         if (page.books.isNotEmpty()) {
             item("books-header") { Overline("Publications") }
             itemsIndexed(page.books, key = { index, _ -> "book-$index" }) { _, book ->
-                PublicationRow(book, onClick = { onSelectBook(book) })
+                PublicationRow(book, selected = selection?.let { book.id in it }, onClick = { onSelectBook(book) })
             }
         }
 
@@ -346,6 +441,7 @@ private fun NavigationRow(entry: OpdsBrowseEntry, onClick: () -> Unit) {
 @Composable
 private fun ShelfRow(
     shelf: OpdsShelfState,
+    selection: Set<String>?,
     onOpen: (String) -> Unit,
     onOpenEntry: (OpdsBrowseEntry) -> Unit,
     onSelectBook: (Book) -> Unit,
@@ -361,11 +457,14 @@ private fun ShelfRow(
             LazyRow(horizontalArrangement = Arrangement.spacedBy(Hearth.Spacing.M)) {
                 itemsIndexed(shelf.books, key = { index, _ -> index }) { _, book ->
                     Column(Modifier.width(112.dp).clickable { onSelectBook(book) }) {
-                        CoverTile(
-                            model = book.coverUrl,
-                            modifier = Modifier.fillMaxWidth(),
-                            mediaType = book.mediaType,
-                        )
+                        Box {
+                            CoverTile(
+                                model = book.coverUrl,
+                                modifier = Modifier.fillMaxWidth(),
+                                mediaType = book.mediaType,
+                            )
+                            selection?.let { SelectionMark(book.id in it, Modifier.align(Alignment.TopEnd).padding(Hearth.Spacing.XS)) }
+                        }
                         Spacer(Modifier.size(Hearth.Spacing.S))
                         Text(
                             book.title,
@@ -385,12 +484,13 @@ private fun ShelfRow(
 }
 
 @Composable
-private fun PublicationRow(book: Book, onClick: () -> Unit) {
+private fun PublicationRow(book: Book, onClick: () -> Unit, selected: Boolean? = null) {
     val palette = Hearth.palette
     Row(
         Modifier.fillMaxWidth().clickable(onClick = onClick),
         horizontalArrangement = Arrangement.spacedBy(Hearth.Spacing.M),
     ) {
+        selected?.let { SelectionMark(it, Modifier.align(Alignment.CenterVertically)) }
         CoverTile(model = book.coverUrl, modifier = Modifier.width(56.dp), mediaType = book.mediaType)
         Column(Modifier.weight(1f).padding(top = Hearth.Spacing.XS)) {
             Text(

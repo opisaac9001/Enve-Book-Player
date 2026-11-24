@@ -104,6 +104,10 @@ class LocalNarratorRuntime(context: Context) {
         val isCurrent: Boolean get() = job.isActive && epochs.getValue(pack).get() == epoch
     }
 
+    private class ContinueWhileCurrent(private val isCurrent: () -> Boolean) : (FloatArray) -> Int {
+        override fun invoke(samples: FloatArray): Int = if (isCurrent()) 1 else 0
+    }
+
     private class SherpaBackend(
         private val pack: NarratorPack,
         private val tts: OfflineTts,
@@ -120,7 +124,7 @@ class LocalNarratorRuntime(context: Context) {
             val speakerId = pack.speakerIds[pack.voices.indexOf(voice)]
             val config = generationConfig(text, speakerId, language, speed)
                 ?: return NarratorAudio(FloatArray(0), tts.sampleRate())
-            val audio = tts.generateWithConfigAndCallback(text, config) { if (isCurrent()) 1 else 0 }
+            val audio = tts.generateWithConfigAndCallback(text, config, ContinueWhileCurrent(isCurrent))
             check(audio.samples.isNotEmpty() || !isCurrent()) { "${pack.title} produced no audio" }
             return NarratorAudio(audio.samples, audio.sampleRate, if (pack == NarratorPack.POCKET) speed else 1f)
         }

@@ -8,7 +8,7 @@ import com.enve.core.data.model.BookSource
 import com.enve.core.data.remote.ConnectionScope
 import com.enve.core.data.sync.ProviderSyncResult
 import com.enve.core.data.sync.ProviderSyncStrategy
-import com.enve.silo.SiloProviderAdapter
+import com.enve.silo.SiloRepository
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.withContext
@@ -17,7 +17,7 @@ import javax.inject.Singleton
 
 @Singleton
 class SiloSyncStrategy @Inject constructor(
-    private val adapter: SiloProviderAdapter,
+    private val repository: SiloRepository,
     private val bookCacheDao: BookCacheDao,
     private val connectionRegistry: ConnectionRegistry,
 ) : ProviderSyncStrategy {
@@ -33,39 +33,51 @@ class SiloSyncStrategy @Inject constructor(
             val last = lastSyncAtMs
             if (last != null && now - last < minSyncIntervalMs) return ProviderSyncResult.ZERO
         }
-        lastSyncAtMs = now
 
         val connections = connectionRegistry.connections.first()
             .filter { it.enabled && it.source == BookSource.SILO }
         if (connections.isEmpty()) return ProviderSyncResult.ZERO
 
         var pulled = 0
+        var failed = false
         for (connection in connections) {
             try {
                 val books = withContext(ConnectionScope.asContextElement(connection.id)) {
-                    adapter.getContinueListening().getOrDefault(emptyList()) +
-                        adapter.getContinueReading().getOrDefault(emptyList())
+                    repository.getContinue().getOrThrow()
                 }
                 val nowMs = System.currentTimeMillis()
                 books.distinctBy { it.uniqueKey }.forEach { book ->
-                    bookCacheDao.upsert(
-                        listOf(
-                            book.copy(
-                                source = BookSource.SILO,
-                                connectionId = connection.id,
-                            ).toCachedBook(nowMs),
-                        ),
+                    val scoped = book.copy(
+                        source = BookSource.SILO,
+                        connectionId = connection.id,
+                        libraryId = book.libraryId?.let { "${connection.id}::${it.substringAfter("::")}" },
                     )
-                    pulled += 1
+                    if (bookCacheDao.insertIfAbsent(scoped.toCachedBook(nowMs)) != -1L) {
+                        pulled++
+                    } else {
+                        pulled += bookCacheDao.applyRemoteProgress(
+                            cacheKey = scoped.uniqueKey,
+                            source = BookSource.SILO.name,
+                            progress = scoped.readProgress,
+                            ebookProgress = scoped.epubProgress,
+                            currentTimeSec = scoped.currentTime,
+                            locatorJson = scoped.epubLocator,
+                            finished = scoped.isFinished,
+                            readStatus = scoped.serverReadStatus,
+                            updatedAt = scoped.lastReadTime,
+                        )
+                    }
                 }
                 connectionRegistry.setLastSynced(connection.id, System.currentTimeMillis())
             } catch (e: CancellationException) {
                 throw e
             } catch (e: Exception) {
+                failed = true
                 Log.w(TAG, "Silo sync failed for connection=${connection.id}: ${e.message}")
             }
         }
-        return ProviderSyncResult(pulled = pulled, pushed = 0)
+        if (!failed) lastSyncAtMs = now
+        return ProviderSyncResult(pulled = pulled, pushed = 0, failedBackends = if (failed) listOf(displayName) else emptyList())
     }
 
     private companion object { const val TAG = "SiloSyncStrategy" }

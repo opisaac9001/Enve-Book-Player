@@ -7,7 +7,9 @@ import com.enve.engine.discover.DiscoverBook
 import com.enve.engine.discover.DiscoverFacade
 import com.enve.engine.discover.DiscoverSection
 import com.enve.engine.library.LibraryFacade
+import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.flow.first
+import kotlinx.coroutines.withContext
 import javax.inject.Inject
 
 class DiscoverFacadeImpl @Inject constructor(
@@ -16,7 +18,8 @@ class DiscoverFacadeImpl @Inject constructor(
 ) : DiscoverFacade {
     override suspend fun load(force: Boolean): List<DiscoverSection> {
         val sections = repository.loadSections(force)
-        val matches = DiscoverLibraryMatcher.match(sections, library.allBooks.first())
+        val libraryBooks = library.allBooks.first()
+        val matches = withContext(Dispatchers.Default) { DiscoverLibraryMatcher.match(sections, libraryBooks) }
         return sections.map { section ->
             DiscoverSection(
                 id = section.id.name,

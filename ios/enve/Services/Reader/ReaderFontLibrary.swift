@@ -16,6 +16,7 @@ final class ReaderFontLibrary {
         case networkError(String)
         case parseError
         case noFilesFound(String)
+        case invalidFontData
 
         var errorDescription: String? {
             switch self {
@@ -29,6 +30,8 @@ final class ReaderFontLibrary {
                 return "Could not parse the Google Fonts response."
             case .noFilesFound(let name):
                 return "No downloadable font files were found for \(name)."
+            case .invalidFontData:
+                return "Google Fonts returned a file that isn't a usable font."
             }
         }
     }
@@ -258,6 +261,7 @@ final class ReaderFontLibrary {
     @ObservationIgnored private let userDefaults: UserDefaults
     @ObservationIgnored private let metadataKey: String
     @ObservationIgnored private let fontsDirectory: URL
+    @ObservationIgnored private var previewDescriptors: [String: CTFontDescriptor] = [:]
 
     init(
         fileManager: FileManager = .default,
@@ -438,34 +442,25 @@ final class ReaderFontLibrary {
         return false
     }
 
-    func installGoogleFont(_ font: GoogleFontFamily) async throws -> InstalledFontFamily {
+    func installGoogleFont(
+        _ font: GoogleFontFamily,
+        progress: ((Double) -> Void)? = nil
+    ) async throws -> InstalledFontFamily {
         let familyDirectory = fontsDirectory.appendingPathComponent(font.id, isDirectory: true)
-        try fileManager.createDirectory(at: familyDirectory, withIntermediateDirectories: true)
-
-        var files: [InstalledFontFile] = []
-        for entry in font.files {
-            let destination = familyDirectory.appendingPathComponent(entry.fileName)
-            if !fileManager.fileExists(atPath: destination.path) {
-                guard let downloadURL = URL(string: entry.url) else {
-                    throw NSError(
-                        domain: "ReaderFontLibrary",
-                        code: -1,
-                        userInfo: [NSLocalizedDescriptionKey: "Invalid font URL: \(entry.url)"]
-                    )
-                }
-                let (data, _) = try await URLSession.shared.data(from: downloadURL)
-                try data.write(to: destination, options: .atomic)
-            }
-            try registerFont(at: destination)
-            files.append(
-                InstalledFontFile(
-                    fileName: entry.fileName,
-                    filePath: destination.path,
-                    style: entry.style,
-                    weightKind: entry.weightKind
+        let pending = try font.files.map { entry -> PendingFontFile in
+            guard let url = URL(string: entry.url) else {
+                throw NSError(
+                    domain: "ReaderFontLibrary",
+                    code: -1,
+                    userInfo: [NSLocalizedDescriptionKey: "Invalid font URL: \(entry.url)"]
                 )
-            )
+            }
+            return (url, entry.fileName, entry.style, entry.weightKind)
         }
+        let files = try await downloadFontFiles(pending, into: familyDirectory, progress: progress)
+        await retainLicense(for: font.familyName, in: familyDirectory)
+        try Task.checkCancellation()
+        progress?(1)
 
         let installed = InstalledFontFamily(
             familyName: font.familyName,
@@ -477,7 +472,10 @@ final class ReaderFontLibrary {
         return installed
     }
 
-    func installGoogleFontByName(_ familyName: String) async throws -> InstalledFontFamily {
+    func installGoogleFontByName(
+        _ familyName: String,
+        progress: ((Double) -> Void)? = nil
+    ) async throws -> InstalledFontFamily {
         let trimmedName = familyName.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !trimmedName.isEmpty else {
             throw FontInstallError.invalidName
@@ -485,18 +483,20 @@ final class ReaderFontLibrary {
 
         if let installed = installedFonts.first(where: {
             $0.familyName.caseInsensitiveCompare(trimmedName) == .orderedSame
-        }) {
+        }), installed.files.allSatisfy({ fileManager.fileExists(atPath: $0.filePath) }) {
             return installed
         }
 
         if let builtIn = GoogleFontFamily.allCases.first(where: {
             $0.familyName.caseInsensitiveCompare(trimmedName) == .orderedSame
         }) {
-            return try await installGoogleFont(builtIn)
+            return try await installGoogleFont(builtIn, progress: progress)
         }
 
-        let encodedName = trimmedName.addingPercentEncoding(withAllowedCharacters: .urlQueryAllowed) ?? trimmedName
-        guard let cssURL = URL(string: "https://fonts.googleapis.com/css?family=\(encodedName):400,700,400italic,700italic") else {
+        var components = URLComponents(string: "https://fonts.googleapis.com/css")!
+        components.queryItems = [URLQueryItem(name: "family", value: "\(trimmedName):400,700,400italic,700italic")]
+        components.percentEncodedQuery = components.percentEncodedQuery?.replacingOccurrences(of: "+", with: "%2B")
+        guard let cssURL = components.url else {
             throw FontInstallError.invalidName
         }
 
@@ -508,6 +508,8 @@ final class ReaderFontLibrary {
         let response: URLResponse
         do {
             (cssData, response) = try await URLSession.shared.data(for: request)
+        } catch let error as URLError where error.code == .cancelled {
+            throw CancellationError()
         } catch {
             throw FontInstallError.networkError(error.localizedDescription)
         }
@@ -542,25 +544,10 @@ final class ReaderFontLibrary {
             .filter { !$0.isEmpty }
             .joined(separator: "-")
         let familyDirectory = fontsDirectory.appendingPathComponent(directoryName, isDirectory: true)
-        try fileManager.createDirectory(at: familyDirectory, withIntermediateDirectories: true)
-
-        var installedFiles: [InstalledFontFile] = []
-        for file in parsedFiles {
-            let destination = familyDirectory.appendingPathComponent(file.fileName)
-            if !fileManager.fileExists(atPath: destination.path) {
-                let (data, _) = try await URLSession.shared.data(from: file.url)
-                try data.write(to: destination, options: .atomic)
-            }
-            try registerFont(at: destination)
-            installedFiles.append(
-                InstalledFontFile(
-                    fileName: file.fileName,
-                    filePath: destination.path,
-                    style: file.style,
-                    weightKind: file.weightKind
-                )
-            )
-        }
+        let installedFiles = try await downloadFontFiles(parsedFiles, into: familyDirectory, progress: progress)
+        await retainLicense(for: trimmedName, in: familyDirectory)
+        try Task.checkCancellation()
+        progress?(1)
 
         let installed = InstalledFontFamily(
             familyName: trimmedName,
@@ -630,6 +617,19 @@ final class ReaderFontLibrary {
         installedFonts.first { $0.familyName == familyName }
     }
 
+    // Read from the installed file itself so a preview never falls back to a substitute face.
+    func previewFontDescriptor(for family: InstalledFontFamily) -> CTFontDescriptor? {
+        let regular = family.files.first { $0.style == .normal && $0.weightKind != .standardBold } ?? family.files.first
+        guard let path = regular?.filePath else { return nil }
+        if let cached = previewDescriptors[path] { return cached }
+        guard fileManager.fileExists(atPath: path),
+            let descriptor = (CTFontManagerCreateFontDescriptorsFromURL(URL(fileURLWithPath: path) as CFURL)
+                as? [CTFontDescriptor])?.first
+        else { return nil }
+        previewDescriptors[path] = descriptor
+        return descriptor
+    }
+
     func hasUsableFontFamily(named familyName: String) -> Bool {
         guard let family = fontFamily(named: familyName) else {
             return false
@@ -690,9 +690,99 @@ final class ReaderFontLibrary {
         }
     }
 
-    private static func parseGoogleFontCSS(
-        _ css: String
-    ) -> [(url: URL, fileName: String, style: InstalledFontFile.FaceStyle, weightKind: InstalledFontFile.WeightKind)] {
+    private typealias PendingFontFile = (
+        url: URL, fileName: String, style: InstalledFontFile.FaceStyle, weightKind: InstalledFontFile.WeightKind
+    )
+
+    private func downloadFontFiles(
+        _ pending: [PendingFontFile],
+        into directory: URL,
+        progress: ((Double) -> Void)?
+    ) async throws -> [InstalledFontFile] {
+        try fileManager.createDirectory(at: directory, withIntermediateDirectories: true)
+        var written: [URL] = []
+        do {
+            var files: [InstalledFontFile] = []
+            for (index, entry) in pending.enumerated() {
+                try Task.checkCancellation()
+                let destination = directory.appendingPathComponent(entry.fileName)
+                if !fileManager.fileExists(atPath: destination.path) {
+                    let data = try await Self.fetchFontData(from: entry.url)
+                    try data.write(to: destination, options: .atomic)
+                    written.append(destination)
+                }
+                try registerFont(at: destination)
+                files.append(
+                    InstalledFontFile(
+                        fileName: entry.fileName,
+                        filePath: destination.path,
+                        style: entry.style,
+                        weightKind: entry.weightKind
+                    )
+                )
+                // The last step is reserved for the license fetch.
+                progress?(Double(index + 1) / Double(pending.count + 1))
+            }
+            return files
+        } catch {
+            for url in written {
+                _ = CTFontManagerUnregisterFontsForURL(url as CFURL, .process, nil)
+                try? fileManager.removeItem(at: url)
+            }
+            if (try? fileManager.contentsOfDirectory(atPath: directory.path))?.isEmpty == true {
+                try? fileManager.removeItem(at: directory)
+            }
+            throw error
+        }
+    }
+
+    private static func fetchFontData(from url: URL) async throws -> Data {
+        let data: Data
+        let response: URLResponse
+        do {
+            (data, response) = try await URLSession.shared.data(from: url)
+        } catch let error as URLError where error.code == .cancelled {
+            throw CancellationError()
+        } catch {
+            throw FontInstallError.networkError(error.localizedDescription)
+        }
+        let statusCode = (response as? HTTPURLResponse)?.statusCode ?? 0
+        guard statusCode == 200 else {
+            throw FontInstallError.networkError("HTTP \(statusCode)")
+        }
+        guard CTFontManagerCreateFontDescriptorFromData(data as CFData) != nil else {
+            throw FontInstallError.invalidFontData
+        }
+        return data
+    }
+
+    // Keep a separate license copy when available; font files also embed their license.
+    private func retainLicense(for familyName: String, in directory: URL) async {
+        let destination = directory.appendingPathComponent("LICENSE.txt")
+        guard !fileManager.fileExists(atPath: destination.path) else { return }
+        for url in Self.licenseURLs(for: familyName) {
+            guard !Task.isCancelled else { return }
+            guard let result = try? await URLSession.shared.data(from: url),
+                (result.1 as? HTTPURLResponse)?.statusCode == 200
+            else { continue }
+            try? result.0.write(to: destination, options: .atomic)
+            return
+        }
+    }
+
+    static func licenseURLs(for familyName: String) -> [URL] {
+        let slug = String(
+            familyName.lowercased().unicodeScalars
+                .filter { $0.isASCII && CharacterSet.alphanumerics.contains($0) }
+                .map(Character.init)
+        )
+        guard !slug.isEmpty else { return [] }
+        return [("ofl", "OFL.txt"), ("apache", "LICENSE.txt"), ("ufl", "UFL.txt")].compactMap { directory, file in
+            URL(string: "https://raw.githubusercontent.com/google/fonts/main/\(directory)/\(slug)/\(file)")
+        }
+    }
+
+    private static func parseGoogleFontCSS(_ css: String) -> [PendingFontFile] {
         guard
             let blockRegex = try? NSRegularExpression(
                 pattern: #"@font-face\s*\{[^}]+\}"#,

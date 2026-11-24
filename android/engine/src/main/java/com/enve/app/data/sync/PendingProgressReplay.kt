@@ -3,6 +3,7 @@ package com.enve.app.data.sync
 import com.enve.app.data.repository.AggregatorRepository
 import com.enve.core.data.local.BookCacheDao
 import com.enve.core.data.local.ConnectionRegistry
+import com.enve.core.data.local.PendingProgressPush
 import com.enve.core.data.local.PendingProgressPushDao
 import com.enve.core.data.local.toBook
 import com.enve.core.data.model.AppMediaType
@@ -28,24 +29,39 @@ class PendingProgressReplay @Inject constructor(
 ) {
     private val mutex = Mutex()
 
-    suspend fun replay(): Int = mutex.withLock {
+    suspend fun replay(only: PendingProgressPush? = null): Int = mutex.withLock {
         if (!serverSync.isEnabled) return@withLock 0
         var completed = 0
-        for (entry in pending.getAll()) {
+        val entries = if (only == null) pending.getAll() else listOfNotNull(
+            pending.get(only.bookId, only.source, only.connectionKey)?.takeIf { it == only },
+        )
+        for (entry in entries) {
             currentCoroutineContext().ensureActive()
             if (!serverSync.accepts(entry.createdAt)) {
-                pending.deleteIfUnchanged(entry.bookId, entry.source, entry.connectionKey, entry.createdAt, entry.percentage)
+                pending.deleteIfUnchanged(entry.bookId, entry.source, entry.connectionKey, entry.createdAt, entry.percentage, entry.mediaType, entry.isFinished)
                 continue
             }
             val source = BookSource.entries.firstOrNull { it.name == entry.source } ?: continue
             val connectionId = entry.connectionKey.takeIf(String::isNotEmpty)
-            if (connectionId != null && connections.getConnectionsSync().none { it.id == connectionId && it.source == source && it.enabled }) continue
+            val registered = connections.getConnectionsSync()
+            if (connectionId == null && registered.count { it.source == source } > 1) {
+                recordFailure(entry, "The original server for this update is unknown.")
+                continue
+            }
+            if (connectionId != null && registered.none { it.id == connectionId && it.source == source && it.enabled }) {
+                recordFailure(entry, "Reconnect or enable this server to send the update.")
+                continue
+            }
             val cacheKey = "${connectionId ?: source.name}:${entry.bookId}"
             val cached = books.getByCacheKey(cacheKey)
-                ?.takeIf { it.source == source.name && it.connectionId == connectionId } ?: continue
+                ?.takeIf { it.source == source.name && it.connectionId == connectionId }
+            if (cached == null) {
+                recordFailure(entry, "Refresh this book's library before retrying.")
+                continue
+            }
             val media = AppMediaType.entries.firstOrNull { it.name == entry.mediaType } ?: continue
             if (source == BookSource.LOCAL) {
-                pending.deleteIfUnchanged(entry.bookId, entry.source, entry.connectionKey, entry.createdAt, entry.percentage)
+                pending.deleteIfUnchanged(entry.bookId, entry.source, entry.connectionKey, entry.createdAt, entry.percentage, entry.mediaType, entry.isFinished)
                 continue
             }
             if (adapters.none { it.source == source && it.syncCapability.supports(SyncCapabilityFlag.PUSH_PROGRESS) }) continue
@@ -57,6 +73,7 @@ class PendingProgressReplay @Inject constructor(
                         book.id, source, cached.epubProgress ?: cached.readProgress, cached.epubLocator,
                         connectionId = connectionId,
                         observedAt = cached.lastReadTime.takeIf { it > 0 } ?: entry.createdAt,
+                        persistLocalProgress = false,
                     )
                     else -> continue
                 }
@@ -64,17 +81,26 @@ class PendingProgressReplay @Inject constructor(
                 val unchanged = books.getByCacheKey(book.uniqueKey)
                     ?.copy(lastReadTime = cached.lastReadTime, inProgress = cached.inProgress) == cached
                 if (result.isSuccess && unchanged) {
-                    completed += pending.deleteIfUnchanged(entry.bookId, entry.source, entry.connectionKey, entry.createdAt, entry.percentage)
+                    completed += pending.deleteIfUnchanged(entry.bookId, entry.source, entry.connectionKey, entry.createdAt, entry.percentage, entry.mediaType, entry.isFinished)
+                } else if (result.isFailure) {
+                    recordFailure(entry, "The server could not accept the update. Check the connection and retry.")
                 }
             } catch (error: CancellationException) {
                 throw error
             } catch (_: Exception) {
                 currentCoroutineContext().ensureActive()
                 if (!serverSync.accepts(entry.createdAt)) {
-                    pending.deleteIfUnchanged(entry.bookId, entry.source, entry.connectionKey, entry.createdAt, entry.percentage)
+                    pending.deleteIfUnchanged(entry.bookId, entry.source, entry.connectionKey, entry.createdAt, entry.percentage, entry.mediaType, entry.isFinished)
+                } else {
+                    recordFailure(entry, "The server could not accept the update. Check the connection and retry.")
                 }
             }
         }
         completed
+    }
+
+    private suspend fun recordFailure(entry: PendingProgressPush, message: String) {
+        pending.recordFailureIfUnchanged(entry.bookId, entry.source, entry.connectionKey,
+            entry.createdAt, entry.percentage, entry.mediaType, entry.isFinished, System.currentTimeMillis(), message)
     }
 }

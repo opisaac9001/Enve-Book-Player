@@ -306,7 +306,7 @@ final class SourcesEngine {
         await SourcesFinalizer.importAndSync(catalog: catalog, providerId: providerId)
     }
 
-    func importFiles(urls: [URL], mode: SourcesFilesImportMode) async throws -> Int {
+    func importFiles(urls: [URL], mode: SourcesFilesImportMode) async throws -> [Book] {
         let imported = try await (profileSession?.remoteImport ?? RemoteImportService.shared).importFromFilesApp(
             urls: urls,
             audioSelectionMode: mode.remoteMode
@@ -339,7 +339,7 @@ final class SourcesEngine {
         NotificationCenter.default.post(name: .localLibraryUpdated, object: LocalLibraryService.fileSharingLibraryId)
         AppLogger.library.info("Imported \(imported.count) books from Files picker")
 
-        return imported.count
+        return imported.map { $0.toBook(libraryId: LocalLibraryService.fileSharingLibraryId) }
     }
 
     func dragDropBooks() -> [SourcesDragDropBook] {

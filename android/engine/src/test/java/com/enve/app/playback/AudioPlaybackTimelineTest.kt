@@ -1,9 +1,15 @@
 package com.enve.app.playback
 
 import org.junit.Assert.assertEquals
+import org.junit.Assert.assertNull
 import org.junit.Test
 
 class AudioPlaybackTimelineTest {
+    @Test
+    fun emptyQueueHasNoCheckpoint() {
+        assertNull(resolveCheckpointPositionMs(0L, 0, 0, emptyList()))
+    }
+
     @Test
     fun singleTrackDoesNotUseMultiTrackOffsets() {
         val reliable = hasReliableMultiTrackTimeline(
@@ -68,6 +74,78 @@ class AudioPlaybackTimelineTest {
         )
 
         assertEquals(162_000L, position)
+    }
+
+    @Test
+    fun singleTrackCheckpointUsesControllerPosition() {
+        val position = resolveCheckpointPositionMs(
+            localPositionMs = 42_000L,
+            currentIndex = 0,
+            itemCount = 1,
+            trackDurationsMs = emptyList(),
+        )
+
+        assertEquals(42_000L, position)
+    }
+
+    @Test
+    fun checkpointKeepsKnownEarlierOffsetsBeforeDurationlessTrailingTrack() {
+        val position = resolveCheckpointPositionMs(
+            localPositionMs = 10_000L,
+            currentIndex = 1,
+            itemCount = 3,
+            trackDurationsMs = listOf(60_000L, 90_000L, 0L),
+        )
+
+        assertEquals(70_000L, position)
+    }
+
+    @Test
+    fun checkpointOnDurationlessTrailingTrackUsesKnownEarlierOffsets() {
+        val position = resolveCheckpointPositionMs(
+            localPositionMs = 5_000L,
+            currentIndex = 2,
+            itemCount = 3,
+            trackDurationsMs = listOf(60_000L, 90_000L, 0L),
+        )
+
+        assertEquals(155_000L, position)
+    }
+
+    @Test
+    fun checkpointIsUnknownAfterDurationlessEarlierTrack() {
+        val position = resolveCheckpointPositionMs(
+            localPositionMs = 5_000L,
+            currentIndex = 2,
+            itemCount = 3,
+            trackDurationsMs = listOf(60_000L, 0L, 120_000L),
+        )
+
+        assertNull(position)
+    }
+
+    @Test
+    fun checkpointIsUnknownWhenQueueDurationsAreMissing() {
+        val position = resolveCheckpointPositionMs(
+            localPositionMs = 5_000L,
+            currentIndex = 1,
+            itemCount = 2,
+            trackDurationsMs = emptyList(),
+        )
+
+        assertNull(position)
+    }
+
+    @Test
+    fun firstTrackCheckpointNeedsNoEarlierOffsets() {
+        val position = resolveCheckpointPositionMs(
+            localPositionMs = 5_000L,
+            currentIndex = 0,
+            itemCount = 2,
+            trackDurationsMs = emptyList(),
+        )
+
+        assertEquals(5_000L, position)
     }
 
     @Test

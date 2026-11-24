@@ -6,6 +6,8 @@ struct BookDetailScreen: View {
     private var profileSession: ProfileSession { capturedSession ?? .owner }
     let book: Book
     var readingSequence: [String]? = nil
+    /// Set when the screen is the root of a side-by-side detail pane, where there is nothing to pop.
+    var onClose: (() -> Void)? = nil
 
     @Environment(EnveEngine.self) private var engine
     @Environment(\.hearth) private var hearth
@@ -114,6 +116,11 @@ struct BookDetailScreen: View {
                             .transition(.opacity)
                     }
 
+                    DetailPendingEditNote(book: shown, kind: .readStatus, serverName: ratingDestination) {
+                        restoreServerState()
+                    }
+                    .padding(.horizontal, 24)
+
                     if engine.library.supportsPersonalRating(shown) {
                         personalRating
                             .padding(.horizontal, 24)
@@ -179,8 +186,11 @@ struct BookDetailScreen: View {
         detailContent
         .background(HearthBackground())
         .overlay(alignment: .topLeading) {
-            GlyphButton(systemImage: "chevron.left", label: "Back") { dismiss() }
-                .padding(.leading, 20)
+            GlyphButton(systemImage: onClose == nil ? "chevron.left" : "xmark", label: onClose == nil ? "Back" : "Close details") {
+                close()
+            }
+            .padding(.leading, 20)
+            .accessibilityIdentifier("book-detail-close")
         }
         .overlay(alignment: .topTrailing) {
             moreMenu
@@ -189,7 +199,7 @@ struct BookDetailScreen: View {
         .navigationBarBackButtonHidden(true)
         .toolbar(.hidden, for: .navigationBar)
         .hearthInteractiveBack()
-        .hearthDismissGesture(.page, isEnabled: isPresented) { dismiss() }
+        .hearthDismissGesture(.page, isEnabled: isPresented && onClose == nil) { dismiss() }
         .animation(.smooth(duration: 0.35), value: shelf.message)
         .animation(.smooth(duration: 0.25), value: chapterFetcher.isFetching)
         .sheet(
@@ -230,6 +240,12 @@ struct BookDetailScreen: View {
         }
         .task {
             await refresh()
+            if engine.library.provider(for: shown) is any RemoteCatalogBrowsingProvider,
+                !engine.downloads.isDownloaded(shown) {
+                _ = await engine.library.refreshDetails(for: shown)
+                guard !Task.isCancelled else { return }
+                await refresh()
+            }
             reloadCachedChapters()
             autoFetchChaptersIfNeeded()
             await shelf.load(book: shown, library: engine.library)
@@ -252,7 +268,7 @@ struct BookDetailScreen: View {
         .alert("Delete from library?", isPresented: $confirmDelete) {
             Button("Delete", role: .destructive) {
                 engine.library.permanentlyDelete(shown)
-                dismiss()
+                close()
             }
             Button("Cancel", role: .cancel) {}
         } message: {
@@ -305,15 +321,17 @@ struct BookDetailScreen: View {
                     Button {
                         setPersonalRating(value)
                     } label: {
-                        Image(systemName: value <= Int(shown.personalRating ?? 0) ? "star.fill" : "star")
+                        Image(systemName: value <= Int(shownRating ?? 0) ? "star.fill" : "star")
                             .font(.hearthUI(25, weight: .semibold))
-                            .foregroundStyle(value <= Int(shown.personalRating ?? 0) ? Hearth.accent : hearth.textTertiary)
+                            .foregroundStyle(value <= Int(shownRating ?? 0) ? Hearth.accent : hearth.textTertiary)
                             .frame(width: 44, height: 44)
                             .contentShape(Rectangle())
                     }
                     .buttonStyle(.plain)
                     .disabled(ratingUpdating)
                     .accessibilityLabel("\(value) star\(value == 1 ? "" : "s")")
+                    .accessibilityAddTraits(value == Int(shownRating ?? 0) ? .isSelected : [])
+                    .accessibilityIdentifier("detail-rating-\(value)")
                 }
 
                 if ratingUpdating {
@@ -324,9 +342,15 @@ struct BookDetailScreen: View {
                 }
             }
 
-            Text(ratingMessage ?? ratingCaption)
-                .font(.hearthUI(13))
-                .foregroundStyle(ratingFailed ? hearth.statusError : hearth.textSecondary)
+            if pendingRating == nil {
+                Text(ratingMessage ?? ratingCaption)
+                    .font(.hearthUI(13))
+                    .foregroundStyle(ratingFailed ? hearth.statusError : hearth.textSecondary)
+                    .accessibilityIdentifier("detail-rating-caption")
+            }
+            DetailPendingEditNote(book: shown, kind: .rating, serverName: ratingDestination) {
+                restoreServerState()
+            }
         }
         .padding(18)
         .background {
@@ -337,7 +361,23 @@ struct BookDetailScreen: View {
                 tint: tint
             )
         }
-        .animation(.smooth(duration: 0.2), value: shown.personalRating)
+        .animation(.smooth(duration: 0.2), value: shownRating)
+    }
+
+    private var pendingRating: Int? { profileSession.bookEdits.pendingRating(for: shown) }
+    private var shownRating: Double? { pendingRating.map { Double($0) } ?? shown.personalRating }
+
+    /// A discarded edit leaves its optimistic value in the library until the server copy is read back.
+    private func restoreServerState() {
+        Task {
+            _ = await engine.library.refreshDetails(for: shown)
+            await shelf.load(book: shown, library: engine.library)
+            await refresh()
+        }
+    }
+
+    private func close() {
+        if let onClose { onClose() } else { dismiss() }
     }
 
     private var ratingCaption: String {
@@ -371,7 +411,7 @@ struct BookDetailScreen: View {
                 ratingMessage = "Rating saved to \(ratingDestination)."
             } catch {
                 ratingFailed = true
-                ratingMessage = "Couldn’t save the rating to \(ratingDestination)."
+                ratingMessage = "\(ratingDestination) isn’t connected on this device."
             }
             ratingUpdating = false
         }
@@ -924,7 +964,7 @@ struct BookDetailScreen: View {
         let target = shown
         PlatformHaptics.impact(.medium)
         Task { await engine.library.hide(target) }
-        dismiss()
+        close()
     }
 
     private var descriptionText: String? {

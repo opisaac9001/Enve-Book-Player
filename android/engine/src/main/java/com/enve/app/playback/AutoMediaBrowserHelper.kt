@@ -10,6 +10,7 @@ import androidx.media3.common.MediaMetadata
 import androidx.media3.common.util.UnstableApi
 import androidx.media3.session.MediaConstants
 import com.enve.app.data.offline.OfflineDownloadManager
+import com.enve.app.data.offline.offlineDownloadKey
 import com.enve.app.data.repository.AggregatorRepository
 import com.enve.core.data.local.BookCacheDao
 import com.enve.core.data.local.BookExtrasDao
@@ -446,11 +447,11 @@ class AutoMediaBrowserHelper @Inject constructor(
     private suspend fun boundedArtworkUriFor(book: Book): Uri? =
         cachedArtworkUriFor(book)
             ?: withTimeoutOrNull(COVER_ITEM_TIMEOUT_MS) {
-                autoArtworkCache.uriFor(book.id, book.uniqueKey, book.coverUrl)
+                autoArtworkCache.uriFor(book.offlineDownloadKey, book.uniqueKey, book.coverUrl)
             }
 
     private fun cachedArtworkUriFor(book: Book): Uri? =
-        autoArtworkCache.cachedUriFor(book.id, book.uniqueKey, book.coverUrl)
+        autoArtworkCache.cachedUriFor(book.offlineDownloadKey, book.uniqueKey, book.coverUrl)
 
     private fun shelfItem(id: String, titleResId: Int, artworkResId: Int): MediaItem = MediaItem.Builder()
         .setMediaId(id)
@@ -584,7 +585,7 @@ class AutoMediaBrowserHelper @Inject constructor(
     }
 
     private fun offlineTracks(book: Book): List<AudioTrack> =
-        offlineDownloadManager.localTracks(book.id)
+        offlineDownloadManager.localTracks(book.offlineDownloadKey)
             .orEmpty()
             .mapIndexed { index, track ->
                 AudioTrack(

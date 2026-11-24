@@ -30,4 +30,6 @@ struct ProviderCapabilities: OptionSet, Sendable, Hashable {
     static let serverPageStreaming = ProviderCapabilities(rawValue: 1 << 14)
 
     static let backgroundOperation = ProviderCapabilities(rawValue: 1 << 15)
+
+    static let audiobookProgressRefreshOnResume = ProviderCapabilities(rawValue: 1 << 16)
 }

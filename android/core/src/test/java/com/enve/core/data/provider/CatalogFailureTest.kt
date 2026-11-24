@@ -4,6 +4,25 @@ import org.junit.Assert.*
 import org.junit.Test
 
 class CatalogFailureTest {
+    @Test fun interruptedPageIncludesPreviouslyImportedBooksAndPageNumber() {
+        val failed = CatalogImportReport(
+            source = com.enve.core.data.model.BookSource.AUDIOBOOKSHELF,
+            failures = listOf(CatalogFailure(CatalogFailureKind.NETWORK, CatalogImportStage.BOOKS)),
+        ).afterPages(previousCount = 18_500, page = 37)
+        assertEquals(18_500, failed.acceptedCount)
+        assertEquals(37, failed.failures.single().page)
+        assertFalse(failed.isComplete)
+    }
+
+    @Test fun partialPageAddsItsOwnAcceptedBooksAndKeepsProviderPage() {
+        val failed = CatalogImportReport(
+            acceptedCount = 499,
+            failures = listOf(CatalogFailure(CatalogFailureKind.INVALID_PAGE, CatalogImportStage.BOOKS, page = 8)),
+        ).afterPages(previousCount = 1000, page = 2)
+        assertEquals(1499, failed.acceptedCount)
+        assertEquals(8, failed.failures.single().page)
+    }
+
     @Test fun preservesHttpStatusWithoutPersistingPrivateResponseText() {
         val denied = catalogFailureFor(IllegalStateException("Komga failed HTTP 403 private-response"))
         assertEquals(CatalogFailureKind.ACCESS_DENIED, denied.kind)

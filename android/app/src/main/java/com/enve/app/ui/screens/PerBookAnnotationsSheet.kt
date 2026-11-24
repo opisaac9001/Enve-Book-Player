@@ -3,7 +3,7 @@ package com.enve.app.ui.screens
 import android.content.ClipData
 import android.content.ClipboardManager
 import android.content.Context
-import android.content.Intent
+import android.widget.Toast
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
@@ -31,8 +31,8 @@ import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.ModalBottomSheet
+import androidx.compose.material3.SecondaryTabRow
 import androidx.compose.material3.Tab
-import androidx.compose.material3.TabRow
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextField
 import androidx.compose.material3.TextFieldDefaults
@@ -41,16 +41,22 @@ import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
+import com.enve.app.data.export.AnnotationExportBook
 import com.enve.app.data.export.AnnotationExporter
+import com.enve.app.data.export.AnnotationFileFormat
+import com.enve.app.data.export.AnnotationShareFiles
 import com.enve.core.data.model.AnnotationKind
 import com.enve.core.data.model.ReaderAnnotation
 import com.enve.app.ui.components.AnnotationCard
+import kotlinx.coroutines.launch
+import java.io.IOException
 
 private enum class AnnotationFilter { ALL, HIGHLIGHTS, NOTES, BOOKMARKS }
 private enum class AnnotationSort { NEWEST, OLDEST, COLOR }
@@ -65,13 +71,18 @@ fun PerBookAnnotationsSheet(
     onJumpTo: (ReaderAnnotation) -> Unit,
     onEdit: (ReaderAnnotation) -> Unit,
     onDelete: (ReaderAnnotation) -> Unit,
+    onSendToReadwise: (() -> Unit)? = null,
 ) {
     val sheetState = rememberModalBottomSheetState(skipPartiallyExpanded = true)
+    val scope = rememberCoroutineScope()
     var filter by remember { mutableStateOf(AnnotationFilter.ALL) }
     var sort by remember { mutableStateOf(AnnotationSort.NEWEST) }
     var query by remember { mutableStateOf("") }
     var menuOpen by remember { mutableStateOf(false) }
     val context = LocalContext.current
+    val sendToReadwise = onSendToReadwise ?: (annotations.firstOrNull { !it.connectionUnresolved } ?: annotations.firstOrNull())?.let { owner ->
+        { context.startActivity(ReadwiseActivity.createIntent(context, owner.bookId, owner.connectionId)) }
+    }
 
     val filtered = remember(annotations, filter, query, sort) {
         annotations
@@ -122,25 +133,38 @@ fun PerBookAnnotationsSheet(
                         com.enve.app.ui.theme.RefreshEinkOnDismiss()
                         DropdownMenuItem(
                             text = { Text("Copy as Markdown") },
+                            enabled = filtered.isNotEmpty(),
                             onClick = {
                                 menuOpen = false
-                                copyExport(context, filtered, bookTitle, bookAuthor, AnnotationExporter.Format.MARKDOWN)
+                                copyExport(context, filtered, bookTitle, bookAuthor)
                             },
                         )
-                        DropdownMenuItem(
-                            text = { Text("Share as Markdown") },
-                            onClick = {
-                                menuOpen = false
-                                shareExport(context, filtered, bookTitle, bookAuthor, AnnotationExporter.Format.MARKDOWN)
-                            },
-                        )
-                        DropdownMenuItem(
-                            text = { Text("Share as JSON") },
-                            onClick = {
-                                menuOpen = false
-                                shareExport(context, filtered, bookTitle, bookAuthor, AnnotationExporter.Format.JSON)
-                            },
-                        )
+                        AnnotationFileFormat.all.forEach { format ->
+                            DropdownMenuItem(
+                                text = { Text("Share as ${format.label}") },
+                                enabled = filtered.isNotEmpty(),
+                                onClick = {
+                                    menuOpen = false
+                                    val books = listOf(AnnotationExportBook(bookTitle, bookAuthor, filtered))
+                                    scope.launch {
+                                        try {
+                                            AnnotationShareFiles.share(context, books, format, "$bookTitle highlights")
+                                        } catch (_: IOException) {
+                                            Toast.makeText(context, "Couldn't create the export file.", Toast.LENGTH_SHORT).show()
+                                        }
+                                    }
+                                },
+                            )
+                        }
+                        if (sendToReadwise != null) {
+                            DropdownMenuItem(
+                                text = { Text("Send to Readwise…") },
+                                onClick = {
+                                    menuOpen = false
+                                    sendToReadwise()
+                                },
+                            )
+                        }
                         DropdownMenuItem(
                             text = { Text("Sort: Newest") },
                             onClick = { sort = AnnotationSort.NEWEST; menuOpen = false },
@@ -157,7 +181,7 @@ fun PerBookAnnotationsSheet(
                 }
             }
 
-            TabRow(selectedTabIndex = filter.ordinal) {
+            SecondaryTabRow(selectedTabIndex = filter.ordinal) {
                 AnnotationFilter.values().forEach { f ->
                     Tab(
                         selected = filter == f,
@@ -224,25 +248,8 @@ private fun copyExport(
     annotations: List<ReaderAnnotation>,
     bookTitle: String,
     bookAuthor: String?,
-    format: AnnotationExporter.Format,
 ) {
-    val text = AnnotationExporter.export(annotations, bookTitle, bookAuthor, format)
+    val text = AnnotationExporter.export(annotations, bookTitle, bookAuthor, AnnotationExporter.Format.MARKDOWN)
     val cm = context.getSystemService(Context.CLIPBOARD_SERVICE) as ClipboardManager
     cm.setPrimaryClip(ClipData.newPlainText("Annotations", text))
-}
-
-private fun shareExport(
-    context: Context,
-    annotations: List<ReaderAnnotation>,
-    bookTitle: String,
-    bookAuthor: String?,
-    format: AnnotationExporter.Format,
-) {
-    val text = AnnotationExporter.export(annotations, bookTitle, bookAuthor, format)
-    val intent = Intent(Intent.ACTION_SEND).apply {
-        type = AnnotationExporter.mimeType(format)
-        putExtra(Intent.EXTRA_SUBJECT, "Annotations from $bookTitle")
-        putExtra(Intent.EXTRA_TEXT, text)
-    }
-    context.startActivity(Intent.createChooser(intent, "Share annotations"))
 }

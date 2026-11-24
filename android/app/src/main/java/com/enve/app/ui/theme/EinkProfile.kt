@@ -22,7 +22,7 @@ data class EinkProfile(
     val flatTabBar: Boolean get() = active
     val denseListLibrary: Boolean get() = active
 
-    fun errorMessage(message: String): String = if (monochrome) "⚠ $message" else message
+    fun errorMessage(message: String): String = if (monochrome) "Error: $message" else message
 
     companion object {
         val Inactive = EinkProfile(

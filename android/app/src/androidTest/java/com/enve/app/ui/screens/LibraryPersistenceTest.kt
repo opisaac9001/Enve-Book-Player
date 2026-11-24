@@ -42,7 +42,7 @@ class LibraryPersistenceTest {
         val directory = File(context.cacheDir, "library-persistence-${UUID.randomUUID()}").also { it.mkdirs() }
         val job = SupervisorJob()
         val scope = CoroutineScope(job + Dispatchers.IO)
-        val registry = ConnectionRegistry(PreferenceDataStoreFactory.create(scope = scope) { File(directory, "connections.preferences_pb") })
+        val registry = ConnectionRegistry(PreferenceDataStoreFactory.create(scope = scope) { File(directory, "connections.preferences_pb") }, com.enve.core.auth.CredentialVault.forProfile(context, "registry-test-librarypersistencetest"))
         val store = HearthPreferencesStore(PreferenceDataStoreFactory.create(scope = scope) { File(directory, "filters.preferences_pb") })
         val prefs = object : PreferencesFacade by component.preferencesFacade() {
             override val librarySelection = store.librarySelection
@@ -58,6 +58,7 @@ class LibraryPersistenceTest {
         val libraries = MutableStateFlow(emptyList<Library>())
         val library = object : LibraryFacade by component.library() {
             override val allBooks = catalog
+            override val catalogLocalBooks = catalog
             override val libraries = libraries
         }
         val abs = ProviderConnection("audio", BookSource.AUDIOBOOKSHELF, "Audio", "https://audio.invalid", "test")

@@ -27,7 +27,7 @@ nonisolated struct KokoroONNXTests {
 
     @Test func unsupportedSymbolsCannotProduceAnEmptyInference() {
         #expect(throws: (any Error).self) {
-            try KokoroONNXModel.tokenChunks(ipa: "🙂", vocabulary: ["a": 43])
+            try KokoroONNXModel.tokenChunks(ipa: "\u{1F642}", vocabulary: ["a": 43])
         }
     }
 

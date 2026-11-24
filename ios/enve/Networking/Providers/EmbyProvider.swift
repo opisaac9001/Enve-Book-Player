@@ -80,39 +80,21 @@ class EmbyProvider: IncrementalCatalogProvider, PlaybackSessionProvider, Audiobo
 
     func validateConnection() async throws -> Bool {
         try EnveProvenance.checkServerAddress(connection.url)
-        if connection.token != nil && connection.userId != nil {
-            return try await checkSystemInfo()
+        if let token = connection.token, !token.isEmpty {
+            do {
+                guard let userID = try await MediaBrowserClient.validateUser(connection: connection, send: {
+                    try await session.data(for: $0)
+                }) else { return false }
+                connection.userId = userID
+                return true
+            } catch ProviderError.unauthorized {
+                // Renew a rejected session once with this account's saved password.
+            }
         }
 
-        guard let username = connection.username,
-            let password = connection.password ?? connection.token
-        else {
-            throw ProviderError.unauthorized
-        }
-
-        do {
-            try await authenticate(username: username, password: password)
-            return true
-        } catch {
-            AppLogger.network.error("Authentication failed: \(error)")
-            throw ProviderError.unauthorized
-        }
-    }
-
-    private func checkSystemInfo() async throws -> Bool {
-        let base = MediaBrowserClient.normalizeServerURL(connection.url)
-        guard let url = URL(string: "\(base)/System/Info/Public") else {
-            throw ProviderError.invalidURL
-        }
-
-        var request = URLRequest(url: url)
-        request.timeoutInterval = 10
-        applyCustomHeaders(to: &request)
-
-        let (_, response) = try await session.data(for: request)
-        guard let httpResponse = response as? HTTPURLResponse, httpResponse.statusCode == 200 else {
-            return false
-        }
+        guard connection.authMode != .token, let username = connection.username, !username.isEmpty,
+            let password = connection.password else { return false }
+        try await authenticate(username: username, password: password)
         return true
     }
 
@@ -146,6 +128,10 @@ class EmbyProvider: IncrementalCatalogProvider, PlaybackSessionProvider, Audiobo
         }
 
         let result = try JSONDecoder().decode(AuthResponse.self, from: data)
+
+        guard !result.AccessToken.isEmpty, !result.User.Id.isEmpty,
+            connection.userId.map({ $0.caseInsensitiveCompare(result.User.Id) == .orderedSame }) ?? true
+        else { throw ProviderError.unauthorized }
 
         self.connection.token = result.AccessToken
         self.connection.userId = result.User.Id
@@ -431,7 +417,7 @@ class EmbyProvider: IncrementalCatalogProvider, PlaybackSessionProvider, Audiobo
     }
 
     func downloadEbook(for book: Book, onProgress: (@Sendable (Double) -> Void)? = nil) async throws -> URL {
-        if let cached = ebooks.cachedEbook(forBookId: book.id) {
+        if let cached = ebooks.cachedEbook(for: book) {
             onProgress?(1)
             return cached
         }
@@ -492,7 +478,7 @@ class EmbyProvider: IncrementalCatalogProvider, PlaybackSessionProvider, Audiobo
         return try ebooks.cacheRemoteEbook(
             tempURL: tempURL,
             preferredFilename: filename,
-            bookIdentifier: book.id
+            bookIdentifier: book.ebookStorageID
         )
     }
 

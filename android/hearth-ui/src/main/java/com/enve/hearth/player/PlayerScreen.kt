@@ -37,6 +37,7 @@ import androidx.compose.material.icons.filled.SkipNext
 import androidx.compose.material.icons.filled.SkipPrevious
 import androidx.compose.material.icons.outlined.Bookmark
 import androidx.compose.material.icons.outlined.Bedtime
+import androidx.compose.material.icons.outlined.GraphicEq
 import androidx.compose.material.icons.outlined.KeyboardArrowDown
 import androidx.compose.material.icons.outlined.Replay
 import androidx.compose.material.icons.automirrored.outlined.List
@@ -92,7 +93,7 @@ import com.enve.hearth.design.hearthDismissExclusion
 import com.enve.hearth.design.hearthDismissGesture
 import com.enve.hearth.design.rememberHearthDismissState
 
-enum class PlayerSheet { SPEED, SLEEP, CHAPTERS, BOOKMARKS, QUEUE }
+enum class PlayerSheet { SPEED, SLEEP, CHAPTERS, BOOKMARKS, QUEUE, AMBIENT }
 
 @Composable
 fun PlayerScreen(
@@ -405,6 +406,11 @@ fun PlayerScreen(
                                 text = { Text(if (queue.isEmpty()) "Queue" else "Queue ${queue.size}", color = palette.text) },
                                 leadingIcon = { Icon(Icons.AutoMirrored.Outlined.QueueMusic, null, tint = palette.textSecondary) },
                                 onClick = { moreOpen = false; sheet = PlayerSheet.QUEUE },
+                            )
+                            DropdownMenuItem(
+                                text = { Text("Ambient sound", color = palette.text) },
+                                leadingIcon = { Icon(Icons.Outlined.GraphicEq, null, tint = palette.textSecondary) },
+                                onClick = { moreOpen = false; sheet = PlayerSheet.AMBIENT },
                             )
                         }
                     }

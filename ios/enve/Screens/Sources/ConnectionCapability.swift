@@ -110,6 +110,19 @@ struct ConnectionCapability {
 
     let serverURLPlaceholder: String
     let credentialLabels: CredentialLabels
+    var catalogSetup: CatalogSetup? = nil
+
+    enum CatalogSetup {
+        case calibre
+
+        func catalogURL(from address: String) -> String {
+            guard var url = URLComponents(string: address),
+                  url.path.isEmpty || url.path == "/",
+                  url.query == nil, url.fragment == nil else { return address }
+            url.path = "/opds"
+            return url.string ?? address
+        }
+    }
 
     struct CredentialLabels {
         var usernamePlaceholder: String = "Username"
@@ -320,6 +333,28 @@ extension ConnectionCapability {
         supportsWebDAVPresets: false,
         serverURLPlaceholder: "https://opds.example.com/feed",
         credentialLabels: .init()
+    )
+
+    static let calibre = ConnectionCapability(
+        providerType: .opds,
+        displayName: "Calibre",
+        iconSystemName: "books.vertical",
+        iconColor: "brown",
+        supportsUsernamePassword: true,
+        supportsToken: false,
+        supportsOIDC: false,
+        supportsQuickConnect: false,
+        supportsWebLogin: false,
+        credentialsOptional: true,
+        supportsBrowserSignIn: true,
+        supportsCustomHeaders: true,
+        supportsServiceTokens: true,
+        supportsMTLS: true,
+        supportsLibrarySelection: false,
+        supportsWebDAVPresets: false,
+        serverURLPlaceholder: "http://computer.local:8080/opds",
+        credentialLabels: .init(),
+        catalogSetup: .calibre
     )
 
     static let bookOrbit = ConnectionCapability(

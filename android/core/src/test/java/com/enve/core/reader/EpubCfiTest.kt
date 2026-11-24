@@ -26,7 +26,7 @@ class EpubCfiTest {
           <section id="ch1">
             <h1>Chapter <em>One</em></h1>
             <p id="p1"><span id="s1">First sentence.</span> <span id="s2">Second <i>nested</i> sentence here.</span></p>
-            <p>Caf&#233; ${"😀"} text with <b>bold</b> and more words after the bold part.<!-- split -->Tail run.</p>
+            <p>Caf&#233; ${"\uD83D\uDE00"} text with <b>bold</b> and more words after the bold part.<!-- split -->Tail run.</p>
             <p id="dup">Duplicate A</p>
             <p id="dup">Duplicate B</p>
           </section>

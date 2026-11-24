@@ -44,6 +44,8 @@ struct ReaderScreen: View {
     @State private var initialChromeHideTask: Task<Void, Never>?
     @State private var ttsControlsHideTask: Task<Void, Never>?
     @State private var defineRequest: ReaderDefineRequest?
+    @State private var translationText: String?
+    @State private var wikipediaRequest: ReaderWikipediaRequest?
     @State private var progressConflict: EbookSyncConflict?
     @State private var linkedAudiobook: Book?
     @State private var showingLibrarian = false
@@ -103,6 +105,11 @@ struct ReaderScreen: View {
     // Fixed type boundaries keep reader metadata construction within the device’s main-thread stack.
     private var readerStage: some View {
         let lectern = lecternHalves
+        let spineCenter = if let fold = canvasFold, fold.axis == .vertical {
+            fold.center
+        } else {
+            canvasSize.width / 2
+        }
         // Preserve engine view identity and reading position when the fold changes.
         return ZStack {
             backdrop
@@ -115,9 +122,14 @@ struct ReaderScreen: View {
             }
             ZStack {
                 content
+                    .padding(.leading, showsSpine ? max(0, 2 * spineCenter - canvasSize.width) : 0)
+                    .padding(.trailing, showsSpine ? max(0, canvasSize.width - 2 * spineCenter) : 0)
                 if showsSpine {
                     HearthSpineShadow(axis: .vertical, depth: hinge.spineDepth(flat: 0.45))
-                        .ignoresSafeArea()
+                        .frame(width: 84)
+                        .frame(maxWidth: .infinity, alignment: .leading)
+                        .offset(x: spineCenter - 42)
+                        .ignoresSafeArea(edges: .vertical)
                         .transition(.opacity)
                 }
                 readerDimmer
@@ -446,6 +458,13 @@ struct ReaderScreen: View {
             .preferredColorScheme(model.preferredColorScheme)
             .enveEnvironment()
         }
+        .sheet(item: $wikipediaRequest) { request in
+            ReaderWikipediaSheet(query: request.query)
+                .presentationDragIndicator(.visible)
+                .preferredColorScheme(model.preferredColorScheme)
+                .enveEnvironment()
+        }
+        .modifier(ReaderTranslationPresenter(text: $translationText))
         .sheet(item: $progressConflict) { conflict in
             ReaderProgressConflictSheet(
                 book: book,
@@ -1533,7 +1552,9 @@ struct ReaderScreen: View {
                     }
                 },
                 onCopy: { withLiveSelection { copySelection(currentEPUBSelection(fallback: selection)) } },
-                onDefine: { withLiveSelection { handleDefine() } }
+                onDefine: { withLiveSelection { handleDefine() } },
+                onTranslate: { withLiveSelection { handleTranslate(currentEPUBSelection(fallback: selection)) } },
+                onWikipedia: { withLiveSelection { handleWikipedia(currentEPUBSelection(fallback: selection)) } }
             )
             .accessibilityElement(children: .contain)
             .accessibilityIdentifier("reader-annotation-toolbar")
@@ -1572,6 +1593,19 @@ struct ReaderScreen: View {
         }
         defineRequest = ReaderDefineRequest(term: entry.word, vocabEntry: entry, initiallySaved: shouldAutoSave)
         dismissPendingSelection()
+    }
+
+    private func handleTranslate(_ selection: ReaderSelectionSnapshot) {
+        let text = selection.locator.text.highlight?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+        dismissPendingSelection()
+        guard !text.isEmpty else { return }
+        translationText = text
+    }
+
+    private func handleWikipedia(_ selection: ReaderSelectionSnapshot) {
+        let query = ReaderLookup.wikipediaQuery(for: selection.locator.text.highlight ?? "")
+        dismissPendingSelection()
+        wikipediaRequest = query.map(ReaderWikipediaRequest.init(query:))
     }
 
     private func copySelection(_ selection: ReaderSelectionSnapshot) {
@@ -1832,6 +1866,8 @@ struct ReaderScreen: View {
                 noteDraft == nil,
                 bookmarkDraft == nil,
                 defineRequest == nil,
+                wikipediaRequest == nil,
+                translationText == nil,
                 progressConflict == nil,
                 !showingRestReminderSettings,
                 !showingLibrarian,
@@ -1952,7 +1988,7 @@ struct ReaderScreen: View {
                 if profileSession.preferences.loadPreferences().autoDeleteFinishedBooks,
                     book.source != .local
                 {
-                    try? profileSession.ebooks.deleteRemoteEbookArtifacts(forBookId: book.id)
+                    try? profileSession.ebooks.deleteRemoteEbookArtifacts(for: book)
                     profileSession.appState.mutateBook(uniqueId: book.uniqueId) { $0.ebookFileURL = nil }
                 }
             }

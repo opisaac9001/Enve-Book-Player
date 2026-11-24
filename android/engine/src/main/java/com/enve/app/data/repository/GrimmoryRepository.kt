@@ -21,8 +21,6 @@ import com.enve.app.data.kavita.kavitaSeriesComicMetadata
 import com.enve.app.data.kavita.resolveKavitaIssue
 import com.enve.app.data.repository.grimmory.*
 import com.enve.app.data.remote.dto.*
-import com.enve.app.data.remote.dto.grimmoryapp.LanguageOptionDto
-import com.enve.app.data.remote.dto.grimmoryapp.NamedCountDto
 import com.enve.core.data.provider.*
 import com.enve.core.data.util.*
 import com.enve.core.data.remote.dto.AuthResponse
@@ -30,7 +28,6 @@ import com.enve.core.data.remote.dto.AuthorSummaryDto
 import com.enve.core.data.remote.dto.RefreshRequest
 import com.enve.core.data.remote.dto.SeriesSummaryDto
 import com.enve.core.data.local.PreferencesManager
-import com.enve.core.data.importing.AudiobookFileGrouping
 import com.enve.core.auth.CredentialVault
 import com.enve.core.data.provider.ProviderEbookResource
 import com.enve.core.reader.EpubBridgeCheckpointCodec
@@ -61,13 +58,10 @@ import kotlinx.serialization.decodeFromString
 import kotlinx.serialization.encodeToString
 import okhttp3.HttpUrl.Companion.toHttpUrlOrNull
 import okhttp3.MediaType.Companion.toMediaType
-import okhttp3.Credentials
 import okhttp3.OkHttpClient
 import okhttp3.Request
-import okhttp3.RequestBody
 import okhttp3.RequestBody.Companion.toRequestBody
 import java.security.MessageDigest
-import java.net.URLDecoder
 import java.time.Instant
 import java.time.OffsetDateTime
 import java.time.ZoneOffset
@@ -102,24 +96,11 @@ private val BookSource.requiresConfiguredServer: Boolean
 
 private val GRIMMORY_EBOOK_PROGRESS_TYPES = setOf("EPUB", "PDF", "CBX", "FB2", "MOBI", "AZW3")
 
+private const val GRIMMORY_HOME_LANE_SIZE = 10
+
 private const val KAVITA_PAGE_SIZE = 100
 
 private const val KAVITA_VOLUME_CONCURRENCY = 4
-
-private val WEBDAV_HREF = Regex("<(?:[a-z]+:)?href>(.*?)</(?:[a-z]+:)?href>", setOf(RegexOption.IGNORE_CASE, RegexOption.DOT_MATCHES_ALL))
-
-private val HTML_ANCHOR_HREF = Regex("<a\\b[^>]*href=[\"']([^\"']+)[\"']", RegexOption.IGNORE_CASE)
-
-private val WEBDAV_PROPFIND_XML = """
-    <?xml version="1.0" encoding="utf-8" ?>
-    <d:propfind xmlns:d="DAV:">
-      <d:prop>
-        <d:resourcetype />
-        <d:getcontentlength />
-        <d:getlastmodified />
-      </d:prop>
-    </d:propfind>
-""".trimIndent()
 
 internal fun kavitaReaderFormat(format: Int): String? = when (format) {
     KavitaMangaFormat.IMAGE -> "CBZ"
@@ -208,9 +189,10 @@ class GrimmoryRepository @Inject constructor(
     private val prefs: PreferencesManager,
     private val vault: CredentialVault,
     private val connectionRegistry: com.enve.core.data.local.ConnectionRegistry,
-    private val listProgress: GrimmoryListProgressResolver,
-    private val torBoxCatalog: TorBoxCatalogStore,
+    private val torBox: TorBoxCatalog,
+    private val torBoxTransport: TorBoxTransport,
     private val kavitaAliases: KavitaLegacyAliasStore,
+    private val kavitaCovers: com.enve.app.data.kavita.KavitaCoverRevisionStore,
     @ApplicationContext private val context: Context,
     @ApplicationScope parentScope: CoroutineScope =
         CoroutineScope(SupervisorJob() + Dispatchers.Default),
@@ -234,31 +216,18 @@ class GrimmoryRepository @Inject constructor(
         val username: String,
         val cloudRootPaths: List<String> = emptyList(),
     )
-    private data class CloudCoverFile(
-        val path: String,
-        val parentFolder: String,
-        val link: String,
-        val rank: Int,
-    )
 
-    private data class CloudBookGroup(
-        val key: String,
-        val title: String,
-        val folderPath: String?,
-        val files: List<CloudAudioFile>,
-        val coverUrl: String? = null,
-    )
-    private data class CloudTitleAuthor(
-        val title: String,
-        val author: String?,
-    )
+    private val ScopedContext.torBoxAccount: TorBoxAccount
+        get() = TorBoxAccount(connectionId, serverUrl, token, cloudRootPaths)
 
     private fun resolveScopedContext(): ScopedContext {
         connectionRegistry.getScopedConnectionSync()?.let { connection ->
-            val token = vault.get(CredentialVault.accessTokenKey(connection.id))
-                ?: vault.get(CredentialVault.passwordKey(connection.id))
-                ?: prefs.getAccessTokenSync()
-                ?: ""
+            val accessToken = vault.get(CredentialVault.accessTokenKey(connection.id))
+            val token = if (connection.source == BookSource.EMBY || connection.source == BookSource.JELLYFIN) {
+                accessToken.orEmpty()
+            } else {
+                accessToken ?: vault.get(CredentialVault.passwordKey(connection.id)) ?: prefs.getAccessTokenSync().orEmpty()
+            }
             return ScopedContext(
                 source = connection.source,
                 serverUrl = connection.serverUrl,
@@ -272,10 +241,13 @@ class GrimmoryRepository @Inject constructor(
         val activeConnection = activeConnectionId?.let { id ->
             connectionRegistry.getConnectionsSync().find { it.id == id }
         }
+        check(ConnectionScope.getConnectionId() == null) { "Connection no longer available" }
         return ScopedContext(
             source = activeConnection?.source ?: prefs.getActiveBookSourceSync(),
             serverUrl = activeConnection?.serverUrl ?: prefs.getServerUrlSync() ?: "",
-            token = prefs.getAccessTokenSync() ?: "",
+            token = if (activeConnection != null && (activeConnection.source == BookSource.EMBY || activeConnection.source == BookSource.JELLYFIN)) {
+                vault.get(CredentialVault.accessTokenKey(activeConnection.id)).orEmpty()
+            } else prefs.getAccessTokenSync().orEmpty(),
             connectionId = activeConnectionId,
             username = activeConnection?.username ?: prefs.getUsernameSync().orEmpty(),
             cloudRootPaths = activeConnection?.cloudRootPaths.orEmpty(),
@@ -317,9 +289,6 @@ class GrimmoryRepository @Inject constructor(
         coerceInputValues = true
         encodeDefaults = true
     }
-    private val torBoxWebDavClient: OkHttpClient by lazy {
-        OkHttpClient.Builder().build()
-    }
 
     @Serializable
     private data class BookIndexCachePayload(
@@ -349,6 +318,7 @@ class GrimmoryRepository @Inject constructor(
         val serverUrl: String,
         val lane: String,
         val savedAt: Long,
+        val progressUnitsVersion: Int = 0,
         val summaries: List<BookSummaryDto> = emptyList(),
     )
 
@@ -377,7 +347,7 @@ class GrimmoryRepository @Inject constructor(
         booksCache.clear()
         librariesCache.clear()
         recentlyAddedCache.clear()
-        torBoxCatalog.invalidate()
+        torBox.invalidate()
         clearTorBoxBookIndexCache()
         listCachesInvalidatedAt = System.currentTimeMillis()
     }
@@ -433,7 +403,7 @@ class GrimmoryRepository @Inject constructor(
             if (payload.source != source.name || payload.serverUrl != serverUrl || payload.libraryId != libraryId) {
                 return@runCatching null
             }
-            if (source == BookSource.GRIMMORY && payload.formatInventoryVersion != 1) return@runCatching null
+            if (source == BookSource.GRIMMORY && payload.formatInventoryVersion != 2) return@runCatching null
 
             if (System.currentTimeMillis() - payload.savedAt > BOOK_INDEX_MAX_AGE_MS || payload.savedAt < notBefore) {
                 return@runCatching null
@@ -480,7 +450,7 @@ class GrimmoryRepository @Inject constructor(
                 libraryId = libraryId,
                 savedAt = System.currentTimeMillis(),
                 summaries = summaries,
-                formatInventoryVersion = if (source == BookSource.GRIMMORY) 1 else 0,
+                formatInventoryVersion = if (source == BookSource.GRIMMORY) 2 else 0,
                 titleOverrides = titleSnapshot,
                 durationOverrides = durationSnapshot,
             )
@@ -566,6 +536,7 @@ class GrimmoryRepository @Inject constructor(
             if (!file.exists() || file.length() == 0L) return@runCatching null
             val payload = jsonSerializer.decodeFromString<HomeLaneCachePayload>(file.readText())
             if (payload.source != source.name || payload.serverUrl != serverUrl || payload.lane != lane || payload.savedAt < notBefore) return@runCatching null
+            if (source == BookSource.GRIMMORY && payload.progressUnitsVersion != 1) return@runCatching null
             payload.summaries
         }.getOrNull()
     }
@@ -582,6 +553,7 @@ class GrimmoryRepository @Inject constructor(
                 serverUrl = serverUrl,
                 lane = lane,
                 savedAt = System.currentTimeMillis(),
+                progressUnitsVersion = 1,
                 summaries = summaries,
             )
             cacheFileForHomeLane(source, serverUrl, lane).writeText(jsonSerializer.encodeToString(payload))
@@ -602,18 +574,7 @@ class GrimmoryRepository @Inject constructor(
                 return Result.failure(Exception("Access token is required"))
             }
 
-            if (source == BookSource.TORBOX) {
-                val url = normalizedTorBoxBase(serverUrl).toHttpUrlOrNull()?.newBuilder()
-                    ?.addPathSegments("torrents/mylist")
-                    ?.addQueryParameter("limit", "1")
-                    ?.build() ?: return Result.failure(Exception("TorBox server URL is invalid"))
-                retryTorBoxRequest {
-                    val request = Request.Builder().url(url)
-                        .header("Authorization", "Bearer $accessToken").build()
-                    val body = torBoxWebDavClient.newCall(request).torBoxResponseBody()
-                    jsonSerializer.decodeFromString<TorBoxListResponseDto>(body).requireTorBoxList()
-                }
-            }
+            if (source == BookSource.TORBOX) torBoxTransport.verifyToken(serverUrl, accessToken)
 
             prefs.setActiveBookSource(source)
             prefs.saveServerInfo(
@@ -739,7 +700,7 @@ class GrimmoryRepository @Inject constructor(
                 BookSource.KAVITA -> fetchKavitaLibraries()
                 BookSource.OPDS -> listOf(Library(id = "opds-root", name = "OPDS Catalog", bookCount = 0))
                 BookSource.WEBDAV -> listOf(Library(id = "webdav-root", name = "WebDAV Root", bookCount = 0))
-                BookSource.TORBOX -> fetchTorBoxRootLibraries(ctx)
+                BookSource.TORBOX -> torBox.libraries(ctx.cloudRootPaths)
                 BookSource.PREMIUMIZE -> listOf(Library(id = "premiumize-cloud", name = "Premiumize Cloud", bookCount = 0, source = BookSource.PREMIUMIZE))
                 BookSource.REALDEBRID -> listOf(Library(id = "realdebrid-downloads", name = "Real-Debrid Downloads", bookCount = 0, source = BookSource.REALDEBRID))
                 BookSource.SMB -> listOf(Library(id = "smb-root", name = "SMB Share", bookCount = 0))
@@ -773,7 +734,7 @@ class GrimmoryRepository @Inject constructor(
         dir: String = "desc"
     ): Result<List<Book>> {
         val ctx = resolveScopedContext()
-        if (ctx.source == BookSource.TORBOX) return runSuspendCatching { fetchTorBoxBooks(ctx, libraryId) }
+        if (ctx.source == BookSource.TORBOX) return runSuspendCatching { torBox.books(ctx.torBoxAccount, libraryId) }
         booksCache[ctx.cacheScope]?.takeIf { it.isValid() && it.data.first == libraryId && !catalogImports.hasIssue(ctx.connectionId, libraryId) }?.let { return Result.success(it.data.second) }
         val coalesceKey = "${ctx.source.name}|${ctx.serverUrl}|${accountCacheKey()}|${libraryId ?: ""}"
         return mutexForBooksKey(coalesceKey).withLock {
@@ -841,7 +802,7 @@ class GrimmoryRepository @Inject constructor(
                 BookSource.KAVITA -> fetchKavitaBooks(libraryId = libraryId, ctx = ctx)
                 BookSource.OPDS -> fetchOpdsBooks(serverUrl = serverUrl)
                 BookSource.WEBDAV -> fetchWebDavBooks(serverUrl = serverUrl)
-                BookSource.TORBOX -> fetchTorBoxBooks(ctx, libraryId)
+                BookSource.TORBOX -> torBox.books(ctx.torBoxAccount, libraryId)
                 BookSource.PREMIUMIZE -> fetchPremiumizeBooks(ctx)
                 BookSource.REALDEBRID -> fetchRealDebridBooks(ctx)
                 else -> emptyList()
@@ -898,11 +859,11 @@ class GrimmoryRepository @Inject constructor(
                 return Result.failure(Exception("Book not found for ${source.displayName}"))
             }
 
-            val response = api.getBookDetail(rawBookId)
+            val response = api.getBook(rawBookId)
             if (response.isSuccessful) {
                 val serverUrl = ctx.serverUrl
                 val token = ctx.token
-                val detail = response.body()!!
+                val detail = response.body()!!.toBookDetailDto().withAudiobookProgress()
                 val mapped = detail.toBook(serverUrl, token)
                 val book = if (rawBookId != bookId || mapped.mediaType == AppMediaType.AUDIOBOOK) {
                     val base = if (rawBookId != bookId) mapped.companionAudiobook(serverUrl, token) ?: mapped else mapped
@@ -971,9 +932,11 @@ class GrimmoryRepository @Inject constructor(
             val serverUrl = ctx.serverUrl
             val token = ctx.token
 
-            val response = api.getContinueListening()
-            if (response.isSuccessful) {
-                val summaries = response.body().orEmpty()
+            val summaries = fetchHomeLane(
+                sort = "-lastReadTime",
+                facets = GRIMMORY_READING_STATUSES.map { grimmoryFacet("read_status", it) } + grimmoryFacet("file_type", "AUDIOBOOK"),
+            )
+            if (summaries != null) {
                 saveHomeLaneToDisk(source, serverUrl, "continue-listening", summaries)
                 val books = summaries.toBooks(serverUrl, token)
                 val resolved = resolveAndEnrichAudiobooks(books, serverUrl, token)
@@ -1045,9 +1008,12 @@ class GrimmoryRepository @Inject constructor(
             val serverUrl = ctx.serverUrl
             val token = ctx.token
 
-            val response = api.getContinueReading()
-            if (response.isSuccessful) {
-                val summaries = response.body().orEmpty()
+            val summaries = fetchHomeLane(
+                sort = "-lastReadTime",
+                facets = GRIMMORY_READING_STATUSES.map { grimmoryFacet("read_status", it) } +
+                    GRIMMORY_EBOOK_FILE_TYPES.map { grimmoryFacet("file_type", it) },
+            )
+            if (summaries != null) {
                 saveHomeLaneToDisk(source, serverUrl, "continue-reading", summaries)
                 val books = summaries.toBooks(serverUrl, token)
                 val resolved = resolveAndEnrichAudiobooks(books, serverUrl, token)
@@ -1126,9 +1092,8 @@ class GrimmoryRepository @Inject constructor(
                 return Result.success(cached)
             }
 
-            val response = api.getRecentlyAdded()
-            if (response.isSuccessful) {
-                val summaries = response.body().orEmpty()
+            val summaries = fetchHomeLane(sort = "-addedOn")
+            if (summaries != null) {
                 saveHomeLaneToDisk(source, serverUrl, "recently-added", summaries)
                 val books = summaries.toBooks(serverUrl, token)
                 val resolved = resolveAndEnrichAudiobooks(books, serverUrl, token)
@@ -1176,55 +1141,11 @@ class GrimmoryRepository @Inject constructor(
             .toList()
     }
 
-    suspend fun searchBooks(query: String): Result<List<Book>> {
-        return try {
-            val response = api.searchBooks(query)
-            if (response.isSuccessful) {
-                val ctx = resolveScopedContext()
-                val books = response.body()?.content.orEmpty().toBooks(ctx.serverUrl, ctx.token)
-                Result.success(resolveAmbiguousAudiobookTitles(books, api, audiobookTitleOverrideCache))
-            } else {
-                Result.failure(Exception("Search failed"))
-            }
-        } catch (e: kotlinx.coroutines.CancellationException) {
-            throw e
-        } catch (e: Exception) {
-            Result.failure(e)
-        }
-    }
-
-    suspend fun getRecentlyScanned(): Result<List<Book>> {
-        return try {
-            val response = api.getRecentlyScanned()
-            if (response.isSuccessful) {
-                val ctx = resolveScopedContext()
-                val books = response.body().orEmpty().toBooks(ctx.serverUrl, ctx.token)
-                Result.success(resolveAmbiguousAudiobookTitles(books, api, audiobookTitleOverrideCache))
-            } else {
-                Result.failure(Exception("Failed to fetch recently scanned"))
-            }
-        } catch (e: kotlinx.coroutines.CancellationException) {
-            throw e
-        } catch (e: Exception) {
-            Result.failure(e)
-        }
-    }
-
-    suspend fun getRandomBooks(libraryId: String? = null): Result<List<Book>> {
-        return try {
-            val response = api.getRandomBooks(libraryId = libraryId)
-            if (response.isSuccessful) {
-                val ctx = resolveScopedContext()
-                val books = response.body()?.content.orEmpty().toBooks(ctx.serverUrl, ctx.token)
-                Result.success(resolveAmbiguousAudiobookTitles(books, api, audiobookTitleOverrideCache))
-            } else {
-                Result.failure(Exception("Failed to fetch random books"))
-            }
-        } catch (e: kotlinx.coroutines.CancellationException) {
-            throw e
-        } catch (e: Exception) {
-            Result.failure(e)
-        }
+    private suspend fun fetchHomeLane(sort: String, facets: List<String> = emptyList()): List<BookSummaryDto>? {
+        val response = api.getBooksPage(facets = facets, sort = sort, size = GRIMMORY_HOME_LANE_SIZE)
+        if (!response.isSuccessful) return null
+        return response.body()?.content?.filter { sort != "-lastReadTime" || it.lastReadTime != null }
+            ?.map { it.toCatalogSummary(fallbackLibraryId = null) }
     }
 
     private val plainOidcClient: OkHttpClient by lazy {
@@ -1374,36 +1295,6 @@ class GrimmoryRepository @Inject constructor(
         authUrl.build().toString()
     }
 
-    suspend fun getFilters(): Result<FilterOptionsDto> {
-        return try {
-            val source = resolveScopedContext().source
-            if (source != BookSource.GRIMMORY) {
-                val books = getBooks(size = 500).getOrDefault(emptyList())
-                fun counted(values: List<String>): List<NamedCountDto> = values
-                    .groupingBy { it }.eachCount()
-                    .map { (name, count) -> NamedCountDto(name, count) }
-                    .sortedBy { it.name.lowercase() }
-                val filters = FilterOptionsDto(
-                    authors = counted(books.mapNotNull { it.author }),
-                    narrators = counted(books.mapNotNull { it.narrator }),
-                    languages = counted(books.mapNotNull { it.language }).map { LanguageOptionDto(it.name, it.name, it.count) },
-                    categories = counted(books.flatMap { it.categories }),
-                    fileTypes = counted(books.mapNotNull { it.primaryFileType }),
-                    publishers = counted(books.mapNotNull { it.publisher }),
-                )
-                return Result.success(filters)
-            }
-
-            val response = api.getFilters()
-            if (response.isSuccessful) Result.success(response.body()!!)
-            else Result.failure(Exception("Failed to fetch filters"))
-        } catch (e: kotlinx.coroutines.CancellationException) {
-            throw e
-        } catch (e: Exception) {
-            Result.failure(e)
-        }
-    }
-
     suspend fun getUserStats(): Result<UserStatsDto> {
         val source = resolveScopedContext().source
         if (source != BookSource.GRIMMORY) return Result.success(UserStatsDto())
@@ -1448,17 +1339,7 @@ class GrimmoryRepository @Inject constructor(
                 return Result.success(series)
             }
 
-            val ctx = resolveScopedContext()
-
-            val withCovers = fetchAllSeries().map { dto ->
-                val coverBookId = dto.bookIds?.firstOrNull()
-                if (coverBookId != null) {
-                    dto.copy(coverUrl = "${ctx.serverUrl.trimEnd('/')}/api/v1/media/book/$coverBookId/cover")
-                } else {
-                    dto
-                }
-            }
-            Result.success(withCovers)
+            Result.success(fetchAllSeries())
         } catch (e: kotlinx.coroutines.CancellationException) {
             throw e
         } catch (e: Exception) {
@@ -1466,59 +1347,31 @@ class GrimmoryRepository @Inject constructor(
         }
     }
 
-    private suspend fun fetchAllSeries(): List<SeriesSummaryDto> = coroutineScope {
-
-        val pageSize = 500
-        val first = api.getSeries(page = 0, size = pageSize)
-        if (!first.isSuccessful) error("getSeries HTTP ${first.code()}")
-        val firstBody = first.body() ?: return@coroutineScope emptyList()
-        val totalPages = firstBody.totalPages ?: 1
-        if (totalPages <= 1 || firstBody.content.isEmpty()) return@coroutineScope firstBody.content.map { it.toCore() }
-
-        val semaphore = Semaphore(8)
-        val rest = (1 until totalPages).map { p ->
-            async {
-                semaphore.withPermit {
-                    api.getSeries(page = p, size = pageSize).body()?.content.orEmpty().map { it.toCore() }
-                }
+    private suspend fun fetchAllSeries(): List<SeriesSummaryDto> {
+        val series = mutableListOf<SeriesSummaryDto>()
+        var page = 0
+        do {
+            val response = api.getSeriesFacet(page = page)
+            if (!response.isSuccessful) error("getSeries HTTP ${response.code()}")
+            val body = response.body() ?: break
+            body.facets.flatMap { it.links }.forEach { facetValue ->
+                val name = facetValue.value?.takeIf(String::isNotBlank) ?: return@forEach
+                series += SeriesSummaryDto(name = name, bookCount = facetValue.properties?.numberOfItems?.toInt())
             }
-        }.awaitAll().flatten()
-        firstBody.content.map { it.toCore() } + rest
+            page++
+        } while (body.hasNext)
+        return series
     }
-
-    private fun com.enve.app.data.remote.dto.SeriesSummaryDto.toCore() =
-        SeriesSummaryDto(name = name, bookCount = bookCount, bookIds = bookIds, id = id, coverUrl = coverUrl)
 
     private fun com.enve.app.data.remote.dto.AuthorSummaryDto.toCore() =
-        AuthorSummaryDto(id = id.orEmpty(), name = name, photoUrl = photoUrl, bookCount = bookCount)
-
-    suspend fun getSeriesBooks(seriesName: String): Result<List<Book>> {
-        return try {
-            val ctx = resolveScopedContext()
-            if (ctx.source != BookSource.GRIMMORY) {
-                val books = getBooks(size = 500).getOrDefault(emptyList())
-                val seriesBooks = books.filter { it.seriesName?.equals(seriesName, ignoreCase = true) == true }
-                return Result.success(seriesBooks)
-            }
-
-            val response = api.getSeriesBooks(seriesName)
-            if (response.isSuccessful) {
-                val books = response.body()?.content.orEmpty().toBooks(ctx.serverUrl, ctx.token)
-                Result.success(resolveAmbiguousAudiobookTitles(books, api, audiobookTitleOverrideCache))
-            } else {
-                Result.failure(Exception("Failed to fetch series books"))
-            }
-        } catch (e: kotlinx.coroutines.CancellationException) {
-            throw e
-        } catch (e: Exception) {
-            Result.failure(e)
-        }
-    }
+        AuthorSummaryDto(id = id, name = name, bookCount = bookCount)
 
     suspend fun updateBookStatus(bookId: String, status: String): Result<Unit> {
         if (!serverSync.isEnabled) return Result.success(Unit)
         return try {
-            val response = api.updateBookStatus(bookId.grimmoryServerBookId(), UpdateStatusRequest(status))
+            val serverId = bookId.grimmoryServerBookId().toLongOrNull()
+                ?: return Result.failure(Exception("Unrecognized Grimmory book id"))
+            val response = api.updateReadStatus(ReadStatusUpdateRequest(bookIds = listOf(serverId), status = status))
             if (response.isSuccessful) Result.success(Unit)
             else Result.failure(Exception("Failed to update book status"))
         } catch (e: kotlinx.coroutines.CancellationException) {
@@ -1535,7 +1388,7 @@ class GrimmoryRepository @Inject constructor(
 
             val response = api.updateBookRating(UpdateRatingRequest(ids = listOf(serverId), rating = rating.coerceIn(1, 5) * 2))
             if (response.isSuccessful) Result.success(Unit)
-            else Result.failure(Exception("Failed to update book rating"))
+            else Result.failure(com.enve.core.data.provider.ProviderMutationException(response.code(), "Failed to update book rating"))
         } catch (e: kotlinx.coroutines.CancellationException) {
             throw e
         } catch (e: Exception) {
@@ -1577,70 +1430,22 @@ class GrimmoryRepository @Inject constructor(
     }
 
     private suspend fun fetchAllAuthors(search: String?): List<AuthorSummaryDto> = coroutineScope {
-        val pageSize = 500
-        val first = api.getAuthors(page = 0, size = pageSize, search = search)
+        val query = search?.takeIf(String::isNotBlank)
+        val first = api.getAuthors(query = query)
         if (!first.isSuccessful) error("getAuthors HTTP ${first.code()}")
         val firstBody = first.body() ?: return@coroutineScope emptyList()
-        val totalPages = firstBody.totalPages ?: 1
+        val totalPages = firstBody.page.totalPages
         if (totalPages <= 1 || firstBody.content.isEmpty()) return@coroutineScope firstBody.content.map { it.toCore() }
 
         val semaphore = Semaphore(8)
         val rest = (1 until totalPages).map { p ->
             async {
                 semaphore.withPermit {
-                    api.getAuthors(page = p, size = pageSize, search = search).body()?.content.orEmpty().map { it.toCore() }
+                    api.getAuthors(query = query, page = p).body()?.content.orEmpty().map { it.toCore() }
                 }
             }
         }.awaitAll().flatten()
         firstBody.content.map { it.toCore() } + rest
-    }
-
-    suspend fun getAuthorDetail(authorId: String): Result<AuthorDetailDto> {
-        return try {
-            val response = api.getAuthorDetail(authorId)
-            if (response.isSuccessful) Result.success(response.body()!!)
-            else Result.failure(Exception("Failed to fetch author detail"))
-        } catch (e: kotlinx.coroutines.CancellationException) {
-            throw e
-        } catch (e: Exception) {
-            Result.failure(e)
-        }
-    }
-
-    suspend fun getMagicShelves(): Result<List<MagicShelfDto>> {
-        return try {
-            val response = api.getMagicShelves()
-            if (response.isSuccessful) Result.success(response.body().orEmpty())
-            else Result.failure(Exception("Failed to fetch magic shelves"))
-        } catch (e: kotlinx.coroutines.CancellationException) {
-            throw e
-        } catch (e: Exception) {
-            Result.failure(e)
-        }
-    }
-
-    suspend fun getNotebookBooks(): Result<List<NotebookBookSummaryDto>> {
-        return try {
-            val response = api.getNotebookBooks()
-            if (response.isSuccessful) Result.success(response.body()?.content.orEmpty())
-            else Result.failure(Exception("Failed to fetch notebook books"))
-        } catch (e: kotlinx.coroutines.CancellationException) {
-            throw e
-        } catch (e: Exception) {
-            Result.failure(e)
-        }
-    }
-
-    suspend fun getNotebookEntries(bookId: String): Result<List<NotebookEntryDto>> {
-        return try {
-            val response = api.getNotebookEntries(bookId)
-            if (response.isSuccessful) Result.success(response.body()?.content.orEmpty())
-            else Result.failure(Exception("Failed to fetch notebook entries"))
-        } catch (e: kotlinx.coroutines.CancellationException) {
-            throw e
-        } catch (e: Exception) {
-            Result.failure(e)
-        }
     }
 
     suspend fun getAudiobookInfo(bookId: String): Result<AudiobookInfoDto> {
@@ -1704,7 +1509,7 @@ class GrimmoryRepository @Inject constructor(
             return ProviderEbookResource(getEbookDownloadUrl(bookId))
         }
         val rawBookId = bookId.grimmoryServerBookId()
-        val detail = api.getBookDetail(rawBookId).body()
+        val detail = api.getBook(rawBookId, withDescription = false).body()?.toBookDetailDto()
         val ebookFile = detail?.progressFile(locator = null)
         val bookType = ebookFile?.resolvedProgressType() ?: "EPUB"
         return ProviderEbookResource(
@@ -1727,13 +1532,7 @@ class GrimmoryRepository @Inject constructor(
                 val shelves = response.body()?.map { Shelf(it.id, it.name, it.bookCount ?: 0) } ?: emptyList()
                 Result.success(shelves)
             } else {
-                val legacyResponse = api.getLegacyShelves()
-                if (legacyResponse.isSuccessful) {
-                    val shelves = legacyResponse.body()?.map { Shelf(it.id, it.name, it.bookCount ?: 0) } ?: emptyList()
-                    Result.success(shelves)
-                } else {
-                    Result.failure(Exception("Failed to fetch shelves"))
-                }
+                Result.failure(Exception("Failed to fetch shelves"))
             }
         } catch (e: kotlinx.coroutines.CancellationException) {
             throw e
@@ -1816,28 +1615,23 @@ class GrimmoryRepository @Inject constructor(
         if (!serverSync.isEnabled) return Result.success(null)
         return try {
             val rawBookId = book.id.grimmoryServerBookId()
-            val response = api.getAppBookProgress(rawBookId)
+            val response = api.getBook(rawBookId, withDescription = false)
             if (!response.isSuccessful) {
                 error("Grimmory ebook progress failed: HTTP ${response.code()}")
             }
-            val body = response.body()
+            val detail = response.body()?.toBookDetailDto()
                 ?: error("Grimmory ebook progress returned an empty response.")
+            val body = detail.toProgressDto()
             val snapshot = grimmoryEbookProgressSnapshot(
                 body = body,
-                updatedAtMs = parseIsoToEpochMs(
-                    body.epubProgress?.updatedAt
-                        ?: body.pdfProgress?.updatedAt
-                        ?: body.cbxProgress?.updatedAt
-                        ?: body.lastReadTime,
-                ),
+                updatedAtMs = parseIsoToEpochMs(body.lastReadTime),
+                audioProgressPresent = body.audiobookProgress != null || detail.hasAudioFormat(),
             )
-            if (snapshot == null || snapshot.epubCfi != null || body.epubProgress == null) {
+            val epubProgress = body.epubProgress
+            if (snapshot == null || snapshot.epubCfi != null || epubProgress == null) {
                 return Result.success(snapshot)
             }
-            val detail = runSuspendCatching { api.getBookProgressDetail(rawBookId).body()?.epubProgress }.getOrNull()
-            Result.success(
-                detail?.let { grimmoryPositionedEbookSnapshot(snapshot, body.epubProgress.href, it) } ?: snapshot,
-            )
+            Result.success(grimmoryPositionedEbookSnapshot(snapshot, epubProgress.href, epubProgress))
         } catch (e: kotlinx.coroutines.CancellationException) {
             throw e
         } catch (e: Exception) {
@@ -1880,7 +1674,7 @@ class GrimmoryRepository @Inject constructor(
             val response = api.postBookProgress(
                 GrimmoryProgressRequest(
                     bookId = numericBookId,
-                    fileProgress = GrimmoryProgressFileProgress(
+                    fileProgress = GrimmoryFileProgressDto(
                         bookFileId = bookFileId,
                         positionData = wire.positionData,
                         positionHref = wire.positionHref,
@@ -2042,18 +1836,18 @@ class GrimmoryRepository @Inject constructor(
             when (source) {
                 BookSource.GRIMMORY -> {
                     val rawBookId = bookId.grimmoryServerBookId()
-                    rawBookId.toLongOrNull()
+                    val numericBookId = rawBookId.toLongOrNull()
                         ?: return Result.failure(Exception("Grimmory book id is not numeric: $bookId"))
-                    val detail = api.getBookDetail(rawBookId).body()
+                    val detail = api.getBook(rawBookId, withDescription = false).body()?.toBookDetailDto()
                         ?: return Result.failure(Exception("Grimmory book detail was unavailable: $bookId"))
                     val progressFile = detail.progressFile(locator)
                         ?: return Result.failure(Exception("Grimmory ebook file id was unavailable: $bookId"))
                     val bookFileId = progressFile.id?.toLongOrNull()
                         ?: return Result.failure(Exception("Grimmory ebook file id was invalid: $bookId"))
                     if (!serverSync.accepts(syncStartedAt)) return Result.success(Unit)
-                    val response = api.putAppBookProgress(
-                        bookId = rawBookId,
-                        request = GrimmoryUpdateProgressRequest(
+                    val response = api.postBookProgress(
+                        GrimmoryProgressRequest(
+                            bookId = numericBookId,
                             fileProgress = grimmoryEbookFileProgress(
                                 bookFileId = bookFileId,
                                 totalProgression = percentage,
@@ -2113,12 +1907,10 @@ class GrimmoryRepository @Inject constructor(
         }
     }
 
-    private suspend fun List<BookSummaryDto>.toBooks(serverUrl: String, token: String, onRejected: (() -> Unit)? = null): List<Book> {
-        val scope = resolveScopedContext().connectionId ?: serverUrl
-        val fractions = listProgress.fractions(scope, map { it.listProgress() })
+    private fun List<BookSummaryDto>.toBooks(serverUrl: String, token: String, onRejected: (() -> Unit)? = null): List<Book> {
         return mapNotNull { summary ->
             try {
-                summary.toBook(serverUrl, token, fractions.getValue(summary.id))
+                summary.toBook(serverUrl, token, grimmoryPercentFraction(summary.readProgress) ?: 0f)
             } catch (e: kotlinx.coroutines.CancellationException) {
                 throw e
             } catch (e: Exception) {
@@ -2216,13 +2008,21 @@ class GrimmoryRepository @Inject constructor(
 
     private suspend fun enrichListedAudiobook(book: Book, serverUrl: String, token: String? = null): Book {
         val rawBookId = book.id.grimmoryServerBookId()
-        val detail = api.getBookDetail(rawBookId).body()
+        val detail = api.getBook(rawBookId).body()?.toBookDetailDto()?.withAudiobookProgress()
         val info = api.getAudiobookInfo(rawBookId).body()
         return mergeListedAudiobook(book, detail?.copyWithResolvedMediaType(), info, serverUrl, token)
     }
 
+    private suspend fun BookDetailDto.withAudiobookProgress(): BookDetailDto {
+        if (!hasAudioFormat()) return this
+        val progress = api.getAppBookProgress(id)
+        if (!progress.isSuccessful) error("Grimmory audiobook progress failed: HTTP ${progress.code()}")
+        val body = progress.body() ?: error("Grimmory audiobook progress returned an empty response")
+        return copy(audiobookProgress = body.audiobookProgress)
+    }
+
     private suspend fun enrichListedEbook(book: Book, serverUrl: String, token: String? = null): Book {
-        val detail = api.getBookDetail(book.id.grimmoryServerBookId()).body()?.copyWithResolvedMediaType() ?: return book
+        val detail = api.getBook(book.id.grimmoryServerBookId()).body()?.toBookDetailDto()?.copyWithResolvedMediaType() ?: return book
         return mergeListedEbook(book, detail, serverUrl, token)
     }
 
@@ -2237,24 +2037,27 @@ class GrimmoryRepository @Inject constructor(
         val userId = api.jellyfinMe().jellyfinBody("user lookup").Id
         check(userId.isNotBlank()) { "Jellyfin user lookup returned no user ID" }
         val parentId = libraryId ?: fetchJellyfinLibraries().firstOrNull()?.id ?: return emptyList()
-        return api.jellyfinItems(userId = userId, parentId = parentId).jellyfinBody("item loading").items
-            .mapNotNull { it.toJellyfinBook(serverUrl, parentId) }
+        return mediaBrowserPages { start ->
+            api.jellyfinItems(userId = userId, parentId = parentId, startIndex = start).jellyfinBody("item loading")
+        }.mapNotNull { it.toJellyfinBook(serverUrl, parentId) }
     }
 
     private suspend fun fetchEmbyLibraries(): List<Library> {
-        val userId = fetchEmbyUserId() ?: return emptyList()
+        val userId = fetchEmbyUserId() ?: error("Emby user unavailable")
         val viewsResponse = api.embyViews(userId)
-        if (!viewsResponse.isSuccessful) return emptyList()
-        return viewsResponse.body()?.items.orEmpty().mapNotNull { it.toBookLibraryOrNull() }
+        if (!viewsResponse.isSuccessful) throw retrofit2.HttpException(viewsResponse)
+        return requireNotNull(viewsResponse.body()).items.mapNotNull { it.toBookLibraryOrNull() }
     }
 
     private suspend fun fetchEmbyBooks(libraryId: String?, serverUrl: String): List<Book> {
-        val userId = fetchEmbyUserId() ?: return emptyList()
+        val userId = fetchEmbyUserId() ?: error("Emby user unavailable")
 
         val parentId = libraryId ?: fetchEmbyLibraries().firstOrNull()?.id ?: return emptyList()
-        val itemsResponse = api.embyItems(userId = userId, parentId = parentId)
-        if (!itemsResponse.isSuccessful) return emptyList()
-        return itemsResponse.body()?.items.orEmpty().mapNotNull { it.toEmbyBook(serverUrl, parentId) }
+        return mediaBrowserPages { start ->
+            val response = api.embyItems(userId = userId, parentId = parentId, startIndex = start)
+            if (!response.isSuccessful) throw retrofit2.HttpException(response)
+            requireNotNull(response.body())
+        }.mapNotNull { it.toEmbyBook(serverUrl, parentId) }
     }
 
     private suspend fun fetchEmbyUserId(): String? {
@@ -2302,7 +2105,7 @@ class GrimmoryRepository @Inject constructor(
         return series.flatMap { item ->
             val libraryType = (item.libraryId ?: libraryId?.toIntOrNull())?.let(libraryTypes::get)
             volumesBySeries[item.id]
-                ?.let { expandKavitaSeries(item, it, pins[item.id], ctx.serverUrl, libraryId, libraryType) }
+                ?.let { expandKavitaSeries(item, it, pins[item.id], ctx.serverUrl, libraryId, libraryType, kavitaCovers.revision) }
                 ?.takeIf { it.isNotEmpty() }
                 ?: listOf(kavitaSeriesBook(item, base, libraryId, libraryType))
         }
@@ -2311,7 +2114,7 @@ class GrimmoryRepository @Inject constructor(
     private fun kavitaSeriesBook(item: KavitaSeriesDto, base: String, libraryId: String?, libraryType: Int?): Book = Book(
         id = item.id.toString(),
         title = item.name.orEmpty(),
-        coverUrl = "$base/api/image/series-cover?seriesId=${item.id}",
+        coverUrl = "$base/api/image/series-cover?seriesId=${item.id}&enveCoverRevision=series:${item.id}:${kavitaCovers.revision}",
         source = BookSource.KAVITA,
         mediaType = AppMediaType.EBOOK,
         primaryFileType = kavitaReaderFormat(item.format),
@@ -2546,256 +2349,8 @@ class GrimmoryRepository @Inject constructor(
 
     suspend fun getTorBoxRootCandidates(connectionId: String): Result<List<String>> = runSuspendCatching {
         withContext(ConnectionScope.asContextElement(connectionId)) {
-            val ctx = resolveScopedContext()
-            torBoxRootCandidates(fetchTorBoxAudioFiles(ctx, rootPaths = emptyList(), awaitFolders = true))
+            torBox.rootCandidates(resolveScopedContext().torBoxAccount)
         }
-    }
-
-    private suspend fun fetchTorBoxRootLibraries(ctx: ScopedContext): List<Library> {
-        val selectedRoots = torBoxEffectiveRootPaths(ctx.cloudRootPaths)
-        if (selectedRoots.isEmpty()) {
-            return listOf(Library(id = "torbox-cloud", name = "TorBox Cloud", bookCount = 0, source = BookSource.TORBOX))
-        }
-        return selectedRoots.map { root ->
-            Library(
-                id = torBoxLibraryId(root),
-                name = root.substringAfterLast('/'),
-                bookCount = 0,
-                source = BookSource.TORBOX,
-            )
-        }
-    }
-
-    private suspend fun fetchTorBoxBooks(ctx: ScopedContext, libraryId: String?): List<Book> {
-        val rootPaths = libraryId
-            ?.takeIf { it.startsWith(TORBOX_LIBRARY_PREFIX) }
-            ?.let { listOf(torBoxRootFromLibraryId(it)) }
-            ?: torBoxEffectiveRootPaths(ctx.cloudRootPaths)
-        val files = fetchTorBoxAudioFiles(ctx, rootPaths)
-        val groups = groupCloudAudioFiles(files)
-        Log.i("GrimmoryRepository", "TorBox books: roots=${rootPaths.size} files=${files.size} groups=${groups.size} library=$libraryId")
-        val effectiveLibraryId = libraryId ?: "torbox-cloud"
-        return groups
-            .map {
-                it.toCloudBook(
-                    source = BookSource.TORBOX,
-                    libraryId = effectiveLibraryId,
-                    libraryName = if (libraryId != null && libraryId.startsWith(TORBOX_LIBRARY_PREFIX)) {
-                        torBoxRootFromLibraryId(libraryId).substringAfterLast('/')
-                    } else {
-                        "TorBox Cloud"
-                    },
-                    idPrefix = "torbox",
-                    stableScope = ctx.connectionId ?: ctx.serverUrl,
-                )
-            }
-            .sortedBy { it.title.lowercase() }
-    }
-
-    private suspend fun fetchTorBoxAudioFiles(
-        ctx: ScopedContext,
-        rootPaths: List<String>,
-        awaitFolders: Boolean = false,
-    ): List<CloudAudioFile> {
-        val baseUrl = normalizedTorBoxBase(ctx.serverUrl)
-        val token = ctx.token.takeIf { it.isNotBlank() } ?: return emptyList()
-        val (apiFiles, webDavFiles) = torBoxCatalog.files(
-            connectionId = ctx.connectionId,
-            serverUrl = baseUrl,
-            token = token,
-            roots = rootPaths,
-            awaitFolders = awaitFolders,
-            loadApi = { fresh ->
-                withContext(ConnectionScope.asContextElement(ctx.connectionId)) {
-                    coroutineScope {
-                        listOf(
-                            async { fetchTorBoxDownloadTypeAudioFiles(baseUrl, token, "torrents", "torrent_id", "tb-torrent", fresh) },
-                            async { fetchTorBoxDownloadTypeAudioFiles(baseUrl, token, "usenet", "usenet_id", "tb-usenet", fresh) },
-                            async { fetchTorBoxDownloadTypeAudioFiles(baseUrl, token, "webdl", "web_id", "tb-webdl", fresh) },
-                        ).awaitAll().flatten()
-                    }
-                }
-            },
-            loadFolders = { fetchTorBoxWebDavAudioFiles(token, rootPaths) },
-        )
-        val files = mergeTorBoxFiles(apiFiles, webDavFiles)
-        val filtered = filterCloudFilesByRoots(files, rootPaths)
-        Log.i("GrimmoryRepository", "TorBox files: api=${apiFiles.size} webdav=${webDavFiles.size} total=${files.size} filtered=${filtered.size} roots=${rootPaths.size}")
-        return filtered
-    }
-
-    private suspend fun fetchTorBoxDownloadTypeAudioFiles(
-        baseUrl: String,
-        token: String,
-        typePath: String,
-        idParameter: String,
-        idPrefix: String,
-        fresh: Boolean,
-    ): List<CloudAudioFile> {
-        val files = mutableListOf<CloudAudioFile>()
-        val covers = mutableListOf<CloudCoverFile>()
-        var offset = 0
-        val limit = 1000
-        val seenItemIds = mutableSetOf<Long>()
-
-        while (offset < TORBOX_MAX_LIST_ITEMS && files.size < TORBOX_MAX_AUDIO_FILES) {
-            val url = buildProviderUrl(baseUrl, typePath, "mylist")
-                ?.toHttpUrlOrNull()
-                ?.newBuilder()
-                ?.addQueryParameter("limit", limit.toString())
-                ?.addQueryParameter("offset", offset.toString())
-                ?.apply { if (fresh) addQueryParameter("bypass_cache", "true") }
-                ?.build()
-                ?.toString()
-                ?: return files
-            val items = fetchTorBoxList(url)
-            if (items.isEmpty()) break
-            val newItems = items.filter { seenItemIds.add(it.id) }
-            if (newItems.isEmpty()) break
-
-            newItems.forEach { item ->
-                val available = item.downloadPresent ?: item.downloadFinished ?: true
-                if (!available) return@forEach
-                val itemId = item.id.toString()
-                val itemName = (item.name?.takeIf { it.isNotBlank() } ?: item.hash?.takeIf { it.isNotBlank() } ?: itemId)
-                    .let(::decodeUrlPath)
-                item.files.forEach { file ->
-                    val fileId = file.id.toString()
-                    val fullPath = torBoxDisplayPath(file, itemName)?.let(::decodeUrlPath) ?: return@forEach
-                    val name = (file.shortName?.takeIf { it.isNotBlank() } ?: fullPath.substringAfterLast('/'))
-                        .let(::decodeUrlPathSegment)
-                    val link = buildTorBoxRequestDownloadUrl(baseUrl, token, typePath, idParameter, itemId, fileId)
-                        ?: return@forEach
-                    val parentPath = fullPath.trim('/').substringBeforeLast('/', missingDelimiterValue = "")
-                        .takeIf { it.isNotBlank() }
-                        ?: itemName
-                    if (isCloudCoverFile(name)) {
-                        covers += CloudCoverFile(
-                            path = fullPath,
-                            parentFolder = parentPath,
-                            link = link,
-                            rank = cloudCoverRank(name),
-                        )
-                        return@forEach
-                    }
-                    if (!isCloudAudioFile(name)) return@forEach
-                    files += CloudAudioFile(
-                        id = "$idPrefix-$itemId-$fileId",
-                        name = name,
-                        path = fullPath,
-                        parentFolder = parentPath,
-                        link = link,
-                        size = file.size,
-                    )
-                }
-            }
-
-            offset += items.size
-        }
-
-        Log.i("GrimmoryRepository", "TorBox $typePath scan: items=${seenItemIds.size} audio=${files.size} covers=${covers.size}")
-        return attachCloudCovers(files, covers)
-    }
-
-    private suspend fun fetchTorBoxWebDavAudioFiles(token: String, rootPaths: List<String>): List<CloudAudioFile> = withContext(Dispatchers.IO) {
-        val base = "https://webdav.torbox.app/"
-        val roots = normalizeCloudRootPaths(rootPaths)
-        val pendingDirs = ArrayDeque<String>().apply { add(base) }
-        val visitedDirs = mutableSetOf<String>()
-        val audioFiles = mutableListOf<CloudAudioFile>()
-        val coverFiles = mutableListOf<CloudCoverFile>()
-
-        while (pendingDirs.isNotEmpty() && visitedDirs.size < TORBOX_WEBDAV_MAX_DIRS && audioFiles.size < TORBOX_MAX_AUDIO_FILES) {
-            val dir = pendingDirs.removeFirst().trimEnd('/') + "/"
-            if (!visitedDirs.add(dir)) continue
-            val listing = torBoxWebDavListing(dir, token)
-            hrefsFromListing(dir, listing).forEach { href ->
-                val clean = href.substringBefore('#').substringBefore('?')
-                if (clean.trimEnd('/') == dir.trimEnd('/')) return@forEach
-                if (clean.endsWith("/")) {
-                    val path = torBoxWebDavRelativePath(base, clean)?.let(::decodeUrlPath)?.trim('/')
-                        ?: return@forEach
-                    val selected = roots.isEmpty() || roots.any { root ->
-                        path == root || path.startsWith("$root/") || root.startsWith("$path/")
-                    }
-                    if (selected && clean !in visitedDirs && pendingDirs.size < TORBOX_WEBDAV_MAX_DIRS) pendingDirs.add(clean)
-                    return@forEach
-                }
-                val name = decodeUrlPathSegment(clean.substringAfterLast('/')).takeIf { it.isNotBlank() } ?: return@forEach
-                val relativePath = torBoxWebDavRelativePath(base, clean)?.let(::decodeUrlPath) ?: return@forEach
-                val parent = relativePath.substringBeforeLast('/', missingDelimiterValue = "")
-                    .takeIf { it.isNotBlank() }
-                    ?: "TorBox WebDAV"
-                val link = torBoxWebDavCredentialUrl(clean, token) ?: clean
-                if (isCloudCoverFile(name)) {
-                    coverFiles += CloudCoverFile(
-                        path = relativePath,
-                        parentFolder = parent,
-                        link = link,
-                        rank = cloudCoverRank(name),
-                    )
-                    return@forEach
-                }
-                if (!isCloudAudioFile(name)) return@forEach
-                audioFiles += CloudAudioFile(
-                    id = "tb-webdav-${stableId(relativePath)}",
-                    name = name,
-                    path = relativePath,
-                    parentFolder = parent,
-                    link = link,
-                    size = null,
-                )
-            }
-        }
-
-        Log.i("GrimmoryRepository", "TorBox WebDAV scan: dirs=${visitedDirs.size} audio=${audioFiles.size} covers=${coverFiles.size}")
-        attachCloudCovers(audioFiles, coverFiles)
-    }
-
-    private suspend fun torBoxWebDavListing(url: String, token: String): String = retryTorBoxRequest {
-        val request = Request.Builder()
-            .url(url)
-            .method("PROPFIND", webDavPropfindBody())
-            .header("Depth", "1")
-            .header("Authorization", Credentials.basic("torbox", token))
-            .build()
-        torBoxWebDavClient.newCall(request).torBoxResponseBody()
-    }
-
-    private fun webDavPropfindBody(): RequestBody =
-        WEBDAV_PROPFIND_XML.toRequestBody("application/xml; charset=utf-8".toMediaType())
-
-    private fun hrefsFromListing(url: String, listingText: String): List<String> =
-        (WEBDAV_HREF.findAll(listingText) + HTML_ANCHOR_HREF.findAll(listingText))
-            .mapNotNull { it.groupValues.getOrNull(1)?.trim() }
-            .map { decodeXmlEntities(it) }
-            .map { resolveAgainst(url, it) }
-            .filter { it.isNotBlank() }
-            .distinct()
-            .toList()
-
-    private fun torBoxWebDavRelativePath(base: String, url: String): String? {
-        val basePath = base.trimEnd('/') + "/"
-        val resolved = url.substringBefore('#').substringBefore('?')
-        return resolved.removePrefix(basePath)
-            .trim('/')
-            .takeIf { it.isNotBlank() && it != resolved }
-    }
-
-    private fun decodeUrlPath(path: String): String =
-        path.split('/').joinToString("/") { decodeUrlPathSegment(it) }
-
-    private fun decodeUrlPathSegment(segment: String): String =
-        runCatching { URLDecoder.decode(segment.replace("+", "%2B"), Charsets.UTF_8.name()) }
-            .getOrElse { segment }
-
-    private fun torBoxWebDavCredentialUrl(url: String, token: String): String? {
-        val parsed = url.toHttpUrlOrNull() ?: return null
-        return parsed.newBuilder()
-            .username("torbox")
-            .password(token)
-            .build()
-            .toString()
     }
 
     private suspend fun fetchPremiumizeAudioFiles(baseUrl: String): List<CloudAudioFile> {
@@ -2810,7 +2365,7 @@ class GrimmoryRepository @Inject constructor(
 
             fetchPremiumizeFolder(baseUrl, folderId).forEach { entry ->
                 val name = entry.optNonBlankString("name") ?: return@forEach
-                val id = entry.optNonBlankString("id") ?: entry.optNonBlankString("file_id") ?: stableId(name)
+                val id = entry.optNonBlankString("id") ?: entry.optNonBlankString("file_id") ?: cloudStableId(name)
                 val link = entry.optNonBlankString("link").orEmpty()
                 val type = entry.optNonBlankString("type").orEmpty()
                 val isFolder = type.contains("folder", ignoreCase = true) || link.isBlank()
@@ -2892,7 +2447,7 @@ class GrimmoryRepository @Inject constructor(
                 val name = path.substringAfterLast('/')
                 val link = directLinks[name.lowercase()] ?: return@forEach
                 files += CloudAudioFile(
-                    id = "rd-$torrentId-${file.optInt("id") ?: stableId(path)}",
+                    id = "rd-$torrentId-${file.optInt("id") ?: cloudStableId(path)}",
                     name = name,
                     path = "/torrents/$torrentId/$path",
                     parentFolder = groupingFolderName(path) ?: torrentName,
@@ -2913,7 +2468,7 @@ class GrimmoryRepository @Inject constructor(
                 val link = item.optNonBlankString("download") ?: return@mapNotNull null
                 if (!isCloudAudioFile(name) || link.isBlank()) return@mapNotNull null
                 CloudAudioFile(
-                    id = "rd-dl-${item.optNonBlankString("id") ?: stableId(link)}",
+                    id = "rd-dl-${item.optNonBlankString("id") ?: cloudStableId(link)}",
                     name = name,
                     path = "/downloads/$name",
                     parentFolder = null,
@@ -2951,270 +2506,15 @@ class GrimmoryRepository @Inject constructor(
             .orEmpty()
     }.getOrDefault(emptyList())
 
-    private suspend fun fetchTorBoxList(url: String): List<TorBoxDownloadDto> = retryTorBoxRequest {
-        val response = api.torBoxList(url)
-        if (!response.isSuccessful) {
-            response.errorBody()?.close()
-            throw TorBoxRequestException(response.code(), response.headers()["Retry-After"])
-        }
-        response.body()?.requireTorBoxList() ?: throw TorBoxRequestException(502)
-    }
-
-    private fun groupCloudAudioFiles(files: List<CloudAudioFile>): List<CloudBookGroup> {
-        return files
-            .groupBy { file ->
-                file.parentFolder?.takeIf { it.isNotBlank() }?.let { "folder:${it.lowercase()}" }
-                    ?: "file:${file.name.substringBeforeLast('.').lowercase()}"
-            }
-            .flatMap { (folderKey, folderFiles) ->
-                val groups = AudiobookFileGrouping.groups(
-                    files = folderFiles,
-                    name = CloudAudioFile::name,
-                    sizeBytes = { it.size ?: 0L },
-                )
-                val isCollectionFolder = groups.size > 1
-                groups.map { groupedFiles ->
-                    val sorted = AudiobookFileGrouping.sorted(groupedFiles, CloudAudioFile::name)
-                    val first = sorted.first()
-                    val title = if (isCollectionFolder) {
-                        AudiobookFileGrouping.inferredTitle(first.name)
-                    } else {
-                        first.parentFolder?.substringAfterLast('/')?.takeIf { it.isNotBlank() }
-                            ?: first.name.substringBeforeLast('.').replace('_', ' ')
-                    }
-                    CloudBookGroup(
-                        key = if (isCollectionFolder) "file:${first.path.lowercase()}" else folderKey,
-                        title = title,
-                        folderPath = first.parentFolder,
-                        files = sorted,
-                        coverUrl = if (isCollectionFolder) null else sorted.firstNotNullOfOrNull { it.coverUrl },
-                    )
-                }
-            }
-    }
-
-    private fun CloudBookGroup.toCloudBook(
-        source: BookSource,
-        libraryId: String,
-        libraryName: String,
-        idPrefix: String,
-        stableScope: String,
-    ): Book {
-        val derived = derivedCloudTitleAuthor()
-        val tracks = files.mapIndexed { index, file ->
-            AudioTrack(
-                index = index,
-                fileName = file.name,
-                title = file.name.substringBeforeLast('.').cleanCloudDisplayName(),
-                durationMs = 0L,
-                fileSizeBytes = file.size ?: 0L,
-                cumulativeStartMs = 0L,
-                fileId = file.id,
-                contentUrl = file.link,
-            )
-        }
-        val id = "$idPrefix-${stableId("$stableScope|$key")}"
-        val durationMs = when {
-            tracks.size == 1 -> tracks.firstOrNull()?.durationMs ?: 0L
-            tracks.isNotEmpty() && tracks.all { it.durationMs > 0L } -> tracks.sumOf { it.durationMs }
-            else -> 0L
-        }
-        return Book(
-            id = id,
-            title = derived.title,
-            author = derived.author,
-            narrator = null,
-            coverUrl = coverUrl,
-            duration = durationMs / 1000L,
-            source = source,
-            mediaType = AppMediaType.AUDIOBOOK,
-            libraryId = libraryId,
-            libraryName = libraryName,
-            audioTracks = tracks,
-            hasAudio = tracks.isNotEmpty(),
-        )
-    }
-
-    private fun CloudBookGroup.derivedCloudTitleAuthor(): CloudTitleAuthor {
-        val cleanTitle = title.cleanCloudDisplayName()
-        val currentSplit = splitAuthorTitle(cleanTitle)
-        if (currentSplit != null) return currentSplit
-        val author = folderPath
-            ?.split('/')
-            .orEmpty()
-            .firstNotNullOfOrNull { splitAuthorTitle(it.cleanCloudDisplayName())?.author }
-        return CloudTitleAuthor(title = cleanTitle, author = author)
-    }
-
-    private fun splitAuthorTitle(value: String): CloudTitleAuthor? {
-        val parts = value.split(" - ", limit = 2)
-        val author = parts.getOrNull(0)?.trim().orEmpty()
-        val title = parts.getOrNull(1)?.trim().orEmpty()
-        if (author.isBlank() || title.isBlank()) return null
-        if (author.any { it.isDigit() } && author.length <= 5) return null
-        return CloudTitleAuthor(title = title, author = author)
-    }
-
-    private fun String.cleanCloudDisplayName(): String =
-        decodeUrlPath(this)
-            .replace('_', ' ')
-            .replace(Regex("\\s+"), " ")
-            .trim()
-
     private fun normalizedPremiumizeBase(serverUrl: String): String =
         serverUrl.ifBlank { "https://www.premiumize.me/api" }.trimEnd('/')
 
     private fun normalizedRealDebridBase(serverUrl: String): String =
         serverUrl.ifBlank { "https://api.real-debrid.com/rest/1.0" }.trimEnd('/')
 
-    private fun normalizedTorBoxBase(serverUrl: String): String =
-        serverUrl.ifBlank { "https://api.torbox.app/v1/api" }.trimEnd('/')
-
-    private fun buildProviderUrl(baseUrl: String, vararg pathSegments: String): String? {
-        val builder = baseUrl.toHttpUrlOrNull()?.newBuilder() ?: return null
-        pathSegments.forEach { builder.addPathSegment(it) }
-        return builder.build().toString()
-    }
-
-    private fun buildTorBoxRequestDownloadUrl(
-        baseUrl: String,
-        token: String,
-        typePath: String,
-        idParameter: String,
-        itemId: String,
-        fileId: String,
-    ): String? {
-        return buildProviderUrl(baseUrl, typePath, "requestdl")
-            ?.toHttpUrlOrNull()
-            ?.newBuilder()
-            ?.addQueryParameter("token", token)
-            ?.addQueryParameter(idParameter, itemId)
-            ?.addQueryParameter("file_id", fileId)
-            ?.addQueryParameter("redirect", "true")
-            ?.build()
-            ?.toString()
-    }
-
-    private fun isCloudAudioFile(name: String): Boolean {
-        val ext = name.substringAfterLast('.', "").lowercase()
-        return ext in setOf("mp3", "m4b", "m4a", "mp4", "aac", "flac", "ogg", "opus", "wav")
-    }
-
-    private fun isCloudCoverFile(name: String): Boolean {
-        val ext = name.substringAfterLast('.', "").lowercase()
-        return ext in setOf("jpg", "jpeg", "png", "webp")
-    }
-
-    private fun cloudCoverRank(name: String): Int {
-        val stem = name.substringAfterLast('/').substringBeforeLast('.').lowercase()
-        return when {
-            stem in setOf("cover", "folder", "front", "album", "artwork") -> 0
-            "cover" in stem || "folder" in stem || "front" in stem -> 1
-            else -> 10
-        }
-    }
-
-    private fun attachCloudCovers(audioFiles: List<CloudAudioFile>, coverFiles: List<CloudCoverFile>): List<CloudAudioFile> {
-        if (audioFiles.isEmpty() || coverFiles.isEmpty()) return audioFiles
-        val coversByFolder = coverFiles
-            .groupBy { it.parentFolder.trim('/') }
-            .mapValues { (_, covers) ->
-                covers.sortedWith(compareBy<CloudCoverFile> { it.rank }.thenBy { it.path.lowercase() }).first()
-            }
-        return audioFiles.map { file ->
-            val parent = file.parentFolder?.trim('/').orEmpty()
-            val cover = folderAndAncestors(parent).firstNotNullOfOrNull { coversByFolder[it] }
-            if (cover == null) file else file.copy(coverUrl = cover.link)
-        }
-    }
-
-    private fun folderAndAncestors(path: String): List<String> {
-        val parts = path.split('/').filter { it.isNotBlank() }
-        if (parts.isEmpty()) return emptyList()
-        return parts.indices.reversed().map { index -> parts.take(index + 1).joinToString("/") }
-    }
-
     private fun groupingFolderName(path: String): String? {
         val trimmed = path.trim('/').substringBeforeLast('/', missingDelimiterValue = "")
         return trimmed.substringAfterLast('/').takeIf { it.isNotBlank() }
-    }
-
-    private fun torBoxRootCandidates(files: List<CloudAudioFile>): List<String> {
-        return files
-            .flatMap { file ->
-                val parent = file.parentFolder?.trim('/') ?: file.path.trim('/').substringBeforeLast('/', "")
-                val parts = parent.split('/').filter { it.isNotBlank() }
-                parts.indices.map { index -> parts.take(index + 1).joinToString("/") }
-            }
-            .distinct()
-            .sortedWith(compareBy<String> { it.count { ch -> ch == '/' } }.thenBy { it.lowercase() })
-            .take(TORBOX_MAX_ROOT_CANDIDATES)
-    }
-
-    private fun filterCloudFilesByRoots(files: List<CloudAudioFile>, rootPaths: List<String>): List<CloudAudioFile> {
-        val roots = normalizeCloudRootPaths(rootPaths)
-        if (roots.isEmpty()) return files
-        return files.filter { file ->
-            val path = file.path.trim('/')
-            val parent = file.parentFolder?.trim('/').orEmpty()
-            roots.any { root ->
-                path == root || path.startsWith("$root/") || parent == root || parent.startsWith("$root/")
-            }
-        }
-    }
-
-    private fun normalizeCloudRootPaths(paths: List<String>): List<String> =
-        paths.map { it.trim().trim('/') }
-            .filter { it.isNotBlank() }
-            .distinct()
-
-    private fun torBoxEffectiveRootPaths(paths: List<String>): List<String> {
-        val roots = normalizeCloudRootPaths(paths)
-        if (roots.isEmpty()) return emptyList()
-        val collapsed = roots
-            .sortedBy { it.count { ch -> ch == '/' } }
-            .filter { candidate ->
-                roots.none { parent -> parent != candidate && candidate.startsWith("$parent/") }
-            }
-        val hadRedundantDescendants = collapsed.size != roots.size
-        return if (hadRedundantDescendants && roots.size >= TORBOX_DEFAULT_SELECTION_ROOT_THRESHOLD) {
-            emptyList()
-        } else {
-            collapsed
-        }
-    }
-
-    private fun torBoxLibraryId(root: String): String = "$TORBOX_LIBRARY_PREFIX${root.trim('/')}"
-
-    private fun torBoxRootFromLibraryId(libraryId: String): String =
-        libraryId.removePrefix(TORBOX_LIBRARY_PREFIX).trim('/')
-
-    private fun torBoxDisplayPath(file: TorBoxFileDto, itemName: String): String? {
-        val name = file.name?.takeIf { it.isNotBlank() }
-        val shortName = file.shortName?.takeIf { it.isNotBlank() }
-        return listOfNotNull(
-            name?.takeIf { '/' in it },
-            shortName?.let { leaf ->
-                name?.takeIf { it != leaf }?.let { "$it/$leaf" }
-            },
-            shortName?.let { "$itemName/$it" },
-            name,
-            file.s3Path?.takeIf { it.isNotBlank() },
-        ).firstOrNull()?.trim('/')
-    }
-
-    private fun stableId(input: String): String {
-        val digest = MessageDigest.getInstance("SHA-256").digest(input.toByteArray(Charsets.UTF_8))
-        return digest.joinToString(separator = "") { byte -> "%02x".format(byte) }.take(24)
-    }
-
-    companion object {
-        private const val TORBOX_LIBRARY_PREFIX = "torbox-root:"
-        private const val TORBOX_MAX_LIST_ITEMS = 100_000
-        private const val TORBOX_MAX_AUDIO_FILES = 100_000
-        private const val TORBOX_MAX_ROOT_CANDIDATES = 5_000
-        private const val TORBOX_DEFAULT_SELECTION_ROOT_THRESHOLD = 10
-        private const val TORBOX_WEBDAV_MAX_DIRS = 2_000
     }
 
 }
@@ -3226,4 +2526,12 @@ private fun grimmoryBookType(fileType: String?): String = when (fileType?.lowerc
     "mobi" -> "MOBI"
     "azw", "azw3", "kfx" -> "AZW3"
     else -> "EPUB"
+}
+
+internal suspend fun mediaBrowserPages(fetch: suspend (Int) -> MediaBrowserItemsDto): List<MediaBrowserItemDto> = buildList {
+    do {
+        val page = fetch(size)
+        addAll(page.items)
+        check(page.items.isNotEmpty() || size >= page.totalRecordCount) { "Incomplete media library page" }
+    } while (size < page.totalRecordCount)
 }

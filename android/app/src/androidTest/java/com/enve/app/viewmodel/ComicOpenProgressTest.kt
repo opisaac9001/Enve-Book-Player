@@ -20,6 +20,7 @@ import java.util.concurrent.TimeUnit
 import java.util.zip.ZipEntry
 import java.util.zip.ZipOutputStream
 import com.enve.app.data.offline.ComicOfflineStorage
+import com.enve.app.data.offline.offlineDownloadKey
 import com.enve.core.data.model.Book
 import kotlin.concurrent.thread
 import kotlinx.coroutines.Dispatchers
@@ -101,7 +102,7 @@ class ComicOpenProgressTest {
         val viewModels = ViewModelStore()
         val server = FixtureServer(blockBooks = true, progressPage = 3)
         val storage = ComicOfflineStorage(component.storageLocations())
-        val archive = storage.createTempFile(bookId, "$bookId.cbz")
+        val archive = storage.createTempFile(offlineDownloadKey(BookSource.KOMGA, connectionId, bookId), "$bookId.cbz")
         ZipOutputStream(archive.outputStream()).use { zip ->
             repeat(3) { page ->
                 zip.putNextEntry(ZipEntry("$page.png"))

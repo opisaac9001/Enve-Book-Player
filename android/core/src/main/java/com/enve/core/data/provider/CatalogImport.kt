@@ -44,6 +44,11 @@ data class CatalogImportReport(
         failures = (failures + other.failures).distinct(),
     )
 
+    fun afterPages(previousCount: Int, page: Int): CatalogImportReport = copy(
+        acceptedCount = acceptedCount + previousCount,
+        failures = failures.map { if (it.page == null) it.copy(page = page) else it },
+    )
+
     fun rejecting(reason: CatalogRejectionReason, count: Int = 1): CatalogImportReport =
         if (count <= 0) this else merge(CatalogImportReport(source, rejections = mapOf(reason to count)))
 }

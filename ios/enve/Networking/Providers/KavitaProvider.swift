@@ -17,7 +17,7 @@ class KavitaProvider: IncrementalCatalogProvider, EbookProgressProvider, EbookDo
         ]
     }
 
-    var catalogMappingRevision: Int { 2 }
+    var catalogMappingRevision: Int { 3 }
 
     private let pageSize = 100
     private var jwtToken: String?
@@ -288,7 +288,7 @@ class KavitaProvider: IncrementalCatalogProvider, EbookProgressProvider, EbookDo
     }
 
     func downloadEbook(for book: Book, onProgress: (@Sendable (Double) -> Void)? = nil) async throws -> URL {
-        if let cached = ebooks.cachedEbook(forBookId: book.id) {
+        if let cached = ebooks.cachedEbook(for: book) {
             onProgress?(1)
             return cached
         }
@@ -317,7 +317,7 @@ class KavitaProvider: IncrementalCatalogProvider, EbookProgressProvider, EbookDo
         return try ebooks.cacheRemoteEbook(
             tempURL: tempURL,
             preferredFilename: filename,
-            bookIdentifier: book.id
+            bookIdentifier: book.ebookStorageID
         )
     }
 
@@ -418,8 +418,19 @@ class KavitaProvider: IncrementalCatalogProvider, EbookProgressProvider, EbookDo
     }
 
     func fetchCoverImage(url: URL) async throws -> Data {
-        try await ensureAuthenticated()
-        let (data, response) = try await send(authenticatedRequest(from: URLRequest(url: url)))
+        let imageKey = try await imageAuthenticationKey()
+        guard var components = URLComponents(url: url, resolvingAgainstBaseURL: false) else {
+            throw ProviderError.invalidURL
+        }
+        var query = components.queryItems ?? []
+        query.removeAll { $0.name.lowercased() == "apikey" }
+        query.append(URLQueryItem(name: "apiKey", value: imageKey))
+        components.queryItems = query
+        guard let imageURL = components.url else { throw ProviderError.invalidURL }
+        var request = authenticatedRequest(from: URLRequest(url: imageURL))
+        request.cachePolicy = .reloadIgnoringLocalCacheData
+        request.setValue("image/jpeg, image/png, image/webp, */*", forHTTPHeaderField: "Accept")
+        let (data, response) = try await send(request)
         guard response.statusCode == 200 else {
             throw ProviderError.serverError("Failed to fetch Kavita cover (HTTP \(response.statusCode))")
         }
@@ -522,6 +533,7 @@ class KavitaProvider: IncrementalCatalogProvider, EbookProgressProvider, EbookDo
     }
 
     private func issueBooks(for seriesList: [KavitaSeries], libraryId: String, bookId: String? = nil) async throws -> [Book] {
+        let refreshedAt = Date.now
         let volumesByIndex = try await withThrowingTaskGroup(of: (Int, [KavitaVolume]).self) { group in
             var volumes = Array(repeating: [KavitaVolume](), count: seriesList.count)
             var nextIndex = 0
@@ -611,7 +623,7 @@ class KavitaProvider: IncrementalCatalogProvider, EbookProgressProvider, EbookDo
                         id: id, title: title, author: series.writers?.first, narrator: nil,
                         seriesInfo: SeriesInfo(name: series.name, sequence: number ?? volumeName),
                         duration: 0,
-                        coverURL: URL(string: "\(normalize(connection.url))/api/image/chapter-cover?chapterId=\(chapter.id)"),
+                        coverURL: coverURL(series: series, volume: volume, chapter: chapter, chapterCount: chapterCount, refreshedAt: refreshedAt),
                         mediaType: .ebook, ebookFormat: format, comicMetadata: comicMetadata,
                         description: chapter.summary ?? series.summary, genres: [], chapters: [], publisher: nil,
                         progress: 0, currentTime: 0, isFinished: progress >= Book.finishedProgressThreshold,
@@ -623,6 +635,34 @@ class KavitaProvider: IncrementalCatalogProvider, EbookProgressProvider, EbookDo
             }
         }
         return books
+    }
+
+    private func coverURL(series: KavitaSeries, volume: KavitaVolume, chapter: KavitaChapter, chapterCount: Int, refreshedAt: Date) -> URL? {
+        let entity: String
+        let id: Int
+        let modified: Date?
+        if chapterCount == 1, series.coverImageLocked == true {
+            entity = "series"
+            id = series.id
+            // Series DTOs have no cover modification date; revalidate custom series art on catalog refresh.
+            modified = nil
+        } else if volume.chapters?.count == 1 {
+            entity = "volume"
+            id = volume.id
+            modified = [volume.lastModifiedUtc, chapter.lastModifiedUtc].compactMap { $0.flatMap(KavitaDate.parse) }.max()
+        } else {
+            entity = "chapter"
+            id = chapter.id
+            modified = chapter.lastModifiedUtc.flatMap(KavitaDate.parse)
+        }
+        let version = (modified ?? refreshedAt).formatted(Date.ISO8601FormatStyle(includingFractionalSeconds: true))
+        guard var components = URLComponents(string: "\(normalize(connection.url))/api/image/\(entity)-cover") else { return nil }
+        components.queryItems = [
+            URLQueryItem(name: "\(entity)Id", value: String(id)),
+            URLQueryItem(name: "v", value: version),
+            URLQueryItem(name: "enveCoverRevision", value: "\(entity):\(id):\(version)"),
+        ]
+        return components.url
     }
 
     // Kavita uses -100000 for loose leaf, 100000 for specials and type 5 for flat ComicVine runs.
@@ -688,6 +728,7 @@ class KavitaProvider: IncrementalCatalogProvider, EbookProgressProvider, EbookDo
         let pagesRead: Int?
         let pages: Int?
         let format: Int?
+        let coverImageLocked: Bool?
     }
 
     private struct KavitaVolume: Decodable, Sendable {
@@ -696,6 +737,7 @@ class KavitaProvider: IncrementalCatalogProvider, EbookProgressProvider, EbookDo
         let minNumber: Double?
         let number: Double?
         let chapters: [KavitaChapter]?
+        let lastModifiedUtc: String?
     }
 
     private struct KavitaChapter: Decodable, Sendable {
@@ -711,6 +753,7 @@ class KavitaProvider: IncrementalCatalogProvider, EbookProgressProvider, EbookDo
         let pagesRead: Int?
         let summary: String?
         let files: [KavitaFile]?
+        let lastModifiedUtc: String?
     }
 
     private struct KavitaFile: Decodable, Sendable {

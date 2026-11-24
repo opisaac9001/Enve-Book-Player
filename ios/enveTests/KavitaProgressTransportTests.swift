@@ -236,17 +236,24 @@ struct KavitaProgressTransportTests {
         let request = try #require(provider.requests.last)
         #expect(request.value(forHTTPHeaderField: "Authorization") == "Bearer header.payload.signature")
         #expect(request.value(forHTTPHeaderField: "X-API-Key") == nil)
+        #expect(URLComponents(url: try #require(request.url), resolvingAgainstBaseURL: false)?.queryItems?
+            .first(where: { $0.name == "apiKey" })?.value == "image-key")
+        #expect(request.cachePolicy == .reloadIgnoringLocalCacheData)
     }
 
     @Test func apiKeyCoverFetchUsesAPIKeyHeader() async throws {
         let provider = makeProvider()
-        let url = try #require(URL(string: "https://kavita.example.invalid/api/image/series-cover?seriesId=3"))
+        let url = try #require(URL(string: "https://kavita.example.invalid/api/image/series-cover?seriesId=3&v=revision&apiKey=outdated"))
 
         _ = try await provider.fetchCoverImage(url: url)
 
         let request = try #require(provider.requests.last)
         #expect(request.value(forHTTPHeaderField: "X-API-Key") == "fixture")
         #expect(request.value(forHTTPHeaderField: "Authorization") == nil)
+        let query = URLComponents(url: try #require(request.url), resolvingAgainstBaseURL: false)?.queryItems
+        #expect(query?.filter { $0.name == "apiKey" }.map(\.value) == ["fixture"])
+        #expect(query?.first { $0.name == "seriesId" }?.value == "3")
+        #expect(query?.first { $0.name == "v" }?.value == "revision")
     }
 
     @Test func catalogSeparatesIssueIdentityFormatAndProgress() async throws {
@@ -261,7 +268,10 @@ struct KavitaProgressTransportTests {
             ComicMetadata(seriesID: "3", issueLabel: "Issue 1", pageCount: 100, resourceID: "11"),
             ComicMetadata(seriesID: "3", issueLabel: "Issue 2", pageCount: 40, resourceID: "12"),
         ])
-        #expect(books[1].coverURL?.query == "chapterId=12")
+        let cover = try #require(books[1].coverURL)
+        #expect(cover.path == "/api/image/chapter-cover")
+        #expect(URLComponents(url: cover, resolvingAgainstBaseURL: false)?.queryItems?
+            .first(where: { $0.name == "chapterId" })?.value == "12")
         let detail = try await provider.fetchFullBookDetails(bookId: books[1].id, libraryId: "5")
         #expect(detail.id == books[1].id)
         try await provider.updateEbookProgress(for: detail, progress: 0.5, epubLocator: nil)
@@ -317,6 +327,53 @@ struct KavitaProgressTransportTests {
         let reopened = KavitaIssueIdentityStore(defaults: defaults)
         #expect(reopened.legacyChapterId(connectionId: connection, seriesId: 3, firstChapterId: 12) == 11)
         #expect(reopened.legacyChapterId(connectionId: UUID(), seriesId: 3, firstChapterId: 12) == 12)
+    }
+
+    @Test func standaloneBookUsesManuallySelectedSeriesCover() async throws {
+        let provider = makeProvider()
+        provider.seriesJSON = #"[{"id":3,"name":"Fixture","libraryId":5,"format":3,"coverImageLocked":true}]"#
+        provider.volumesJSON = #"[{"id":7,"chapters":[{"id":11,"pages":100}]}]"#
+        let books = try await provider.fetchBooks(libraryId: "5")
+        let cover = try #require(books.first?.coverURL)
+        let query = try #require(URLComponents(url: cover, resolvingAgainstBaseURL: false)?.queryItems)
+        #expect(cover.path == "/api/image/series-cover")
+        #expect(query.first { $0.name == "seriesId" }?.value == "3")
+        #expect(query.first { $0.name == "enveCoverRevision" }?.value?.hasPrefix("series:3:") == true)
+        #expect(!query.contains { $0.name == "apiKey" })
+        #expect(provider.catalogMappingRevision == 3)
+    }
+
+    @Test func singleChapterVolumeUsesItsCoverAndNewestServerTimestamp() async throws {
+        let provider = makeProvider()
+        provider.volumesJSON = #"[{"id":7,"lastModifiedUtc":"2026-11-14T12:00:00.456","chapters":[{"id":11,"pages":100,"lastModifiedUtc":"2026-11-13T12:00:00.123"}]}]"#
+        let first = try await provider.fetchBooks(libraryId: "5")
+        let second = try await provider.fetchBooks(libraryId: "5")
+        let cover = try #require(first.first?.coverURL)
+        let query = try #require(URLComponents(url: cover, resolvingAgainstBaseURL: false)?.queryItems)
+        #expect(cover.path == "/api/image/volume-cover")
+        #expect(query.first { $0.name == "volumeId" }?.value == "7")
+        #expect(query.first { $0.name == "v" }?.value == "2026-11-14T12:00:00.456Z")
+        #expect(first.first?.coverURL == second.first?.coverURL)
+
+        provider.volumesJSON = provider.volumesJSON.replacingOccurrences(of: "00.456", with: "00.789")
+        let changed = try await provider.fetchBooks(libraryId: "5")
+        #expect(changed.first?.coverURL != cover)
+    }
+
+    @Test func multiIssueSeriesKeepsIndividualChapterCovers() async throws {
+        let provider = makeProvider()
+        provider.seriesJSON = #"[{"id":3,"name":"Fixture","libraryId":5,"format":1,"coverImageLocked":true}]"#
+        provider.volumesJSON = #"[{"id":7,"lastModifiedUtc":"2026-11-14T12:00:00Z","chapters":[{"id":11,"pages":100,"lastModifiedUtc":"2026-11-13T12:00:00Z"},{"id":12,"pages":40,"lastModifiedUtc":"2026-11-12T12:00:00Z"}]}]"#
+        let books = try await provider.fetchBooks(libraryId: "5")
+        #expect(books.count == 2)
+        for (index, book) in books.enumerated() {
+            let cover = try #require(book.coverURL)
+            let query = try #require(URLComponents(url: cover, resolvingAgainstBaseURL: false)?.queryItems)
+            #expect(cover.path == "/api/image/chapter-cover")
+            #expect(query.first { $0.name == "chapterId" }?.value == String(11 + index))
+            #expect(query.first { $0.name == "enveCoverRevision" }?.value?.hasPrefix("chapter:\(11 + index):") == true)
+        }
+        #expect(books[0].coverURL != books[1].coverURL)
     }
 
     private func makeProvider() -> KavitaProgressTransportStub {

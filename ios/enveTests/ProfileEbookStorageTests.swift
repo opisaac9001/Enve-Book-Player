@@ -83,13 +83,65 @@ struct ProfileEbookStorageTests {
         #expect(owner.cachedReadaloudEpub(forBookId: "42") == ownerReadaloud)
         #expect(owner.convertedEpubURL(for: URL(fileURLWithPath: "/fixture/book.mobi")) != child.convertedEpubURL(for: URL(fileURLWithPath: "/fixture/book.mobi")))
 
-        let ownerStream = owner.streamedEpubCacheRoot.appendingPathComponent("connection/book-42")
-        let childStream = child.streamedEpubCacheRoot.appendingPathComponent("connection/book-42")
+        let book = Book(id: "42", title: "Book", source: .booklore, providerId: UUID())
+        let ownerStream = owner.streamedEpubCacheRoot.appendingPathComponent("\(book.providerId)/book-42")
+        let childStream = child.streamedEpubCacheRoot.appendingPathComponent("\(book.providerId)/book-42")
         try FileManager.default.createDirectory(at: ownerStream, withIntermediateDirectories: true)
         try FileManager.default.createDirectory(at: childStream, withIntermediateDirectories: true)
-        try child.deleteRemoteEbookArtifacts(forBookId: "42")
+        try child.deleteRemoteEbookArtifacts(for: book)
         #expect(FileManager.default.fileExists(atPath: ownerStream.path))
         #expect(!FileManager.default.fileExists(atPath: childStream.path))
+    }
+
+    @Test func equalProviderItemIDsKeepSeparateEbooksAcrossRestartAndDeletion() throws {
+        let root = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        defer { try? FileManager.default.removeItem(at: root) }
+        let paths = locations("reader", root: root)
+        let importer = try LocalEbookImporter(storage: paths)
+        let first = Book(id: "42", title: "Book", source: .kavita, providerId: UUID())
+        let second = Book(id: "42", title: "Book", source: .kavita, providerId: UUID())
+        for (book, value) in [(first, "first"), (second, "second")] {
+            let cached = try importer.cacheRemoteEbook(data: Data(value.utf8), preferredFilename: "volume.epub", bookIdentifier: book.ebookStorageID)
+            _ = try importer.persistRemoteEbookForOffline(from: cached, bookIdentifier: book.ebookStorageID)
+        }
+        let reopened = try LocalEbookImporter(storage: paths)
+        let firstURL = try #require(reopened.offlineEbookURL(for: first))
+        let secondURL = try #require(reopened.offlineEbookURL(for: second))
+        #expect(try Data(contentsOf: firstURL) == Data("first".utf8))
+        try reopened.deleteRemoteEbookArtifacts(for: first)
+        #expect(reopened.cachedEbook(for: first) == nil)
+        #expect(try Data(contentsOf: secondURL) == Data("second".utf8))
+    }
+
+    @Test func longUnicodeTitlesKeepTheirScopedPrefixAndFileExtension() throws {
+        let root = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        defer { try? FileManager.default.removeItem(at: root) }
+        let importer = try LocalEbookImporter(storage: locations("reader", root: root))
+        let book = Book(id: "42", title: "Volume", source: .kavita, providerId: UUID())
+        let name = String(repeating: "東京Volume", count: 60) + ".epub"
+        let url = try importer.cacheRemoteEbook(data: Data([1]), preferredFilename: name, bookIdentifier: book.ebookStorageID)
+        #expect(url.lastPathComponent.utf8.count <= 255)
+        #expect(url.pathExtension == "epub")
+        #expect(importer.cachedEbook(for: book) == url)
+    }
+
+    @Test func legacyFileRequiresARecordedOwnerAndSurvivesWhileReferenced() throws {
+        let root = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        defer { try? FileManager.default.removeItem(at: root) }
+        let importer = try LocalEbookImporter(storage: locations("reader", root: root))
+        var owner = Book(id: "42", title: "Book", source: .kavita, providerId: UUID())
+        var other = Book(id: "42", title: "Book", source: .kavita, filePath: "/server/books/42-book.epub", providerId: UUID())
+        let legacy = importer.serverEbooksRoot.appendingPathComponent("42-book.epub")
+        try Data("old download".utf8).write(to: legacy)
+        owner.ebookFileURL = legacy
+        #expect(importer.cachedEbook(for: owner) == legacy)
+        #expect(importer.cachedEbook(for: other) == nil)
+        #expect(importer.resolveExistingLocalEbookURL(for: other) == nil)
+        other.ebookFileURL = legacy
+        try importer.deleteRecordedLegacyEbook(for: owner, otherBooks: [owner, other])
+        #expect(importer.cachedEbook(for: other) == legacy)
+        try importer.deleteRecordedLegacyEbook(for: other, otherBooks: [other])
+        #expect(!FileManager.default.fileExists(atPath: legacy.path))
     }
 
     @Test func blockedProfileEbookRootFailsWithoutOwnerFallback() throws {

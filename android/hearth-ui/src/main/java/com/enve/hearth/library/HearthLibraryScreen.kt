@@ -22,6 +22,11 @@ import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.outlined.ViewList
 import androidx.compose.material.icons.outlined.Add
+import androidx.compose.material.icons.outlined.BorderColor
+import androidx.compose.material.icons.outlined.Dns
+import androidx.compose.material.icons.outlined.FilterList
+import androidx.compose.material.icons.outlined.Inbox
+import androidx.compose.material.icons.outlined.UploadFile
 import androidx.compose.material.icons.outlined.CheckCircle
 import androidx.compose.material.icons.outlined.Folder
 import androidx.compose.material.icons.outlined.GridView
@@ -40,6 +45,7 @@ import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.material3.pulltorefresh.PullToRefreshBox
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.CompositionLocalProvider
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableFloatStateOf
@@ -58,6 +64,7 @@ import androidx.compose.ui.input.nestedscroll.NestedScrollSource
 import androidx.compose.ui.input.nestedscroll.nestedScroll
 import androidx.compose.ui.layout.layout
 import androidx.compose.ui.platform.LocalSoftwareKeyboardController
+import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.text.style.TextOverflow
@@ -70,6 +77,7 @@ import com.enve.core.data.model.BookSource
 import com.enve.core.data.model.BrowseGroup
 import com.enve.engine.library.LibraryConnectionOption
 import com.enve.engine.library.SavedBookList
+import com.enve.hearth.bookorbit.BookOrbitTool
 import com.enve.hearth.collections.CollectionsScreen
 import com.enve.hearth.design.Hearth
 import com.enve.hearth.design.HearthText
@@ -92,6 +100,7 @@ fun HearthLibraryScreen(
     onPlaybackStarted: () -> Unit = {},
     onAddSource: () -> Unit = {},
     onOpenSettings: () -> Unit = {},
+    onOpenBookOrbitTool: (BookOrbitTool) -> Unit = {},
 ) {
     var showPositionScanner by rememberSaveable { mutableStateOf(false) }
     if (showPositionScanner) {
@@ -151,21 +160,30 @@ fun HearthLibraryScreen(
     var pendingBulkAction by remember { mutableStateOf<BulkAction?>(null) }
     var batchCollectionCreateConnection by remember { mutableStateOf<LibraryConnectionOption?>(null) }
     var moreMenuOpen by remember { mutableStateOf(false) }
+    var addMenuOpen by remember { mutableStateOf(false) }
+    val connectedSources by vm.sources.collectAsStateWithLifecycle()
+    val bookOrbitConnected = BookSource.BOOKORBIT in connectedSources
     val palette = Hearth.palette
     val comicSeriesListState = rememberLazyGridState()
     val comicMode = mediaFilter == MediaFilter.COMICS && facet != LibraryFacet.SHELVES && savedList == null
     val openComic = comicView?.takeIf { comicMode && drill == null }
+    val keyboard = LocalSoftwareKeyboardController.current
+    val closeSearch = {
+        keyboard?.hide()
+        searchExpanded = false
+        vm.setQuery("")
+    }
     BackHandler(enabled = !covered && (drill != null || savedList != null || selectionMode || searchExpanded || openComic != null)) {
         when {
-            searchExpanded -> { searchExpanded = false; vm.setQuery("") }
+            searchExpanded -> closeSearch()
             selectionMode -> vm.endSelection()
             savedList != null -> savedList = null
             drill != null -> vm.clearDrill()
             else -> vm.closeComicSeries()
         }
     }
-    val keyboard = LocalSoftwareKeyboardController.current
     LaunchedEffect(covered) { if (covered) keyboard?.hide() }
+    val catalogStatus by vm.catalogStatus.collectAsStateWithLifecycle()
 
     val activeFilterCount = remember(status, mediaFilter, advancedFilters) {
         libraryActiveFilterCount(status, mediaFilter, advancedFilters)
@@ -223,8 +241,27 @@ fun HearthLibraryScreen(
                     Text("Done", style = HearthText.Label, color = palette.ember)
                 }
             } else {
-                IconButton(onClick = onAddSource, modifier = Modifier.size(48.dp)) {
-                    Icon(Icons.Outlined.Add, contentDescription = "Add a source", tint = palette.textSecondary)
+                Box {
+                    IconButton(
+                        onClick = { if (bookOrbitConnected) addMenuOpen = true else onAddSource() },
+                        modifier = Modifier.size(48.dp).testTag("library-add"),
+                    ) {
+                        Icon(Icons.Outlined.Add, contentDescription = "Add a source", tint = palette.textSecondary)
+                    }
+                    LibraryMenu(expanded = addMenuOpen, onDismissRequest = { addMenuOpen = false }) {
+                        MoreMenuItem(Icons.Outlined.Dns, "Add a source") {
+                            addMenuOpen = false
+                            onAddSource()
+                        }
+                        MoreMenuItem(
+                            Icons.Outlined.UploadFile,
+                            "Add books to BookOrbit",
+                            tag = "library-add-bookorbit-book-drop",
+                        ) {
+                            addMenuOpen = false
+                            onOpenBookOrbitTool(BookOrbitTool.BOOK_DROP)
+                        }
+                    }
                 }
                 Box {
                     IconButton(onClick = { moreMenuOpen = true }, modifier = Modifier.size(48.dp)) {
@@ -255,6 +292,32 @@ fun HearthLibraryScreen(
                         ) {
                             moreMenuOpen = false
                             vm.cycleColumns()
+                        }
+                        if (bookOrbitConnected) {
+                            MoreMenuItem(
+                                Icons.Outlined.FilterList,
+                                "BookOrbit smart scopes",
+                                tag = "library-bookorbit-smart-scopes",
+                            ) {
+                                moreMenuOpen = false
+                                onOpenBookOrbitTool(BookOrbitTool.SMART_SCOPES)
+                            }
+                            MoreMenuItem(
+                                Icons.Outlined.Inbox,
+                                "BookOrbit Book Drop",
+                                tag = "library-bookorbit-book-drop",
+                            ) {
+                                moreMenuOpen = false
+                                onOpenBookOrbitTool(BookOrbitTool.BOOK_DROP)
+                            }
+                            MoreMenuItem(
+                                Icons.Outlined.BorderColor,
+                                "BookOrbit highlights",
+                                tag = "library-bookorbit-highlights",
+                            ) {
+                                moreMenuOpen = false
+                                onOpenBookOrbitTool(BookOrbitTool.HIGHLIGHTS)
+                            }
                         }
                         MoreMenuItem(Icons.Outlined.Settings, "Settings") {
                             moreMenuOpen = false
@@ -320,8 +383,9 @@ fun HearthLibraryScreen(
                 FilterSortButton(activeFilterCount) { showFilterSort = true }
             }
             resultCount?.let { count ->
+                val more = if (savedList == null && catalogStatus.hasMore) "+" else ""
                 Text(
-                    if (count == 1) "1 book" else "$count books",
+                    if (count == 1 && more.isEmpty()) "1 book" else "$count$more books",
                     style = HearthText.Caption,
                     color = palette.textTertiary,
                     textAlign = TextAlign.End,
@@ -340,6 +404,9 @@ fun HearthLibraryScreen(
             FacetRow(selected = facet.takeIf { savedList == null }) { selected -> savedList = null; vm.setFacet(selected) }
         }
         Spacer(Modifier.size(Hearth.Spacing.XS))
+        if (savedList == null && drill == null && facet != LibraryFacet.SHELVES) {
+            LibraryCatalogNotices(catalogStatus, onRetry = vm::retryCatalog)
+        }
 
         val drillNow = drill
         when {
@@ -392,7 +459,7 @@ fun HearthLibraryScreen(
                 }
             }
 
-            showRefreshNotice && total == 0 -> Box(Modifier.fillMaxSize())
+            showRefreshNotice && total == 0 && !catalogStatus.live -> Box(Modifier.fillMaxSize())
 
             openComic != null -> ComicSeriesContent(
                 view = openComic,
@@ -404,12 +471,25 @@ fun HearthLibraryScreen(
                 onDetails = onSelectBook,
             )
 
-            showsBookGrid -> BookGrid(
-                books, columns, vm, selectionMode, selection, onSelectBook, play,
-                cardStyle = cardStyle,
-                hasLibraryBooks = total > 0,
-                onAddSource = onAddSource,
-            )
+            showsBookGrid && catalogStatus.live && catalogStatus.loading && books.isEmpty() -> BrowseLoadingState()
+
+            showsBookGrid && catalogStatus.error != null && books.isEmpty() -> Spacer(Modifier.fillMaxSize())
+
+            showsBookGrid -> Column(Modifier.fillMaxSize()) {
+                val footer = catalogStatus.live &&
+                    (catalogStatus.loading || (catalogStatus.hasMore && catalogStatus.error == null))
+                Box(Modifier.weight(1f)) {
+                    CompositionLocalProvider(LocalMantelInset provides if (footer) 0.dp else LocalMantelInset.current) {
+                        BookGrid(
+                            books, columns, vm, selectionMode, selection, onSelectBook, play,
+                            cardStyle = cardStyle,
+                            hasLibraryBooks = total > 0 || catalogStatus.live,
+                            onAddSource = onAddSource,
+                        )
+                    }
+                }
+                if (footer) LibraryCatalogFooter(catalogStatus, onLoadMore = vm::loadMoreCatalog)
+            }
 
             comicMode && comicSeries.isEmpty() -> BrowseEmptyState(
                 "No comic series here",
@@ -520,8 +600,11 @@ fun HearthLibraryScreen(
             onQuery = vm::setQuery,
             expanded = searchExpanded,
             onExpandedChange = { open ->
-                searchExpanded = open
-                if (!open) vm.setQuery("")
+                if (open) {
+                    searchExpanded = true
+                } else {
+                    closeSearch()
+                }
             },
             modifier = Modifier.align(Alignment.BottomCenter),
         )
@@ -612,11 +695,18 @@ fun HearthLibraryScreen(
 }
 
 @Composable
-private fun MoreMenuItem(icon: ImageVector, label: String, enabled: Boolean = true, onClick: () -> Unit) {
+private fun MoreMenuItem(
+    icon: ImageVector,
+    label: String,
+    enabled: Boolean = true,
+    tag: String? = null,
+    onClick: () -> Unit,
+) {
     val palette = Hearth.palette
     DropdownMenuItem(
         text = { Text(label, style = HearthText.Label) },
         onClick = onClick,
+        modifier = if (tag == null) Modifier else Modifier.testTag(tag),
         leadingIcon = { Icon(icon, contentDescription = null) },
         enabled = enabled,
         colors = MenuDefaults.itemColors(

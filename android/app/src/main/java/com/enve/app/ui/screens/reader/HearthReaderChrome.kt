@@ -64,11 +64,14 @@ import androidx.compose.material.icons.outlined.Gesture
 import androidx.compose.material.icons.outlined.Headphones
 import androidx.compose.material.icons.outlined.KeyboardArrowUp
 import androidx.compose.material.icons.outlined.MoreHoriz
+import androidx.compose.material.icons.outlined.Public
 import androidx.compose.material.icons.outlined.RecordVoiceOver
 import androidx.compose.material.icons.outlined.Search
 import androidx.compose.material.icons.outlined.Share
 import androidx.compose.material.icons.outlined.TextFields
+import androidx.compose.material.icons.outlined.Translate
 import androidx.compose.material.icons.outlined.Tune
+import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.DropdownMenu
 import androidx.compose.material3.DropdownMenuItem
 import androidx.compose.material.icons.filled.Pause
@@ -76,6 +79,7 @@ import androidx.compose.material.icons.filled.PlayArrow
 import androidx.compose.material.icons.filled.SkipNext
 import androidx.compose.material.icons.filled.SkipPrevious
 import androidx.compose.material3.Icon
+import androidx.compose.material3.LocalTextStyle
 import androidx.compose.material3.Snackbar
 import androidx.compose.material3.SnackbarDuration
 import androidx.compose.material3.SnackbarHost
@@ -99,6 +103,7 @@ import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.StrokeCap
 import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.input.pointer.pointerInput
+import androidx.compose.ui.platform.LocalConfiguration
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.semantics.Role
 import androidx.compose.ui.semantics.contentDescription
@@ -112,6 +117,7 @@ import com.enve.app.ui.screens.PerBookAnnotationsSheet
 import com.enve.app.ui.screens.ReaderStatusStrip
 import com.enve.app.ui.screens.printedPageLabel
 import com.enve.app.viewmodel.ReaderViewModel
+import com.enve.core.data.local.ReaderPageTurnStyle
 import com.enve.core.data.model.AnnotationStyle
 import com.enve.core.data.model.Book
 import com.enve.engine.prefs.ReadNextPosition
@@ -119,6 +125,7 @@ import com.enve.engine.theme.HearthPaletteStyle
 import com.enve.hearth.design.EmberAccent
 import com.enve.hearth.design.Hearth
 import com.enve.hearth.design.HearthEink
+import com.enve.hearth.design.HearthMaterialTheme
 import com.enve.hearth.design.HearthPalette
 import com.enve.hearth.design.HearthText
 import com.enve.hearth.design.LocalHearth
@@ -142,6 +149,8 @@ fun HearthReaderChrome(
     readNextPosition: ReadNextPosition = ReadNextPosition.BOTTOM,
     onReadNext: (Book) -> Unit = {},
     restReminder: ReaderRestReminderSpec,
+    pageTurnStyle: ReaderPageTurnStyle,
+    onPageTurnStyleChange: (ReaderPageTurnStyle) -> Unit,
 ) {
     val state by vm.state.collectAsStateWithLifecycle()
     val chromeInteraction by vm.chromeInteraction.collectAsStateWithLifecycle()
@@ -149,6 +158,8 @@ fun HearthReaderChrome(
     val palette = readerChromePalette(state.prefs.theme, einkActive, accentColor, paletteStyle)
     val snackbarHostState = remember { SnackbarHostState() }
     val context = LocalContext.current
+    val configuration = LocalConfiguration.current
+    var webTranslation by remember { mutableStateOf<String?>(null) }
 
     LaunchedEffect(state.prefs.verticalMargins) {
         onVerticalMarginsChanged(state.prefs.verticalMargins)
@@ -200,357 +211,398 @@ fun HearthReaderChrome(
         if (result == SnackbarResult.ActionPerformed) vm.returnFromInternalLink() else vm.dismissInternalLinkReturn()
     }
 
+    val ambientTextStyle = LocalTextStyle.current
     CompositionLocalProvider(
         LocalHearth provides palette,
         LocalHearthEink provides if (einkActive) HearthEink(com.enve.engine.eink.EinkState(true, palette.bg == Color.White, com.enve.engine.eink.EinkMode.ON, false, 2)) else HearthEink.Inactive,
     ) {
-        Box(Modifier.fillMaxSize()) {
-            val dimmer = readerDimmerAlpha(state.prefs.screenBrightness)
-            if (dimmer > 0f) {
-                Box(Modifier.fillMaxSize().background(Color.Black.copy(alpha = dimmer)))
-            }
+        HearthMaterialTheme {
+            CompositionLocalProvider(LocalTextStyle provides ambientTextStyle) {
+                Box(Modifier.fillMaxSize()) {
+                    val dimmer = readerDimmerAlpha(state.prefs.screenBrightness)
+                    if (dimmer > 0f) {
+                        Box(Modifier.fillMaxSize().background(Color.Black.copy(alpha = dimmer)))
+                    }
 
-            if (state.prefs.showClock || state.prefs.showBattery ||
-                state.prefs.progressDisplay != com.enve.app.data.reader.ReaderProgressDisplay.NONE) {
-                ReaderStatusStrip(
-                    showClock = state.prefs.showClock,
-                    showBattery = state.prefs.showBattery,
-                    progressDisplay = state.prefs.progressDisplay,
-                    currentPage = state.currentPage,
-                    totalPages = state.totalPages,
-                    hasPageList = state.hasPageList,
-                    currentPageLabel = state.currentPageLabel,
-                    lastPageLabel = state.lastPageLabel,
-                    progressPct = state.progressPct,
-                    chapter = state.currentSection,
-                    minutesLeft = state.minutesLeftInBook,
-                    chromeVisible = state.showChrome,
-                    textColor = palette.textSecondary,
-                    modifier = Modifier.align(Alignment.TopCenter),
-                )
-            }
-
-            if (einkActive) {
-                if (state.showChrome) {
-                    Box(Modifier.align(Alignment.TopCenter)) {
-                        TopVeil(
-                            title = bookTitle,
-                            menuExpanded = state.showMoreMenu,
-                            onMenuExpandedChange = vm::showMoreMenu,
-                            onBack = onBack,
-                            onBookmark = {
-                                if (vm.addBookmark()) vm.postTransientMessage("Bookmark added.")
-                                else vm.postTransientMessage("Reader is still loading.")
-                            },
-                            onAddNote = { vm.addStandaloneNote() },
-                            onAnnotations = { vm.showAnnotationsSheet(true) },
-                            onLibrarian = onAskLibrarian,
-                            showContents = state.readAlongActive,
-                            onContents = { vm.showToc(true) },
+                    if (state.prefs.showClock || state.prefs.showBattery ||
+                        state.prefs.progressDisplay != com.enve.app.data.reader.ReaderProgressDisplay.NONE) {
+                        ReaderStatusStrip(
+                            showClock = state.prefs.showClock,
+                            showBattery = state.prefs.showBattery,
+                            progressDisplay = state.prefs.progressDisplay,
+                            currentPage = state.currentPage,
+                            totalPages = state.totalPages,
+                            hasPageList = state.hasPageList,
+                            currentPageLabel = state.currentPageLabel,
+                            lastPageLabel = state.lastPageLabel,
+                            progressPct = state.progressPct,
+                            chapter = state.currentSection,
+                            minutesLeft = state.minutesLeftInBook,
+                            chromeVisible = state.showChrome,
+                            textColor = palette.textSecondary,
+                            modifier = Modifier.align(Alignment.TopCenter),
                         )
                     }
-                }
-            } else {
-                AnimatedVisibility(
-                    visible = state.showChrome,
-                    enter = fadeIn(tween(CHROME_FADE_MS)) + slideInVertically(tween(CHROME_FADE_MS)) { -it / 6 },
-                    exit = fadeOut(tween(CHROME_FADE_MS)) + slideOutVertically(tween(CHROME_FADE_MS)) { -it / 6 },
-                    modifier = Modifier.align(Alignment.TopCenter),
-                ) {
-                    TopVeil(
-                        title = bookTitle,
-                        menuExpanded = state.showMoreMenu,
-                        onMenuExpandedChange = vm::showMoreMenu,
-                        onBack = onBack,
-                        onBookmark = {
-                            if (vm.addBookmark()) vm.postTransientMessage("Bookmark added.")
-                            else vm.postTransientMessage("Reader is still loading.")
-                        },
-                        onAddNote = { vm.addStandaloneNote() },
-                        onAnnotations = { vm.showAnnotationsSheet(true) },
-                        onLibrarian = onAskLibrarian,
-                        showContents = state.readAlongActive,
-                        onContents = { vm.showToc(true) },
-                    )
-                }
-            }
 
-            if (state.showReadAloudLyrics) {
-                HearthReadAloudLyrics(
-                    rows = state.readAlongChapterClips,
-                    activeIndex = state.readAlongClipIndex,
-                    onSelect = { vm.jumpToReadAlongClip(it) },
-                    onClose = { vm.showReadAloudLyrics(false) },
-                    onToggleControls = vm::toggleChrome,
-                    modifier = Modifier.matchParentSize(),
-                )
-            }
-
-            if (state.showChrome && state.readAlongActive) {
-                Box(Modifier.align(Alignment.BottomCenter).navigationBarsPadding().padding(bottom = Hearth.Spacing.M).fillMaxWidth()) {
-                    ReadAloudBar(
-                        playing = state.readAlongPlaying,
-                        preparing = state.readAlongPreparing,
-                        clip = state.readAlongClipIndex,
-                        clipCount = state.readAlongClipCount,
-                        onToggle = vm::toggleReadAlongPlayback,
-                        onBack = vm::skipReadAlongBackward,
-                        onForward = vm::skipReadAlongForward,
-                        onTune = { vm.showReadAloudSheet(true) },
-                        onLyrics = { vm.showReadAloudLyrics(!state.showReadAloudLyrics) },
-                        onClose = vm::toggleReadAlongMode,
-                    )
-                }
-            }
-
-            val bottomVeil: @Composable () -> Unit = {
-                Column {
-                    if (state.liveReadAlongActive) {
-                        HearthLinkedReadAlongPanel(
-                            status = state.liveReadAlongStatus,
-                            playing = state.liveReadAlongPlaying,
-                            following = state.liveReadAlongFollowing,
-                            finding = state.liveReadAlongFinding,
-                            retryable = state.liveReadAlongRetryable,
-                            onTogglePlayback = vm::toggleReadAlongPlayback,
-                            onFollow = vm::resumeLiveReadAlongFollowing,
-                            onListenHere = { vm.listenFromHere() },
-                            onRetry = vm::retryLiveReadAlong,
-                            onClose = vm::toggleReadAlongMode,
-                        )
-                    }
-                    BottomVeil(
-                        progress = state.progressPct / 100f,
-                        summary = pageSummary(
-                            state.currentPage,
-                            state.totalPages,
-                            state.hasPageList,
-                            state.currentPageLabel,
-                            state.lastPageLabel,
-                            state.progressPct,
-                            state.currentSection,
-                            state.minutesLeftInBook,
-                        ),
-                        readAlongSupported = state.readAlongSupported || state.liveReadAlongAvailable,
-                        onSeek = vm::seekToProgress,
-                        onContents = { vm.showToc(true) },
-                        onAppearance = { vm.showAppearance(true) },
-                        onSearch = { vm.showSearch(true) },
-                        chapterMarks = state.chapterMarks,
-                        pageMarks = state.pageMarks,
-                        totalPages = state.totalPages,
-                        currentPage = state.currentPage,
-                        onNarrate = vm::toggleReadAlongPlayback,
-                        onReadBack = vm::toggleTtsPlayback,
-                        ttsActive = state.ttsPlayback.active,
-                        ttsControls = {
-                            ReaderSpeechTransport(
-                                playing = state.ttsPlayback.playing,
-                                preparing = state.ttsPlayback.preparing,
-                                narrated = false,
-                                onToggle = vm::toggleTtsPlayback,
-                                onBack = vm::previousTtsParagraph,
-                                onForward = vm::nextTtsParagraph,
-                                onSettings = { vm.showTtsSheet(true) },
-                                pack = state.ttsNarratorPack,
+                    if (einkActive) {
+                        if (state.showChrome) {
+                            Box(Modifier.align(Alignment.TopCenter)) {
+                                TopVeil(
+                                    title = bookTitle,
+                                    menuExpanded = state.showMoreMenu,
+                                    onMenuExpandedChange = vm::showMoreMenu,
+                                    onBack = onBack,
+                                    onBookmark = {
+                                        if (vm.addBookmark()) vm.postTransientMessage("Bookmark added.")
+                                        else vm.postTransientMessage("Reader is still loading.")
+                                    },
+                                    onAddNote = { vm.addStandaloneNote() },
+                                    onAnnotations = { vm.showAnnotationsSheet(true) },
+                                    onLibrarian = onAskLibrarian,
+                                    showContents = state.readAlongActive,
+                                    onContents = { vm.showToc(true) },
+                                )
+                            }
+                        }
+                    } else {
+                        AnimatedVisibility(
+                            visible = state.showChrome,
+                            enter = fadeIn(tween(CHROME_FADE_MS)) + slideInVertically(tween(CHROME_FADE_MS)) { -it / 6 },
+                            exit = fadeOut(tween(CHROME_FADE_MS)) + slideOutVertically(tween(CHROME_FADE_MS)) { -it / 6 },
+                            modifier = Modifier.align(Alignment.TopCenter),
+                        ) {
+                            TopVeil(
+                                title = bookTitle,
+                                menuExpanded = state.showMoreMenu,
+                                onMenuExpandedChange = vm::showMoreMenu,
+                                onBack = onBack,
+                                onBookmark = {
+                                    if (vm.addBookmark()) vm.postTransientMessage("Bookmark added.")
+                                    else vm.postTransientMessage("Reader is still loading.")
+                                },
+                                onAddNote = { vm.addStandaloneNote() },
+                                onAnnotations = { vm.showAnnotationsSheet(true) },
+                                onLibrarian = onAskLibrarian,
+                                showContents = state.readAlongActive,
+                                onContents = { vm.showToc(true) },
                             )
-                        },
-                    )
-                }
-            }
-
-            val live = state.liveReadAlongActive
-            val narrated = state.readAlongActive || live
-            AnimatedVisibility(
-                visible = !state.showChrome && (narrated || (state.ttsPlayback.active && state.ttsControlsVisible)),
-                enter = if (einkActive) EnterTransition.None else fadeIn() + slideInVertically { it / 2 },
-                exit = if (einkActive) ExitTransition.None else fadeOut() + slideOutVertically { it / 2 },
-                modifier = Modifier.align(Alignment.BottomCenter),
-            ) {
-                Box(Modifier.navigationBarsPadding().padding(Hearth.Spacing.M)) {
-                    ReaderSpeechTransport(
-                        playing = if (live) state.liveReadAlongPlaying else if (narrated) state.readAlongPlaying else state.ttsPlayback.playing,
-                        preparing = if (live) state.liveReadAlongPreparing else if (narrated) state.readAlongPreparing else state.ttsPlayback.preparing,
-                        narrated = narrated,
-                        onToggle = if (narrated) vm::toggleReadAlongPlayback else vm::toggleTtsPlayback,
-                        onBack = if (live) vm::skipLiveReadAlongBackward else if (narrated) vm::skipReadAlongBackward else vm::previousTtsParagraph,
-                        onForward = if (live) vm::skipLiveReadAlongForward else if (narrated) vm::skipReadAlongForward else vm::nextTtsParagraph,
-                        onSettings = { if (live) vm.toggleChrome() else if (narrated) vm.showReadAloudSheet(true) else vm.showTtsSheet(true) },
-                        onShowControls = { vm.toggleChrome() },
-                        pack = state.ttsNarratorPack.takeUnless { narrated },
-                    )
-                }
-            }
-            if (einkActive) {
-                if (state.showChrome && !state.readAlongActive) {
-                    Box(Modifier.align(Alignment.BottomCenter)) { bottomVeil() }
-                }
-            } else {
-                AnimatedVisibility(
-                    visible = state.showChrome && !state.readAlongActive,
-                    enter = fadeIn(tween(CHROME_FADE_MS)) + slideInVertically(tween(CHROME_FADE_MS)) { it / 6 },
-                    exit = fadeOut(tween(CHROME_FADE_MS)) + slideOutVertically(tween(CHROME_FADE_MS)) { it / 6 },
-                    modifier = Modifier.align(Alignment.BottomCenter),
-                ) {
-                    bottomVeil()
-                }
-            }
-
-            if (state.showSelectionPopup && state.pendingSelection != null) {
-                SelectionPalette(
-                    ink = vm.lastHighlightInk,
-                    onInkChange = { vm.lastHighlightInk = it },
-                    onApply = { style, hex ->
-                        vm.addAnnotation(state.pendingSelection!!, style, hex, "", state.selectionText)
-                        vm.hideSelectionPopup()
-                    },
-                    onCopy = {
-                        copySelection(context, state.selectionText)
-                        vm.hideSelectionPopup()
-                        vm.clearSelection()
-                    },
-                    onNote = {
-                        vm.hideSelectionPopup()
-                        vm.showAnnotationDialog(true)
-                    },
-                    onDictionary = vm::define,
-                    onShare = {
-                        val quote = state.selectionText
-                        if (quote.isNotBlank()) {
-                            val intent = Intent(Intent.ACTION_SEND).apply {
-                                type = "text/plain"
-                                putExtra(Intent.EXTRA_TEXT, "“$quote”\n- from $bookTitle")
-                            }
-                            context.startActivity(Intent.createChooser(intent, "Share quote"))
                         }
-                        vm.hideSelectionPopup()
-                        vm.clearSelection()
-                    },
-                    onSpeak = {
-                        vm.speakSelection(state.selectionText)
-                        vm.hideSelectionPopup()
-                        vm.clearSelection()
-                    },
-                    onListen = if (state.liveReadAlongAvailable && !state.readAlongSupported) {
-                        {
-                            vm.listenFromSelection()
-                            vm.hideSelectionPopup()
-                            vm.clearSelection()
-                        }
-                    } else null,
-                    modifier = state.selectionBounds?.let { Modifier.floatingNear(it) } ?: Modifier
-                        .align(Alignment.BottomCenter)
-                        .navigationBarsPadding()
-                        .padding(horizontal = Hearth.Spacing.L, vertical = Hearth.Spacing.L),
-                )
-            }
+                    }
 
-            val nextBook = state.nextInSeries
-            val atEnd = state.totalPages > 0 && state.currentPage >= state.totalPages ||
-                state.progressPct >= 98
-            var finishedDismissed by remember { mutableStateOf(false) }
-            if (atEnd && !finishedDismissed && !(readNextEnabled && nextBook != null) && !state.showChrome) {
-                FinishedBookCard(
-                    title = bookTitle,
-                    onMarkFinished = onMarkFinished,
-                    onDismiss = { finishedDismissed = true },
-                    onLeave = onBack,
-                    modifier = Modifier.align(Alignment.BottomCenter).navigationBarsPadding()
-                        .padding(bottom = Hearth.Spacing.XXL, start = Hearth.Spacing.XL, end = Hearth.Spacing.XL),
-                )
-            }
-            if (readNextEnabled && nextBook != null && atEnd) {
-                HearthReadNextButton(
-                    book = nextBook,
-                    onClick = { onReadNext(nextBook) },
-                    modifier = Modifier
-                        .align(
-                            if (readNextPosition == ReadNextPosition.TOP) {
-                                Alignment.TopCenter
-                            } else {
-                                Alignment.BottomCenter
-                            },
+                    if (state.showReadAloudLyrics) {
+                        HearthReadAloudLyrics(
+                            rows = state.readAlongChapterClips,
+                            activeIndex = state.readAlongClipIndex,
+                            onSelect = { vm.jumpToReadAlongClip(it) },
+                            onClose = { vm.showReadAloudLyrics(false) },
+                            onToggleControls = vm::toggleChrome,
+                            modifier = Modifier.matchParentSize(),
                         )
-                        .padding(
-                            top = if (readNextPosition == ReadNextPosition.TOP) 108.dp else 0.dp,
-                            bottom = if (readNextPosition == ReadNextPosition.BOTTOM) 108.dp else 0.dp,
-                            start = Hearth.Spacing.XL,
-                            end = Hearth.Spacing.XL,
-                        ),
-                )
-            }
+                    }
 
-            ReaderRestReminder(
-                spec = restReminder,
-                modifier = Modifier
-                    .align(Alignment.Center)
-                    .padding(horizontal = Hearth.Spacing.XL),
-            )
+                    if (state.showChrome && state.readAlongActive) {
+                        Box(Modifier.align(Alignment.BottomCenter).navigationBarsPadding().padding(bottom = Hearth.Spacing.M).fillMaxWidth()) {
+                            ReadAloudBar(
+                                playing = state.readAlongPlaying,
+                                preparing = state.readAlongPreparing,
+                                clip = state.readAlongClipIndex,
+                                clipCount = state.readAlongClipCount,
+                                onToggle = vm::toggleReadAlongPlayback,
+                                onBack = vm::skipReadAlongBackward,
+                                onForward = vm::skipReadAlongForward,
+                                onTune = { vm.showReadAloudSheet(true) },
+                                onLyrics = { vm.showReadAloudLyrics(!state.showReadAloudLyrics) },
+                                onClose = vm::toggleReadAlongMode,
+                            )
+                        }
+                    }
 
-            HearthReaderSheets(vm = vm, state = state)
-            if (state.showAnnotationsSheet) {
-                PerBookAnnotationsSheet(
-                    bookTitle = bookTitle,
-                    bookAuthor = bookAuthor.takeIf { it.isNotBlank() },
-                    annotations = state.annotations + state.bookmarks,
-                    onDismiss = { vm.showAnnotationsSheet(false) },
-                    onJumpTo = { ann ->
-                        vm.seekToAnnotation(ann)
-                        vm.showAnnotationsSheet(false)
-                    },
-                    onEdit = { ann ->
-                        vm.showDecorationPopover(ann.id)
-                        vm.showAnnotationsSheet(false)
-                    },
-                    onDelete = vm::deleteAnnotation,
-                )
-            }
-            state.activeDecorationAnnotation?.let { ann ->
-                val tags = remember(ann.id, ann.tagsJson) {
-                    runCatching {
-                        val arr = org.json.JSONArray(ann.tagsJson)
-                        buildList {
-                            for (i in 0 until arr.length()) {
-                                arr.optString(i).takeIf { it.isNotBlank() }?.let(::add)
+                    val bottomVeil: @Composable () -> Unit = {
+                        Column {
+                            if (state.liveReadAlongActive) {
+                                HearthLinkedReadAlongPanel(
+                                    status = state.liveReadAlongStatus,
+                                    playing = state.liveReadAlongPlaying,
+                                    following = state.liveReadAlongFollowing,
+                                    finding = state.liveReadAlongFinding,
+                                    retryable = state.liveReadAlongRetryable,
+                                    onTogglePlayback = vm::toggleReadAlongPlayback,
+                                    onFollow = vm::resumeLiveReadAlongFollowing,
+                                    onListenHere = { vm.listenFromHere() },
+                                    onRetry = vm::retryLiveReadAlong,
+                                    onClose = vm::toggleReadAlongMode,
+                                )
                             }
+                            BottomVeil(
+                                progress = state.progressPct / 100f,
+                                summary = pageSummary(
+                                    state.currentPage,
+                                    state.totalPages,
+                                    state.hasPageList,
+                                    state.currentPageLabel,
+                                    state.lastPageLabel,
+                                    state.progressPct,
+                                    state.currentSection,
+                                    state.minutesLeftInBook,
+                                ),
+                                readAlongSupported = state.readAlongSupported || state.liveReadAlongAvailable,
+                                onSeek = vm::seekToProgress,
+                                onContents = { vm.showToc(true) },
+                                onAppearance = { vm.showAppearance(true) },
+                                onSearch = { vm.showSearch(true) },
+                                chapterMarks = state.chapterMarks,
+                                pageMarks = state.pageMarks,
+                                totalPages = state.totalPages,
+                                currentPage = state.currentPage,
+                                onNarrate = vm::toggleReadAlongPlayback,
+                                onReadBack = vm::toggleTtsPlayback,
+                                ttsActive = state.ttsPlayback.active,
+                                ttsControls = {
+                                    ReaderSpeechTransport(
+                                        playing = state.ttsPlayback.playing,
+                                        preparing = state.ttsPlayback.preparing,
+                                        narrated = false,
+                                        onToggle = vm::toggleTtsPlayback,
+                                        onBack = vm::previousTtsParagraph,
+                                        onForward = vm::nextTtsParagraph,
+                                        onSettings = { vm.showTtsSheet(true) },
+                                        pack = state.ttsNarratorPack,
+                                    )
+                                },
+                            )
                         }
-                    }.getOrDefault(emptyList())
-                }
-                AnnotationEditSheet(
-                    annotation = ann,
-                    initialTags = tags,
-                    onDismiss = { vm.hideDecorationPopover() },
-                    onSave = { style, color, note, newTags ->
-                        vm.updateAnnotation(ann, style, color, note, newTags)
-                        vm.hideDecorationPopover()
-                    },
-                    onDelete = {
-                        vm.deleteAnnotation(ann)
-                        vm.hideDecorationPopover()
-                    },
-                    onJumpTo = {
-                        vm.seekToAnnotation(ann)
-                        vm.hideDecorationPopover()
-                    },
-                    knownTags = knownTags,
-                )
-            }
-            SnackbarHost(
-                hostState = snackbarHostState,
-                modifier = Modifier.align(Alignment.BottomCenter).padding(bottom = 104.dp),
-            ) { data ->
-                Snackbar(
-                    containerColor = palette.bgElevated,
-                    contentColor = palette.text,
-                    action = data.visuals.actionLabel?.let { label ->
-                        {
-                            TextButton(onClick = data::performAction) {
-                                Text(label, color = if (Hearth.eink.monochrome) palette.text else palette.ember)
-                            }
+                    }
+
+                    val live = state.liveReadAlongActive
+                    val narrated = state.readAlongActive || live
+                    AnimatedVisibility(
+                        visible = !state.showChrome && (narrated || (state.ttsPlayback.active && state.ttsControlsVisible)),
+                        enter = if (einkActive) EnterTransition.None else fadeIn() + slideInVertically { it / 2 },
+                        exit = if (einkActive) ExitTransition.None else fadeOut() + slideOutVertically { it / 2 },
+                        modifier = Modifier.align(Alignment.BottomCenter),
+                    ) {
+                        Box(Modifier.navigationBarsPadding().padding(Hearth.Spacing.M)) {
+                            ReaderSpeechTransport(
+                                playing = if (live) state.liveReadAlongPlaying else if (narrated) state.readAlongPlaying else state.ttsPlayback.playing,
+                                preparing = if (live) state.liveReadAlongPreparing else if (narrated) state.readAlongPreparing else state.ttsPlayback.preparing,
+                                narrated = narrated,
+                                onToggle = if (narrated) vm::toggleReadAlongPlayback else vm::toggleTtsPlayback,
+                                onBack = if (live) vm::skipLiveReadAlongBackward else if (narrated) vm::skipReadAlongBackward else vm::previousTtsParagraph,
+                                onForward = if (live) vm::skipLiveReadAlongForward else if (narrated) vm::skipReadAlongForward else vm::nextTtsParagraph,
+                                onSettings = { if (live) vm.toggleChrome() else if (narrated) vm.showReadAloudSheet(true) else vm.showTtsSheet(true) },
+                                onShowControls = { vm.toggleChrome() },
+                                pack = state.ttsNarratorPack.takeUnless { narrated },
+                            )
                         }
-                    },
-                ) {
-                    Text(data.visuals.message)
+                    }
+                    if (einkActive) {
+                        if (state.showChrome && !state.readAlongActive) {
+                            Box(Modifier.align(Alignment.BottomCenter)) { bottomVeil() }
+                        }
+                    } else {
+                        AnimatedVisibility(
+                            visible = state.showChrome && !state.readAlongActive,
+                            enter = fadeIn(tween(CHROME_FADE_MS)) + slideInVertically(tween(CHROME_FADE_MS)) { it / 6 },
+                            exit = fadeOut(tween(CHROME_FADE_MS)) + slideOutVertically(tween(CHROME_FADE_MS)) { it / 6 },
+                            modifier = Modifier.align(Alignment.BottomCenter),
+                        ) {
+                            bottomVeil()
+                        }
+                    }
+
+                    if (state.showSelectionPopup && state.pendingSelection != null) {
+                        val translation = ReaderLookup.translationText(state.selectionText)
+                        val wikipediaQuery = ReaderLookup.wikipediaQuery(state.selectionText)
+                        SelectionPalette(
+                            ink = vm.lastHighlightInk,
+                            onInkChange = { vm.lastHighlightInk = it },
+                            onApply = { style, hex ->
+                                vm.addAnnotation(state.pendingSelection!!, style, hex, "", state.selectionText)
+                                vm.hideSelectionPopup()
+                            },
+                            onCopy = {
+                                copySelection(context, state.selectionText)
+                                vm.hideSelectionPopup()
+                                vm.clearSelection()
+                            },
+                            onNote = {
+                                vm.hideSelectionPopup()
+                                vm.showAnnotationDialog(true)
+                            },
+                            onDictionary = vm::define,
+                            onShare = {
+                                val quote = state.selectionText
+                                if (quote.isNotBlank()) {
+                                    val intent = Intent(Intent.ACTION_SEND).apply {
+                                        type = "text/plain"
+                                        putExtra(Intent.EXTRA_TEXT, "“$quote”\n- from $bookTitle")
+                                    }
+                                    context.startActivity(Intent.createChooser(intent, "Share quote"))
+                                }
+                                vm.hideSelectionPopup()
+                                vm.clearSelection()
+                            },
+                            onSpeak = {
+                                vm.speakSelection(state.selectionText)
+                                vm.hideSelectionPopup()
+                                vm.clearSelection()
+                            },
+                            onListen = if (state.liveReadAlongAvailable && !state.readAlongSupported) {
+                                {
+                                    vm.listenFromSelection()
+                                    vm.hideSelectionPopup()
+                                    vm.clearSelection()
+                                }
+                            } else null,
+                            onTranslate = translation?.let { text ->
+                                {
+                                    vm.hideSelectionPopup()
+                                    vm.clearSelection()
+                                    if (!ReaderLookup.openSystemTranslator(context, text)) webTranslation = text
+                                }
+                            },
+                            onWikipedia = wikipediaQuery?.let { query ->
+                                {
+                                    vm.hideSelectionPopup()
+                                    vm.clearSelection()
+                                    val url = ReaderLookup.wikipediaUrl(query, configuration.locales[0])
+                                    if (!ReaderLookup.openInBrowser(context, url)) {
+                                        vm.postTransientMessage("No browser is available to open Wikipedia.")
+                                    }
+                                }
+                            },
+                            modifier = state.selectionBounds?.let { Modifier.floatingNear(it) } ?: Modifier
+                                .align(Alignment.BottomCenter)
+                                .navigationBarsPadding()
+                                .padding(horizontal = Hearth.Spacing.L, vertical = Hearth.Spacing.L),
+                        )
+                    }
+                    webTranslation?.let { text ->
+                        WebTranslationDialog(
+                            onConfirm = {
+                                webTranslation = null
+                                val url = ReaderLookup.webTranslationUrl(text, configuration.locales[0])
+                                if (!ReaderLookup.openInBrowser(context, url)) {
+                                    vm.postTransientMessage("No browser is available to translate.")
+                                }
+                            },
+                            onDismiss = { webTranslation = null },
+                        )
+                    }
+
+                    val nextBook = state.nextInSeries
+                    val atEnd = state.totalPages > 0 && state.currentPage >= state.totalPages ||
+                        state.progressPct >= 98
+                    var finishedDismissed by remember { mutableStateOf(false) }
+                    if (atEnd && !finishedDismissed && !(readNextEnabled && nextBook != null) && !state.showChrome) {
+                        FinishedBookCard(
+                            title = bookTitle,
+                            onMarkFinished = onMarkFinished,
+                            onDismiss = { finishedDismissed = true },
+                            onLeave = onBack,
+                            modifier = Modifier.align(Alignment.BottomCenter).navigationBarsPadding()
+                                .padding(bottom = Hearth.Spacing.XXL, start = Hearth.Spacing.XL, end = Hearth.Spacing.XL),
+                        )
+                    }
+                    if (readNextEnabled && nextBook != null && atEnd) {
+                        HearthReadNextButton(
+                            book = nextBook,
+                            onClick = { onReadNext(nextBook) },
+                            modifier = Modifier
+                                .align(
+                                    if (readNextPosition == ReadNextPosition.TOP) {
+                                        Alignment.TopCenter
+                                    } else {
+                                        Alignment.BottomCenter
+                                    },
+                                )
+                                .padding(
+                                    top = if (readNextPosition == ReadNextPosition.TOP) 108.dp else 0.dp,
+                                    bottom = if (readNextPosition == ReadNextPosition.BOTTOM) 108.dp else 0.dp,
+                                    start = Hearth.Spacing.XL,
+                                    end = Hearth.Spacing.XL,
+                                ),
+                        )
+                    }
+
+                    ReaderRestReminder(
+                        spec = restReminder,
+                        modifier = Modifier
+                            .align(Alignment.Center)
+                            .padding(horizontal = Hearth.Spacing.XL),
+                    )
+
+                    HearthReaderSheets(
+                        vm = vm,
+                        state = state,
+                        pageTurnStyle = pageTurnStyle,
+                        onPageTurnStyleChange = onPageTurnStyleChange,
+                    )
+                    if (state.showAnnotationsSheet) {
+                        PerBookAnnotationsSheet(
+                            bookTitle = bookTitle,
+                            bookAuthor = bookAuthor.takeIf { it.isNotBlank() },
+                            annotations = state.annotations + state.bookmarks,
+                            onDismiss = { vm.showAnnotationsSheet(false) },
+                            onJumpTo = { ann ->
+                                vm.seekToAnnotation(ann)
+                                vm.showAnnotationsSheet(false)
+                            },
+                            onEdit = { ann ->
+                                vm.showDecorationPopover(ann.id)
+                                vm.showAnnotationsSheet(false)
+                            },
+                            onDelete = vm::deleteAnnotation,
+                        )
+                    }
+                    state.activeDecorationAnnotation?.let { ann ->
+                        val tags = remember(ann.id, ann.tagsJson) {
+                            runCatching {
+                                val arr = org.json.JSONArray(ann.tagsJson)
+                                buildList {
+                                    for (i in 0 until arr.length()) {
+                                        arr.optString(i).takeIf { it.isNotBlank() }?.let(::add)
+                                    }
+                                }
+                            }.getOrDefault(emptyList())
+                        }
+                        AnnotationEditSheet(
+                            annotation = ann,
+                            initialTags = tags,
+                            onDismiss = { vm.hideDecorationPopover() },
+                            onSave = { style, color, note, newTags ->
+                                vm.updateAnnotation(ann, style, color, note, newTags)
+                                vm.hideDecorationPopover()
+                            },
+                            onDelete = {
+                                vm.deleteAnnotation(ann)
+                                vm.hideDecorationPopover()
+                            },
+                            onJumpTo = {
+                                vm.seekToAnnotation(ann)
+                                vm.hideDecorationPopover()
+                            },
+                            knownTags = knownTags,
+                        )
+                    }
+                    SnackbarHost(
+                        hostState = snackbarHostState,
+                        modifier = Modifier.align(Alignment.BottomCenter).padding(bottom = 104.dp),
+                    ) { data ->
+                        Snackbar(
+                            containerColor = palette.bgElevated,
+                            contentColor = palette.text,
+                            action = data.visuals.actionLabel?.let { label ->
+                                {
+                                    TextButton(onClick = data::performAction) {
+                                        Text(label, color = if (Hearth.eink.monochrome) palette.text else palette.ember)
+                                    }
+                                }
+                            },
+                        ) {
+                            Text(data.visuals.message)
+                        }
+                    }
                 }
             }
         }
@@ -879,6 +931,8 @@ private fun SelectionPalette(
     onShare: () -> Unit,
     onSpeak: () -> Unit,
     onListen: (() -> Unit)?,
+    onTranslate: (() -> Unit)?,
+    onWikipedia: (() -> Unit)?,
     modifier: Modifier,
 ) {
     val palette = Hearth.palette
@@ -927,12 +981,42 @@ private fun SelectionPalette(
                 item("Underline", Icons.Outlined.FormatUnderlined) { haptics.confirm(); onApply(AnnotationStyle.UNDERLINE, ink) }
                 item("Strikethrough", Icons.Outlined.FormatStrikethrough) { haptics.confirm(); onApply(AnnotationStyle.STRIKETHROUGH, ink) }
                 item("Squiggle", Icons.Outlined.Gesture) { haptics.confirm(); onApply(AnnotationStyle.SQUIGGLY, ink) }
+                onTranslate?.let { item("Translate", Icons.Outlined.Translate, it) }
+                onWikipedia?.let { item("Look up on Wikipedia", Icons.Outlined.Public, it) }
                 item("Share", Icons.Outlined.Share, onShare)
                 item("Speak", Icons.Outlined.RecordVoiceOver, onSpeak)
                 onListen?.let { item("Listen from here", Icons.Outlined.Headphones, it) }
             }
         }
     }
+}
+
+@Composable
+private fun WebTranslationDialog(onConfirm: () -> Unit, onDismiss: () -> Unit) {
+    val palette = Hearth.palette
+    val eink = Hearth.eink
+    AlertDialog(
+        onDismissRequest = onDismiss,
+        shape = RoundedCornerShape(if (eink.sharpCorners) 0.dp else Hearth.Radius.Card),
+        containerColor = palette.bgElevated,
+        titleContentColor = palette.text,
+        textContentColor = palette.textSecondary,
+        title = { Text("Translate in your browser?", style = HearthText.Label) },
+        text = {
+            Text(
+                "No translation app is installed. Continuing sends the selected text to Google Translate.",
+                style = HearthText.Body,
+            )
+        },
+        confirmButton = {
+            TextButton(onClick = onConfirm) {
+                Text("Open browser", color = if (eink.monochrome) palette.text else palette.ember)
+            }
+        },
+        dismissButton = {
+            TextButton(onClick = onDismiss) { Text("Cancel", color = palette.textSecondary) }
+        },
+    )
 }
 
 private val SELECTION_INKS = listOf("#FFF59D", "#A5D6A7", "#90CAF9", "#F8BBD0")

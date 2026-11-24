@@ -83,8 +83,8 @@ enum class NarratorPack(
         assets = NarratorAssets(
             archive = NarratorArchive(
                 url = "$SHERPA_MODELS/sherpa-onnx-pocket-tts-int8-2026-01-26.tar.bz2",
-                bytes = 98_336_520,
-                sha256 = "2f3b88823cbbb9bf0b2477ec8ae7b3fec417b3a87b6bb5f256dba66f2ad967cb",
+                bytes = 98_337_865,
+                sha256 = "f4da7c7bd465f7b91e89191487fe90504396a51d6f0bcf94d0787633e2657293",
                 root = "sherpa-onnx-pocket-tts-int8-2026-01-26",
             ),
             files = listOf(

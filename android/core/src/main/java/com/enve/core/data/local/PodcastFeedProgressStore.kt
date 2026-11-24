@@ -36,6 +36,24 @@ class PodcastFeedProgressStore(private val dataStore: DataStore<Preferences>) {
 
     suspend fun all(): Map<String, PodcastFeedProgress> = decode(dataStore.data.first()[PROGRESS])
 
+    suspend fun saveImported(
+        expected: Map<String, PodcastFeedProgress>,
+        updates: Map<String, PodcastFeedProgress>,
+    ): Int {
+        var applied = 0
+        dataStore.edit { preferences ->
+            val current = decode(preferences[PROGRESS]).toMutableMap()
+            for ((key, progress) in updates) {
+                if (current[key] == expected[key]) {
+                    current[key] = progress
+                    applied++
+                }
+            }
+            if (applied > 0) preferences[PROGRESS] = json.encodeToString(current)
+        }
+        return applied
+    }
+
     private fun decode(raw: String?): Map<String, PodcastFeedProgress> =
         raw?.let { json.decodeFromString<Map<String, PodcastFeedProgress>>(it) }.orEmpty()
 

@@ -123,7 +123,8 @@ public class AppState {
             .store(in: &cancellables)
 
         providerConnections.configurationDidChange = { [weak self] in
-            self?.recovery.pruneDisconnectedProviderData()
+            guard let self, self.providerConnections.isConfigurationAuthoritative else { return }
+            self.recovery.pruneDisconnectedProviderData()
         }
 
         retainOperation { [self] in
@@ -170,7 +171,9 @@ public class AppState {
             await Task.yield()
 
             libraryCache.suppressNotifications = true
-            self.recovery.pruneStaleBooksCacheEarly()
+            if self.providerConnections.isConfigurationAuthoritative {
+                self.recovery.pruneStaleBooksCacheEarly()
+            }
             await Task.yield()
 
             let hasCache = await catalog.loadCachedMetadata()
@@ -248,7 +251,9 @@ public class AppState {
                 self.allBooksChanged.send(())
             }
 
-            self.recovery.pruneDisconnectedProviderData()
+            if self.providerConnections.isConfigurationAuthoritative {
+                self.recovery.pruneDisconnectedProviderData()
+            }
 
             self.bootstrapComplete = true
 
@@ -287,19 +292,23 @@ public class AppState {
 
             self.recovery.flushPendingBookStoreDeletions(delaySeconds: 25)
 
-            let validProviderIds: Set<String> = Set(
-                self.providerConnections.connections
-                    .filter { !$0.isArchived }
-                    .map { $0.id.uuidString }
-            )
-            #if DEBUG && os(iOS)
-                .union(SyntheticLibrarySeeder.providerIds.map(\.uuidString))
-            #endif
-            retainOperation(priority: .background) {
-                let removed = await store.deleteBooksFromUnknownProviders(validProviderIds: validProviderIds)
-                if removed > 0 {
-                    AppLogger.general.info("[BookStore] Purged \(removed) orphan books from disconnected providers")
+            if self.providerConnections.isConfigurationAuthoritative {
+                let validProviderIds: Set<String> = Set(
+                    self.providerConnections.connections
+                        .filter { !$0.isArchived }
+                        .map { $0.id.uuidString }
+                )
+                #if DEBUG && os(iOS)
+                    .union(SyntheticLibrarySeeder.providerIds.map(\.uuidString))
+                #endif
+                retainOperation(priority: .background) {
+                    let removed = await store.deleteBooksFromUnknownProviders(validProviderIds: validProviderIds)
+                    if removed > 0 {
+                        AppLogger.general.info("[BookStore] Purged \(removed) orphan books from disconnected providers")
+                    }
                 }
+            } else {
+                AppLogger.general.warning("[BookStore] Skipped orphan purge; saved connections are unreadable")
             }
 
             self.startMemoryDiagnostics()

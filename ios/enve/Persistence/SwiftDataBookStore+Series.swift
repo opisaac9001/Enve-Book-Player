@@ -22,22 +22,14 @@ extension SwiftDataBookStore {
     }
 
     func seriesBooksPage(for aggregate: BrowseSeriesAggregate, mediaScope: [String], offset: Int, limit: Int, slice: ComicSeriesSlice) async -> [Book] {
-        let worker = makeWorker()
-        do {
-            return try await worker.fetchSeriesBooksPage(for: aggregate, mediaScope: mediaScope, offset: offset, limit: limit, slice: slice)
-        } catch {
-            AppLogger.general.error("BookStore.seriesBooksPage(slice) failed: \(error)")
-            return []
+        await read("seriesBooksPage(slice)", fallback: []) {
+            try await $0.fetchSeriesBooksPage(for: aggregate, mediaScope: mediaScope, offset: offset, limit: limit, slice: slice)
         }
     }
 
     func seriesBooksPage(for aggregate: BrowseSeriesAggregate, mediaScope: [String], offset: Int, limit: Int) async -> [Book] {
-        let worker = makeWorker()
-        do {
-            return try await worker.fetchSeriesBooksPage(for: aggregate, mediaScope: mediaScope, offset: offset, limit: limit)
-        } catch {
-            AppLogger.general.error("BookStore.seriesBooksPage failed: \(error)")
-            return []
+        await read("seriesBooksPage", fallback: []) {
+            try await $0.fetchSeriesBooksPage(for: aggregate, mediaScope: mediaScope, offset: offset, limit: limit)
         }
     }
 

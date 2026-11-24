@@ -47,32 +47,36 @@ struct GrimmoryResponseFixtureTests {
         #expect(BookloreBookMapper.fraction(fromPercent: nil) == nil)
     }
 
-    @Test func catalogSummariesMapProgressAndAudiobookCover() throws {
+    @Test func catalogBooksMapProgressAndAudiobookCover() throws {
         let context = BookloreCatalogMapper.Context(
             providerId: UUID(),
             libraryId: "3",
             source: .booklore,
             serverURL: "http://books.example:6060/"
         )
-        let ebook = try JSONDecoder().decode(BookloreBookSummary.self, from: Data(
+        let ebook = try JSONDecoder().decode(BookloreLegacyBook.self, from: Data(
             #"""
-            {"id":30280,"title":"Enve Synthetic EPUB","authors":["Enve Test Lab"],"thumbnailUrl":"/api/books/30280/cover",
-             "readStatus":"READING","libraryId":3,"addedOn":"2026-09-19T21:46:41Z","lastReadTime":"2026-09-20T01:21:15Z",
-             "readProgress":0.683333,"primaryFileId":30283,"primaryFileType":"EPUB","primaryFileName":"Enve Dual Ebook Primary.epub",
-             "isPhysical":false,"categories":[],"tags":[],"moods":[],"language":"en"}
+            {"id":30280,"libraryId":3,"libraryName":"Lab","addedOn":"2026-09-19T21:46:41Z","lastReadTime":"2026-09-20T01:21:15Z",
+             "readStatus":"READING","isPhysical":false,
+             "metadata":{"bookId":30280,"title":"Enve Synthetic EPUB","authors":["Enve Test Lab"],"language":"en"},
+             "primaryFile":{"id":30283,"bookId":30280,"fileName":"Enve Dual Ebook Primary.epub","book":true,"folderBased":false,
+              "bookType":"EPUB","extension":"epub"},
+             "alternativeFormats":[],"epubProgress":{"cfi":"epubcfi(/6/4!/4/2:0)","percentage":68.3}}
             """#.utf8))
-        let audiobook = try JSONDecoder().decode(BookloreBookSummary.self, from: Data(
+        let audiobook = try JSONDecoder().decode(BookloreLegacyBook.self, from: Data(
             #"""
-            {"id":13,"title":"Alice in Wonderland (Drama)","authors":["Alice Gerstenberg"],"thumbnailUrl":"/api/books/13/cover",
-             "readStatus":"READING","libraryId":3,"addedOn":"2026-08-12T04:13:35Z","lastReadTime":"2026-09-14T16:14:24Z",
-             "readProgress":0.0,"primaryFileId":13,"primaryFileType":"AUDIOBOOK","primaryFileName":"Alice in Wonderland (LibriVox Drama)",
-             "audiobookCoverUpdatedOn":"2026-08-12T04:13:35Z","isPhysical":false,"categories":["BLOB"],"tags":[],"moods":[],"language":"en"}
+            {"id":13,"libraryId":3,"addedOn":"2026-08-12T04:13:35Z","lastReadTime":"2026-09-14T16:14:24Z","readStatus":"READING",
+             "metadata":{"bookId":13,"title":"Alice in Wonderland (Drama)","authors":["Alice Gerstenberg"],
+              "audiobookCoverUpdatedOn":"2026-08-12T04:13:35Z","categories":["BLOB"],"language":"en"},
+             "primaryFile":{"id":13,"bookId":13,"fileName":"Alice in Wonderland (LibriVox Drama)","book":true,"folderBased":true,
+              "bookType":"AUDIOBOOK","extension":"mp3"},
+             "audiobookProgress":{"positionMs":1000,"trackIndex":0,"percentage":0.0}}
             """#.utf8))
 
         let mappedEbook = BookloreCatalogMapper.book(from: ebook, context: context)
         let mappedAudiobook = BookloreCatalogMapper.book(from: audiobook, context: context)
 
-        #expect(mappedEbook.ebookProgress == 0.683333)
+        #expect(abs((mappedEbook.ebookProgress ?? 0) - 0.683) < 0.000_000_1)
         #expect(mappedEbook.coverURL?.path == "/api/v1/media/book/30280/cover")
         #expect(mappedAudiobook.mediaType == .audiobook)
         #expect(mappedAudiobook.coverURL?.path == "/api/v1/media/book/13/audiobook-thumbnail")

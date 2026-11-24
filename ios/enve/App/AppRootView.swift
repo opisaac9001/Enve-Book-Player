@@ -1,11 +1,9 @@
 import Combine
+import CoreSpotlight
 import Foundation
 import Logging
 import SwiftUI
-
-#if targetEnvironment(macCatalyst)
 import UIKit
-#endif
 
 extension Notification.Name {
     static let enveCatalystSelectTab = Notification.Name("enve.catalyst.selectTab")
@@ -54,6 +52,10 @@ struct AppRootView: View {
         let message: String
     }
     @State private var sharedPositionLink: SharedPositionLink?
+    @State private var incomingBook: IncomingBookImportRequest?
+    @State private var queuedIncomingBooks: [IncomingBookImportRequest] = []
+    @State private var importedBookToOpen: Book?
+    @State private var incomingPresentationTask: Task<Void, Never>?
 
     init(profileSession: ProfileSession = .owner) {
         self.profileSession = profileSession
@@ -168,7 +170,8 @@ struct AppRootView: View {
             )
         }
         .onChange(of: appState.isBootstrapComplete) { _, complete in
-            if complete, !UserDefaults.standard.bool(forKey: "imagine.hasSeenTour"), !Self.isDebugRouteLaunch {
+            if complete, incomingBook == nil, queuedIncomingBooks.isEmpty,
+                !UserDefaults.standard.bool(forKey: "imagine.hasSeenTour"), !Self.isDebugRouteLaunch {
                 tourPresented = true
             }
         }
@@ -189,12 +192,31 @@ struct AppRootView: View {
         .task { await restoreLastPlayedIntoMantel() }
         .task { await handleDebugRoute() }
         .task { await observePreferenceChanges() }
+        .task(id: appState.isBootstrapComplete && incomingBook == nil && queuedIncomingBooks.isEmpty ? profileSession.ebookSystem.pendingRequest?.id : nil) {
+            await openSystemEbook()
+        }
         .onChange(of: appState.currentBook?.stableId) { _, newId in
             if let newId {
                 profileSession.playerState.saveLastPlayedBookId(newId)
             }
         }
+        .onChange(of: profileSession.lastOpened.stableId) { _, _ in EbookSpotlightIndex.shared.refresh() }
+        .sheet(item: $incomingBook, onDismiss: finishIncomingBookImport) { request in
+            IncomingBookImportScreen(request: request, profileSession: profileSession, isReady: appState.isBootstrapComplete) { book in
+                importedBookToOpen = book
+                incomingBook = nil
+            }
+            .enveEnvironment(session: profileSession)
+        }
         .onOpenURL { openEnveBookLink($0) }
+        .onContinueUserActivity(CSSearchableItemActionType) { activity in
+            guard let identifier = activity.userInfo?[CSSearchableItemActivityIdentifier] as? String,
+                let bookID = EbookSpotlightIndex.bookID(from: identifier) else { return }
+            Task {
+                do { try await profileSession.ebookSystem.requestOpen(bookID) }
+                catch { appState.presentation.userFacingError = UserFacingError(title: "Can't open ebook", message: error.localizedDescription) }
+            }
+        }
         .onReceive(NotificationCenter.default.publisher(for: .enveCatalystSelectTab)) { notification in
             guard let rawValue = notification.object as? String,
                 let destination = HearthTab(rawValue: rawValue)
@@ -218,6 +240,11 @@ struct AppRootView: View {
 
     private func openEnveBookLink(_ url: URL) {
         guard !profileSession.isRetired else { return }
+        if url.isFileURL {
+            queuedIncomingBooks.append(IncomingBookImportRequest(url: url))
+            presentNextIncomingBook()
+            return
+        }
         // OPDS sign-in can return through an app relaunch; let the pending flow handle it first.
         if OPDSAuthenticationService.isCallback(url) {
             profileSession.opdsLogin.handleCallback(url)
@@ -249,6 +276,80 @@ struct AppRootView: View {
                     }
                 }
             }
+        }
+    }
+
+    private func presentNextIncomingBook() {
+        guard incomingBook == nil, incomingPresentationTask == nil, !queuedIncomingBooks.isEmpty else { return }
+        resetForExternalBook()
+        incomingPresentationTask = Task { @MainActor in
+            defer { incomingPresentationTask = nil }
+            await dismissPresentedControllers()
+            guard !Task.isCancelled, !profileSession.isRetired, !queuedIncomingBooks.isEmpty else { return }
+            incomingBook = queuedIncomingBooks.removeFirst()
+        }
+    }
+
+    private func openSystemEbook() async {
+        guard appState.isBootstrapComplete, incomingBook == nil, queuedIncomingBooks.isEmpty,
+            let request = profileSession.ebookSystem.pendingRequest else { return }
+        resetForExternalBook()
+        await dismissPresentedControllers()
+        guard !Task.isCancelled else { return }
+        guard let book = await profileSession.ebookSystem.resolve(request) else {
+            profileSession.ebookSystem.finish(request)
+            return
+        }
+        guard !Task.isCancelled else { return }
+        engine.playback.openEbook(book)
+        profileSession.ebookSystem.finish(request)
+    }
+
+    private func resetForExternalBook() {
+        tourPresented = false
+        downloadsPresented = false
+        reauthConnection = nil
+        showOrphanedMatcher = false
+        sharedPositionLink = nil
+        debugSettingsPresented = false
+        debugAddSourcePresented = false
+        debugDetailBook = nil
+        debugComicSeries = nil
+        debugPodcastShow = nil
+        debugScreenRoute = nil
+        debugWorkHubKey = nil
+        debugLibrarianBook = nil
+        debugCardRequest = nil
+        appState.presentation.selectedEbookForDetail = nil
+        appState.presentation.isPlayerPresented = false
+        appState.presentation.userFacingError = nil
+        appState.presentation.zipFileAlertBook = nil
+        tabResetTokens = Dictionary(uniqueKeysWithValues: HearthTab.allCases.map { ($0, UUID()) })
+        tab = .library
+    }
+
+    private func dismissPresentedControllers() async {
+        let root = UIApplication.shared.connectedScenes.compactMap { $0 as? UIWindowScene }
+            .filter { $0.activationState == .foregroundActive }
+            .flatMap(\.windows).first(where: \.isKeyWindow)?.rootViewController
+        if let root, root.presentedViewController != nil {
+            await withCheckedContinuation { continuation in
+                root.dismiss(animated: false) { continuation.resume() }
+            }
+        }
+        await Task.yield()
+    }
+
+    private func finishIncomingBookImport() {
+        guard !profileSession.isRetired else { return }
+        if !queuedIncomingBooks.isEmpty {
+            presentNextIncomingBook()
+        } else if let book = importedBookToOpen {
+            importedBookToOpen = nil
+            selectTab(.library)
+            engine.playback.play(book)
+        } else {
+            selectTab(.library)
         }
     }
 
@@ -615,7 +716,7 @@ struct AppRootView: View {
         case "suggestions":
             debugWorkHubKey = nil
             debugScreenRoute = DebugRoute(id: "suggestions")
-        case "podcasts", "discover", "collections", "hardcover", "vocabulary", "insights", "completion", "storage", "storyalign", "libraryhealth", "metadatabatch", "tour":
+        case "podcasts", "discover", "collections", "hardcover", "vocabulary", "insights", "recaps", "completion", "storage", "storyalign", "libraryhealth", "metadatabatch", "tour":
             if let route { debugScreenRoute = DebugRoute(id: route) }
         default:
             break
@@ -1352,7 +1453,7 @@ struct AppRootView: View {
 
         try? await Task.sleep(for: .seconds(2))
         let original: (progress: Double, locator: String?)?
-        if let authoritative = await StorytellerPositionSyncService.shared.authoritativePosition(
+        if let authoritative = await profileSession.playback.storytellerPositions.authoritativePosition(
             for: detailedBook,
             through: provider
         ) {
@@ -1373,7 +1474,7 @@ struct AppRootView: View {
                 return
             }
             do {
-                try await StorytellerPositionSyncService.shared.submitAudioPosition(
+                try await profileSession.playback.storytellerPositions.submitAudioPosition(
                     book: detailedBook,
                     currentTime: expectedGlobalTime,
                     observedAt: Date(),
@@ -1403,14 +1504,14 @@ struct AppRootView: View {
                 bad("Canonical audio locator: \(error.localizedDescription)")
             }
             if let locator = original.locator {
-                _ = try? await StorytellerPositionSyncService.shared.submit(
+                _ = try? await profileSession.playback.storytellerPositions.submit(
                     book: detailedBook,
                     locatorJSON: locator,
                     observedAt: Date(),
                     through: provider
                 )
                 try? await Task.sleep(for: .milliseconds(600))
-                if let restored = await StorytellerPositionSyncService.shared.authoritativePosition(
+                if let restored = await profileSession.playback.storytellerPositions.authoritativePosition(
                     for: detailedBook,
                     through: provider
                 ), abs(restored.position.progression - original.progress) < 0.0001 {
@@ -1701,6 +1802,7 @@ struct AppRootView: View {
         case "hardcover": HardcoverHubScreen()
         case "vocabulary": VocabularyHubScreen()
         case "insights": JournalInsightsScreen()
+        case "recaps": JournalRecapScreen(profileSession: profileSession)
         case "completion": CompletionCenterScreen()
         case "storage": StorageScreen(profileSession: profileSession)
         case "storyalign": StoryAlignScreen()

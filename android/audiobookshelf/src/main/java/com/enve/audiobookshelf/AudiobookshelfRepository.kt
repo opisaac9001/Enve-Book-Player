@@ -952,6 +952,7 @@ class AudiobookshelfRepository @Inject constructor(
             percentage = pct,
             positionMs = progress.currentTime?.let { (it * 1000).toLong() },
             source = "Audiobookshelf",
+            updatedAt = progress.lastUpdate,
         )
     }
 
@@ -979,15 +980,15 @@ class AudiobookshelfRepository @Inject constructor(
         resp.body() ?: com.enve.audiobookshelf.dto.AbsMeResponse()
     }
 
-    suspend fun getProgressForBooks(books: List<Book>): List<Book> {
-        if (!serverSync.isEnabled) return books
+    suspend fun getProgressForBooks(cachedBooks: suspend (itemIds: Set<String>) -> List<Book>): List<Book> {
+        if (!serverSync.isEnabled) return emptyList()
         val response = api.getMe()
         check(response.isSuccessful) { "ABS user progress failed: HTTP ${response.code()}" }
         val progress = checkNotNull(response.body()) { "ABS user progress returned an empty body" }
             .mediaProgress.filter { it.episodeId == null }
             .groupBy { it.libraryItemId }
             .mapValues { (_, entries) -> entries.maxBy { it.lastUpdate ?: 0L } }
-        return books.mapNotNull { book -> progress[book.id]?.let { applyAbsMediaProgress(book, it) } }
+        return cachedBooks(progress.keys.filterNotNullTo(mutableSetOf())).mapNotNull { book -> progress[book.id]?.let { applyAbsMediaProgress(book, it) } }
     }
 
     suspend fun createBookmark(

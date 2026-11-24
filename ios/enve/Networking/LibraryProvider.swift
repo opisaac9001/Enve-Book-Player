@@ -96,6 +96,7 @@ protocol PlaybackSessionProvider: ProviderConnectionHandling {
     func chapterExtractionURL(for book: Book) -> URL?
     func getStreamingHeaders() -> [String: String]
     func startPlaybackSession(for book: Book) async throws -> PlaybackSessionInfo
+    func receiverPlaybackSession(for book: Book) async throws -> PlaybackSessionInfo
     func reportPlayback(_ event: ServerPlaybackEvent, book: Book, sessionId: String, position: TimeInterval) async
 }
 
@@ -154,6 +155,11 @@ protocol ComicReadingDirectionProvider: ProviderConnectionHandling {
 protocol PersonalRatingProvider: ProviderConnectionHandling {
     var supportsPersonalRating: Bool { get }
     func updatePersonalRating(for book: Book, rating: Int) async throws
+}
+
+protocol ReadStatusEditingProvider: ProviderConnectionHandling {
+    /// `rawStatus` is the provider's own status value, as queued by the edit that produced it.
+    func updateReadStatus(for book: Book, rawStatus: String) async throws
 }
 
 protocol SavedBooksProvider: ProviderConnectionHandling {
@@ -474,6 +480,9 @@ extension ProviderConnectionHandling {
 }
 
 extension PlaybackSessionProvider {
+    func receiverPlaybackSession(for book: Book) async throws -> PlaybackSessionInfo {
+        try await startPlaybackSession(for: book)
+    }
     func chapterExtractionURL(for book: Book) -> URL? { getAudioURL(for: book) }
     func reportPlayback(_ event: ServerPlaybackEvent, book: Book, sessionId: String, position: TimeInterval) async {}
 }

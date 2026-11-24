@@ -6,7 +6,7 @@ This guide details the endpoints required for server administration, user manage
 
 --- 
 
-## 🛠️ 1. Initial Setup
+## 1. Initial Setup
 Used during the very first run of the server to provision the admin account.
 * **Get Setup Status**: `GET /api/v1/setup/status`
   * Returns whether the server has already been set up.
@@ -15,7 +15,7 @@ Used during the very first run of the server to provision the admin account.
 
 ---
 
-## 👥 2. User Management
+## 2. User Management
 Endpoints under `/api/v1/users` and `/api/v1/auth`.
 
 * **Create / Register User**: `POST /api/v1/auth/register`
@@ -35,7 +35,7 @@ Endpoints under `/api/v1/users` and `/api/v1/auth`.
 
 ---
 
-## 📚 3. Library Configuration
+## 3. Library Configuration
 Endpoints for managing media directories under `/api/v1/libraries`.
 
 * **Create Library**: `POST /api/v1/libraries`
@@ -52,7 +52,7 @@ Endpoints for managing media directories under `/api/v1/libraries`.
 
 ---
 
-## ⚙️ 4. Server Tasks & Background Jobs
+## 4. Server Tasks & Background Jobs
 Endpoints for viewing and triggering background jobs (like Metadata Syncing). `/api/v1/tasks`
 
 * **List Available Tasks**: `GET /api/v1/tasks`
@@ -65,7 +65,7 @@ Endpoints for viewing and triggering background jobs (like Metadata Syncing). `/
 
 ---
 
-## 🎛️ 5. Global App Settings
+## 5. Global App Settings
 * **Get Settings**: `GET /api/v1/settings`
   * Returns an AppSettings object containing global preferences (OIDC, Remote Auth, Mail settings).
 * **Update Settings**: `PUT /api/v1/settings`

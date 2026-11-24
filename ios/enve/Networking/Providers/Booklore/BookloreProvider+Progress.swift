@@ -107,11 +107,15 @@ extension BookloreProvider {
         }
 
         struct StatusRequest: Encodable {
+            let bookIds: [Int]
             let status: String
         }
 
-        var request = try makeRequest(path: "/api/v1/app/books/\(grimmoryNumericId(book))/status", method: "PUT")
-        request.httpBody = try JSONEncoder().encode(StatusRequest(status: status.rawValue))
+        guard let bookId = Int(grimmoryNumericId(book)) else {
+            throw ProviderError.invalidResponse
+        }
+        var request = try makeRequest(path: "/api/v1/books/status", method: "POST")
+        request.httpBody = try JSONEncoder().encode(StatusRequest(bookIds: [bookId], status: status.rawValue))
         request.setValue("application/json", forHTTPHeaderField: "Content-Type")
 
         let (_, response) = try await performAuthorizedRequest(request)
@@ -126,7 +130,7 @@ extension BookloreProvider {
         guard !useLegacyRestAPI, !useKomgaFallback else { return nil }
 
         guard let bookId = resolveGrimmoryBookId(for: book) else { return nil }
-        let detail = try await fetchGrimmorySyncDetail(bookId: bookId)
+        let detail = try await fetchGrimmoryBook(bookId: String(bookId))
         let resource = try selectedGrimmoryEbookResource(
             for: book,
             bookId: bookId,
@@ -135,32 +139,13 @@ extension BookloreProvider {
         if let resource {
             cacheGrimmoryResource(resource, for: book)
         }
-        return try await progressClient.fetchEbookProgress(
+        return BookloreProgressClient.ebookProgress(
             for: book,
-            bookId: bookId,
-            context: BookloreProgressClient.EbookProgressContext(
-                usesEpubProgress: resource.flatMap(\.format).map {
-                    ![EbookFormat.pdf.rawValue, EbookFormat.cbz.rawValue, EbookFormat.cbr.rawValue,
-                      EbookFormat.imagefolder.rawValue].contains($0)
-                } ?? false,
-                readProgress: detail.readProgress,
-                readStatus: detail.readStatus,
-                lastReadTime: detail.lastReadTime,
-                pdfProgress: detail.pdfProgress.map {
-                    BookloreProgressClient.EbookProgressContext.PageProgress(
-                        page: $0.page,
-                        percentage: $0.percentage,
-                        updatedAt: $0.updatedAt
-                    )
-                },
-                cbxProgress: detail.cbxProgress.map {
-                    BookloreProgressClient.EbookProgressContext.PageProgress(
-                        page: $0.page,
-                        percentage: $0.percentage,
-                        updatedAt: $0.updatedAt
-                    )
-                }
-            )
+            from: detail,
+            usesEpubProgress: resource.flatMap(\.format).map {
+                ![EbookFormat.pdf.rawValue, EbookFormat.cbz.rawValue, EbookFormat.cbr.rawValue,
+                  EbookFormat.imagefolder.rawValue].contains($0)
+            } ?? false
         )
     }
 

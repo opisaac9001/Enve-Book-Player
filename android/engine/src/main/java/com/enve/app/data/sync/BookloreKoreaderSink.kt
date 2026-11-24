@@ -1,6 +1,7 @@
 package com.enve.app.data.sync
 
 import com.enve.app.data.offline.ComicOfflineStorage
+import com.enve.app.data.offline.offlineDownloadKey
 import com.enve.core.auth.CredentialVault
 import com.enve.core.data.local.ConnectionRegistry
 import com.enve.core.data.local.PreferencesManager
@@ -133,7 +134,7 @@ class BookloreKoreaderSink @Inject constructor(
     }
 
     private fun localEbookFile(book: Book): File? {
-        offlineStorage.getDownloadedFile(book.id)?.takeIf { it.isFile && it.length() > 0L }?.let { return it }
+        offlineStorage.getDownloadedFile(book.offlineDownloadKey)?.takeIf { it.isFile && it.length() > 0L }?.let { return it }
         val safeName = book.id.replace(Regex("[^a-zA-Z0-9_-]"), "_")
         return File(locations.cacheDirectory, "ebooks").listFiles()
             ?.filter {

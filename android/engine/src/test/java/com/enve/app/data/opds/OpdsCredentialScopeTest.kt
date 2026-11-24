@@ -1,5 +1,6 @@
 package com.enve.app.data.opds
 
+import com.enve.core.data.remote.LoginAttempt
 import com.enve.core.data.model.BookSource
 import com.enve.core.data.model.ProviderConnection
 import org.junit.Assert.assertFalse
@@ -11,6 +12,13 @@ class OpdsCredentialScopeTest {
     private val catalog = connection("conn-1", BookSource.OPDS, "https://opds.example.com/v1")
     private val otherCatalog = connection("conn-2", BookSource.OPDS, "http://192.168.1.4:8080/opds")
     private val komga = connection("conn-3", BookSource.KOMGA, "https://komga.example.com")
+
+    @Test
+    fun firstLoginCanAuthenticateBeforeTheCatalogIsSaved() {
+        val login = LoginAttempt(catalog.serverUrl, BookSource.OPDS, emptyMap(), "reader")
+        assertTrue(opdsCredentialsAllowed(null, emptyList(), catalog.serverUrl, login))
+        assertFalse(opdsCredentialsAllowed(null, listOf(otherCatalog), otherCatalog.serverUrl, login))
+    }
 
     @Test
     fun a_scoped_connection_signs_only_its_own_origin() {

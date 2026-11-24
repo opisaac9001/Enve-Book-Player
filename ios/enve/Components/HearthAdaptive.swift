@@ -12,6 +12,17 @@ enum HearthAdaptive {
         width >= wideBreakpoint
     }
 
+    // Below this a list column beside a detail pane leaves neither usable, so 11-inch iPad portrait keeps pushing.
+    static let detailPaneBreakpoint: CGFloat = 900
+
+    static func fitsDetailPane(_ width: CGFloat) -> Bool {
+        width >= detailPaneBreakpoint
+    }
+
+    static func detailPaneWidth(for width: CGFloat) -> CGFloat {
+        min(max(width * 0.42, 380), 520)
+    }
+
     static func contentWidth(for width: CGFloat, maximum: CGFloat = readableWidth) -> CGFloat {
         min(width, maximum)
     }

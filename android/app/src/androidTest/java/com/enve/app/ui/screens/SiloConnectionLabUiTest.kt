@@ -10,6 +10,7 @@ import androidx.test.core.app.ActivityScenario
 import androidx.test.core.app.ApplicationProvider
 import androidx.test.ext.junit.runners.AndroidJUnit4
 import com.enve.app.MainActivity
+import com.enve.app.data.offline.offlineDownloadKey
 import com.enve.core.auth.CredentialVault
 import com.enve.app.profiles.ProfileSwitchCoordinator
 import com.enve.core.data.local.FamilyProfileRole
@@ -132,8 +133,11 @@ class SiloConnectionLabUiTest {
                 compose.onNodeWithContentDescription("Search the library").performClick()
                 compose.onAllNodes(hasSetTextAction())[0].performTextReplacement(audio.title)
                 androidx.test.espresso.Espresso.closeSoftKeyboard()
-                compose.waitUntil(20_000) { compose.onAllNodesWithText(audio.title).fetchSemanticsNodes().isNotEmpty() }
-                compose.onAllNodesWithText(audio.title)[0].performClick()
+                stage = "audiobook search result"
+                val audioResult = hasText(audio.title) and !hasSetTextAction()
+                compose.waitUntil(20_000) { compose.onAllNodes(audioResult).fetchSemanticsNodes().isNotEmpty() }
+                compose.onAllNodes(audioResult)[0].performClick()
+                stage = "audiobook detail"
                 compose.waitUntil(20_000) { compose.onAllNodesWithText("Listen").fetchSemanticsNodes().isNotEmpty() }
                 compose.onNodeWithText("Listen").performClick()
                 val playback = component.playback()
@@ -200,8 +204,8 @@ class SiloConnectionLabUiTest {
                 }
                 stage = "offline download"
                 runBlocking { component.library().download(audio) }
-                compose.waitUntil(60_000) { component.downloads().isDownloaded(audio.id) }
-                assertTrue(component.downloads().localTracks(audio.id).orEmpty().all { it.uri.startsWith("file:") })
+                compose.waitUntil(60_000) { component.downloads().isDownloaded(audio.offlineDownloadKey) }
+                assertTrue(component.downloads().localTracks(audio.offlineDownloadKey).orEmpty().all { it.uri.startsWith("file:") })
                 stage = "offline playback"
                 runBlocking { component.connections().upsert(connection.copy(serverUrl = "http://127.0.0.1:9")) }
                 try {

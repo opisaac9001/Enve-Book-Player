@@ -1,12 +1,17 @@
 package com.enve.app.data.repository
 
 import androidx.room.withTransaction
+import com.enve.app.data.offline.ComicOfflineService
+import com.enve.app.data.offline.OfflineDownloadManager
+import com.enve.app.data.offline.isManagedLocalDownload
+import com.enve.app.data.offline.offlineDownloadKey
 import com.enve.app.data.local.ReaderDatabase
 import com.enve.core.di.ApplicationScope
 import kotlinx.coroutines.Job
 import android.util.Log
 import com.enve.app.data.links.BookLinkRepository
 import com.enve.app.data.metadata.MatchedBookMetadataStore
+import com.enve.app.data.sync.preservingPendingEdits
 import com.enve.core.data.local.BookCacheDao
 import com.enve.core.data.local.BookMetadataOverride
 import com.enve.core.data.local.BookMetadataOverrideDao
@@ -19,6 +24,7 @@ import com.enve.core.data.local.LibraryCacheDao
 import com.enve.core.data.local.decodeChapters
 import com.enve.core.data.local.toCachedBook
 import com.enve.core.data.local.toBook
+import com.enve.core.data.local.toBooks
 import com.enve.core.data.local.toCached
 import com.enve.core.data.local.toLibrary
 import com.enve.core.data.local.withMetadataOverride
@@ -31,11 +37,16 @@ import com.enve.core.data.model.BookSource
 import com.enve.core.data.model.Library
 import com.enve.core.data.provider.LibraryAccessRevocations
 import com.enve.core.data.util.FINISHED_PROGRESS_THRESHOLD
+import com.enve.core.data.util.runSuspendCatching
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.ExperimentalCoroutinesApi
 import kotlinx.coroutines.SupervisorJob
+import kotlinx.coroutines.async
+import kotlinx.coroutines.awaitAll
 import kotlinx.coroutines.channels.Channel
+import kotlinx.coroutines.coroutineScope
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
@@ -49,6 +60,7 @@ import kotlinx.coroutines.flow.map
 import kotlinx.coroutines.flow.take
 import kotlinx.coroutines.flow.transformLatest
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.withContext
 import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.Semaphore
 import kotlinx.coroutines.sync.withPermit
@@ -70,9 +82,13 @@ class LibraryCacheRepository @Inject constructor(
     private val libraryRevocations: LibraryAccessRevocations,
     private val torBoxCatalog: TorBoxCatalogStore,
     private val catalogImports: CatalogImportStore,
+    private val refreshLifecycle: CatalogRefreshLifecycle,
+    private val offlineDownloads: OfflineDownloadManager,
+    private val comicDownloads: ComicOfflineService,
     @ApplicationScope parentScope: CoroutineScope =
         CoroutineScope(SupervisorJob() + Dispatchers.Default),
     private val serverSync: com.enve.core.data.local.ProfileServerSyncStore,
+    private val pendingBookMutations: com.enve.core.data.local.PendingBookMutationStore,
 ) {
     private val scope = CoroutineScope(Dispatchers.IO + SupervisorJob(parentScope.coroutineContext[Job]))
     private val refreshMutex = Mutex()
@@ -92,6 +108,32 @@ class LibraryCacheRepository @Inject constructor(
     fun dismissImportIssues(issues: List<CatalogImportIssue>) = catalogImports.dismiss(issues)
 
     init {
+        scope.launch {
+            val keys = mutableMapOf<Triple<String, String?, String>, String>()
+            combine(
+                dao.observeDownloadStates().spaced(),
+                offlineDownloads.downloadedKeys,
+                comicDownloads.downloadedKeys,
+            ) { rows, audioKeys, ebookKeys ->
+                keys.keys.retainAll(rows.map { Triple(it.source, it.connectionId, it.id) }.toSet())
+                rows.mapNotNull { row ->
+                    val source = BookSource.entries.firstOrNull { it.name == row.source } ?: return@mapNotNull null
+                    if (source == BookSource.LOCAL && !isManagedLocalDownload(source, row.connectionId, row.id)) return@mapNotNull null
+                    val identity = Triple(row.source, row.connectionId, row.id)
+                    val key = keys.getOrPut(identity) { offlineDownloadKey(source, row.connectionId, row.id) }
+                    val downloaded = key in if (usesAudioDownload(row.source, row.mediaType, row.readAlongAvailable)) audioKeys else ebookKeys
+                    if (row.isDownloaded == downloaded) null else row to downloaded
+                }
+            }.collect { changes ->
+                if (changes.isNotEmpty()) runSuspendCatching {
+                    database.withTransaction {
+                        changes.forEach { (row, downloaded) ->
+                            dao.reconcileDownloadedStatus(row.cacheKey, row.source, downloaded)
+                        }
+                    }
+                }.onFailure { Log.w(TAG, "Download availability could not be reconciled", it) }
+            }
+        }
         scope.launch {
             var previous: Map<String, String>? = null
             connectionRegistry.connections.collect { connections ->
@@ -175,15 +217,15 @@ class LibraryCacheRepository @Inject constructor(
         if (excludedLibraryIds.isEmpty()) totalCount
         else dao.observeCountExcludingLibraries(excludedLibraryIds.toList())
 
-    val allBooks: Flow<List<Book>> =
-        combine(dao.observeAllForList(), metadataOverrideDao.observeAll()) { list, overrides ->
-            list.map(CachedBookListItem::toBook).applyMetadataOverrides(overrides).distinctBy(::catalogIdentity)
+    private fun <T> Flow<T>.spaced(): Flow<T> = flow {
+        this@spaced.collect {
+            emit(it)
+            delay(FULL_TABLE_SPACING_MS)
         }
+    }
 
-    val rawAllBooks: Flow<List<Book>> =
-        combine(dao.observeAllForList(), metadataOverrideDao.observeAll()) { list, overrides ->
-            list.map(CachedBookListItem::toBook).applyMetadataOverrides(overrides)
-        }
+    private fun Flow<List<CachedBookListItem>>.asBooks(): Flow<List<Book>> =
+        map { it.toBooks() }.spaced()
 
     @OptIn(ExperimentalCoroutinesApi::class)
     fun rawAllBooksExcludingLibraries(excludedLibraryIds: Set<String>): Flow<List<Book>> =
@@ -195,7 +237,7 @@ class LibraryCacheRepository @Inject constructor(
                         if (refreshing && emitted) return@transformLatest
                         val rows = if (excludedLibraryIds.isEmpty()) dao.observeAllForList()
                         else dao.observeAllForListExcludingLibraries(excludedLibraryIds.toList())
-                        (if (refreshing) rows.take(1) else rows).collect {
+                        (if (refreshing) rows.take(1) else rows).asBooks().collect {
                             emitted = true
                             emit(it)
                         }
@@ -203,10 +245,32 @@ class LibraryCacheRepository @Inject constructor(
                 )
             },
             metadataOverrideDao.observeAll(),
-        ) { list, overrides -> list.map(CachedBookListItem::toBook).applyMetadataOverrides(overrides) }
+        ) { list, overrides -> list.applyMetadataOverrides(overrides) }
 
     val libraries: Flow<List<Library>> =
         libraryDao.observeAll().map { list -> list.map(CachedLibrary::toLibrary) }
+
+    fun catalogLocalBooks(excludedLibraryIds: Set<String>): Flow<List<Book>> =
+        combine(dao.observeCatalogLocalBooks(excludedLibraryIds.toList()).asBooks(), metadataOverrideDao.observeAll()) { books, overrides ->
+            books.applyMetadataOverrides(overrides)
+        }
+
+    suspend fun cacheRemoteDetail(book: Book): Book = checkpointOrder.serialized {
+        database.withTransaction {
+            val existing = dao.getByCacheKey(book.uniqueKey)
+            val row = book.toCachedBook().preservingLocalProgress(existing, allowServerProgress = existing == null)
+                .copy(
+                    language = book.language ?: existing?.language,
+                    categoriesJson = if (book.categories.isNotEmpty()) tagJson.encodeToString(book.categories) else existing?.categoriesJson ?: "[]",
+                    isDownloaded = book.offlineDownloadKey in offlineDownloads.downloadedKeys.value ||
+                        book.offlineDownloadKey in comicDownloads.downloadedKeys.value,
+                    personalRating = existing?.personalRating ?: book.personalRating,
+                )
+            dao.upsert(listOf(row))
+            val stored = row.toBook()
+            stored.copy(chapters = book.chapters, audioTracks = book.audioTracks, bitrate = book.bitrate)
+        }
+    }
 
     suspend fun saveLocalMetadata(book: Book) {
         val nowMs = System.currentTimeMillis()
@@ -392,11 +456,11 @@ class LibraryCacheRepository @Inject constructor(
         awaitRefresh: Boolean = false,
         completedTorBox: Boolean = false,
         resetImportConnections: Set<String> = emptySet(),
-    ) {
+    ) = withContext<Unit>(Dispatchers.IO) {
         if (awaitRefresh) refreshMutex.lock()
         else if (!refreshMutex.tryLock()) {
             Log.i(TAG, "doRefresh: another refresh is already running, skipping")
-            return
+            return@withContext
         }
         _isRefreshing.value = true
         _refreshError.value = null
@@ -406,7 +470,7 @@ class LibraryCacheRepository @Inject constructor(
                 aggregator.invalidateCaches()
                 aggregator.clearHomeSnapshotCache()
             }
-            val libraries: List<Library> = aggregator.getLibraries(connectionIds).getOrThrow()
+            val libraries: List<Library> = refreshLifecycle.load { aggregator.getLibraries(connectionIds) }.getOrThrow()
             Log.i(TAG, "Discovered ${libraries.size} libraries")
 
             if (libraries.isNotEmpty()) {
@@ -455,34 +519,40 @@ class LibraryCacheRepository @Inject constructor(
         Log.i(TAG, "enrichAudiobookNarrators: starting backfill for ${candidates.size} audiobooks")
         val semaphore = Semaphore(NARRATOR_ENRICH_CONCURRENCY)
         val started = System.currentTimeMillis()
-        kotlinx.coroutines.coroutineScope {
-            candidates.forEach { ident ->
-                launch {
-                    semaphore.withPermit {
-                        try {
-                            val source = runCatching {
-                                com.enve.core.data.model.BookSource.valueOf(ident.source)
-                            }.getOrNull() ?: return@withPermit
-                            val placeholder = Book(
-                                id = ident.id,
-                                title = "",
-                                source = source,
-                                mediaType = com.enve.core.data.model.AppMediaType.AUDIOBOOK,
-                                connectionId = ident.connectionId,
-                            )
-                            val result = aggregator.fetchAudiobookNarrator(placeholder)
-                            val narrator = result.getOrNull()
-
-                            if (result.isSuccess) {
-                                dao.setNarrator(ident.id, ident.connectionId, narrator, System.currentTimeMillis())
+        candidates.chunked(BATCH_SIZE).forEach { chunk ->
+            val enriched = coroutineScope {
+                chunk.map { ident ->
+                    async {
+                        semaphore.withPermit {
+                            try {
+                                val source = BookSource.entries.firstOrNull { it.name == ident.source } ?: return@withPermit null
+                                val placeholder = Book(
+                                    id = ident.id,
+                                    title = "",
+                                    source = source,
+                                    mediaType = AppMediaType.AUDIOBOOK,
+                                    connectionId = ident.connectionId,
+                                )
+                                aggregator.fetchAudiobookNarrator(placeholder).map { ident to it }.getOrNull()
+                            } catch (e: kotlinx.coroutines.CancellationException) {
+                                throw e
+                            } catch (e: Exception) {
+                                Log.d(TAG, "enrichAudiobookNarrators: ${ident.source}:${ident.id} failed: ${e.message}")
+                                null
                             }
-                        } catch (e: kotlinx.coroutines.CancellationException) {
-                            throw e
-                        } catch (e: Exception) {
-                            Log.d(TAG, "enrichAudiobookNarrators: ${ident.source}:${ident.id} failed: ${e.message}")
                         }
                     }
+                }.awaitAll().filterNotNull()
+            }
+            try {
+                val nowMs = System.currentTimeMillis()
+                database.withTransaction {
+                    enriched.forEach { (ident, narrator) -> dao.setNarrator(ident.cacheKey, narrator, nowMs) }
                 }
+            } catch (e: kotlinx.coroutines.CancellationException) {
+                throw e
+            } catch (e: Exception) {
+                Log.d(TAG, "enrichAudiobookNarrators: write failed: ${e.message}")
             }
         }
         Log.i(TAG, "enrichAudiobookNarrators: backfill complete in ${System.currentTimeMillis() - started}ms")
@@ -504,27 +574,41 @@ class LibraryCacheRepository @Inject constructor(
     }
 
     private suspend fun fetchAndUpsert(libraryId: String?, connectionId: String?, pruneTorBox: Boolean = false) {
-        val torBox = connectionRegistry.connections.first().any { it.id == connectionId && it.source == BookSource.TORBOX }
-        var completeCatalog = !torBox || pruneTorBox || (connectionId != null && torBoxCatalog.isComplete(connectionId))
+        val connections = connectionRegistry.connections.first()
+        val source = connections.firstOrNull { it.id == connectionId }?.source
+        val silo = source == BookSource.SILO
+        val torBox = source == BookSource.TORBOX
+        var completeCatalog = !silo && (!torBox || pruneTorBox || (connectionId != null && torBoxCatalog.isComplete(connectionId)))
         var incompleteReport: CatalogImportReport? = null
         var page = 0
         val nowMs = System.currentTimeMillis()
         val seenKeys = mutableSetOf<String>()
+        val importedByConnection = mutableMapOf<String, Int>()
         val overrides = metadataOverrideDao.getAll().associateBy { it.bookKey }
         while (true) {
             val fetchSequence = checkpointOrder.newSequence()
-            val books: List<Book> = aggregator.getBooks(
-                libraryId = libraryId,
-                page = page,
-                size = PAGE_SIZE,
-                sort = "addedOn",
-                dir = "desc",
-            ).getOrElse { error ->
+            val books: List<Book> = refreshLifecycle.load {
+                aggregator.getBooks(
+                    libraryId = libraryId,
+                    page = page,
+                    size = if (silo) 12 else PAGE_SIZE,
+                    sort = "addedOn",
+                    dir = "desc",
+                )
+            }.getOrElse { error ->
                 if (error is kotlinx.coroutines.CancellationException) throw error
                 if (error is CatalogImportException) {
                     completeCatalog = false
-                    incompleteReport = error.reports.reduceOrNull { accumulated, report -> accumulated.merge(report) }
-                    if (error.issues.isNotEmpty()) catalogImports.record(error.issues)
+                    val issues = error.issues.map { issue ->
+                        issue.copy(report = issue.report.afterPages(importedByConnection[issue.connectionKey] ?: 0, page))
+                    }
+                    incompleteReport = if (issues.isNotEmpty()) {
+                        issues.map { it.report }.reduce { accumulated, report -> accumulated.merge(report) }
+                    } else {
+                        error.reports.reduceOrNull { accumulated, report -> accumulated.merge(report) }
+                            ?.afterPages(seenKeys.size, page)
+                    }
+                    if (issues.isNotEmpty()) catalogImports.record(issues)
                     else incompleteReport?.let { catalogImports.record(connectionId, libraryId, it) }
                     error.books
                 } else {
@@ -541,6 +625,12 @@ class LibraryCacheRepository @Inject constructor(
             }
             if (newBooks.isEmpty()) {
                 Log.w(TAG, "Book import page=$page returned only already-seen books")
+                break
+            }
+
+            if (silo || newBooks.all { it.source == BookSource.SILO }) {
+                dao.insertIfAbsent(newBooks.map { it.toCachedBook(nowMs) })
+                completeCatalog = false
                 break
             }
 
@@ -582,17 +672,29 @@ class LibraryCacheRepository @Inject constructor(
                             ).let { row ->
                                 if (existing == null || existing.narratorEnrichedAt == 0L) row
                                 else row.copy(narrator = row.narrator ?: existing.narrator, narratorEnrichedAt = existing.narratorEnrichedAt)
-                            }
+                            }.preservingPendingEdits(existing, pendingBookMutations.mutations.value, connections)
                             if (!protected && !dirty && (merged.mediaType == AppMediaType.AUDIOBOOK.name || merged.hasAudio || merged.currentTime > 0L) &&
                                 (existing == null || merged.currentTime != existing.currentTime || merged.readProgress != existing.readProgress ||
                                     merged.lastReadTime != existing.lastReadTime || merged.isFinished != existing.isFinished)
                             ) applied += merged.cacheKey
-                            merged
+                            if (merged.source == BookSource.LOCAL.name && !isManagedLocalDownload(BookSource.LOCAL, merged.connectionId, merged.id)) merged
+                            else {
+                                val source = BookSource.entries.firstOrNull { it.name == merged.source }
+                                if (source == null) merged else {
+                                    val keys = if (usesAudioDownload(merged.source, merged.mediaType, merged.readAlongAvailable)) {
+                                        offlineDownloads.downloadedKeys.value
+                                    } else comicDownloads.downloadedKeys.value
+                                    merged.copy(isDownloaded = offlineDownloadKey(source, merged.connectionId, merged.id) in keys)
+                                }
+                            }
                         })
                         if (incompleteReport == null && supersededByKey.isNotEmpty()) dao.deleteByCacheKeys(supersededByKey.keys.toList())
                     }
                     applied.forEach { state.recordApplied(it, fetchSequence) }
                 }
+            }
+            newBooks.groupingBy { catalogImportConnectionKey(it.connectionId) }.eachCount().forEach { (key, count) ->
+                importedByConnection[key] = importedByConnection.getOrDefault(key, 0) + count
             }
             Log.i(TAG, "Book import page=$page processed ${newBooks.size} books")
 
@@ -612,6 +714,7 @@ class LibraryCacheRepository @Inject constructor(
         private const val TAG = "LibraryCacheRepository"
         private const val PAGE_SIZE = 500
         private const val BATCH_SIZE = 200
+        private const val FULL_TABLE_SPACING_MS = 1_000L
         private const val NARRATOR_ENRICH_CONCURRENCY = 4
         private val tagJson = kotlinx.serialization.json.Json { ignoreUnknownKeys = true }
     }
@@ -679,3 +782,6 @@ internal fun CachedBook.preservingLocalProgress(
         ),
     )
 }
+
+private fun usesAudioDownload(source: String, mediaType: String, readAlongAvailable: Boolean): Boolean =
+    mediaType == AppMediaType.AUDIOBOOK.name && !(source == BookSource.STORYTELLER.name && readAlongAvailable)

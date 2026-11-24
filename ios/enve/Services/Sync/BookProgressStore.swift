@@ -139,29 +139,10 @@ final class BookProgressStore {
     }
 
     func saveRecentlyPlayed(_ book: Book, date: Date) {
-        let stableId = book.stableId
-        let newSnapshot = RecentlyPlayedSnapshot(stableId: stableId, book: book, lastUpdated: date.timeIntervalSince1970)
-        let key = Self.recentlyPlayedKey
-        let limit = recentlyPlayedLimit
-
-        Task.detached(priority: .utility) {
-            guard let data = UserDefaults.standard.data(forKey: key),
-                var existing = try? JSONDecoder().decode([RecentlyPlayedSnapshot].self, from: data)
-            else {
-                if let encoded = try? JSONEncoder().encode([newSnapshot]) {
-                    UserDefaults.standard.set(encoded, forKey: key)
-                }
-                return
-            }
-            existing.removeAll { $0.stableId == stableId }
-            existing.insert(newSnapshot, at: 0)
-            if existing.count > limit {
-                existing = Array(existing.prefix(limit))
-            }
-            if let encoded = try? JSONEncoder().encode(existing) {
-                UserDefaults.standard.set(encoded, forKey: key)
-            }
-        }
+        var snapshots = loadSnapshots()
+        snapshots.removeAll { $0.stableId == book.stableId }
+        snapshots.insert(RecentlyPlayedSnapshot(stableId: book.stableId, book: book, lastUpdated: date.timeIntervalSince1970), at: 0)
+        persistSnapshots(Array(snapshots.prefix(recentlyPlayedLimit)))
     }
 
     func loadRecentlyPlayed() -> [Book] {

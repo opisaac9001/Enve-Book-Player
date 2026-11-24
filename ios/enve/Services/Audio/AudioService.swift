@@ -232,7 +232,7 @@ public final class AudioService: NSObject, ObservableObject {
                 let rewindedTime = max(0, paused - smartRewindSeconds)
 
                 AppLogger.player.info(
-                    "⏪ [AudioService] Smart rewind: paused for \(Int(pauseDuration))s, rewinding \(Int(smartRewindSeconds))s from \(Int(paused)) to \(Int(rewindedTime))"
+                    "[AudioService] Smart rewind: paused for \(Int(pauseDuration))s, rewinding \(Int(smartRewindSeconds))s from \(Int(paused)) to \(Int(rewindedTime))"
                 )
                 resumeBySeeking(to: rewindedTime)
                 return
@@ -512,9 +512,9 @@ public final class AudioService: NSObject, ObservableObject {
 
     func skipBackward(seconds: TimeInterval = 15) {
         let effectiveSeconds = seconds == 15 ? preferredSkipBackwardAmount() : seconds
-        AppLogger.player.debug("⏪ [AudioService] skipBackward: currentTime=\(currentTime), subtracting \(effectiveSeconds)s")
+        AppLogger.player.debug("[AudioService] skipBackward: currentTime=\(currentTime), subtracting \(effectiveSeconds)s")
         let newTime = max(currentTime - effectiveSeconds, 0)
-        AppLogger.player.debug("⏪ [AudioService] skipBackward: seeking to \(newTime)")
+        AppLogger.player.debug("[AudioService] skipBackward: seeking to \(newTime)")
         seekGlobal(to: newTime)
     }
 

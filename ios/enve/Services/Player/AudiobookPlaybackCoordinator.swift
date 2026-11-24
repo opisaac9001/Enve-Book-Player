@@ -57,6 +57,24 @@ final class AudiobookPlaybackCoordinator: BookPlaybackStarting {
             "Starting playback source=\(book.source) bookDiagnosticID=\(DiagnosticLogSanitizer.identifier(for: book.stableId))"
         )
 
+        #if os(iOS) && canImport(GoogleCast)
+        let cast = profileSession.playback.cast
+        if cast.isConnected || cast.ownsPlayback, book.mediaType != .ebook {
+            guard !book.hasEPUB3MediaOverlay else {
+                appState.presentation.userFacingError = UserFacingError(
+                    title: "Read-Aloud Can't Be Cast",
+                    message: CastPlaybackError.readAloudUnsupported.errorDescription ?? ""
+                )
+                return
+            }
+            profileSession.lastOpened.record(book)
+            appState.currentBook = book
+            appState.presentation.isPlayerPresented = presentPlayer
+            cast.play(book, from: startPosition)
+            return
+        }
+        #endif
+
         if book.hasEPUB3MediaOverlay {
             profileSession.playback.readAloud.play(book, presentPlayer: presentPlayer)
             return

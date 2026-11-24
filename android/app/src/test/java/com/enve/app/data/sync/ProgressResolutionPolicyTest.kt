@@ -89,6 +89,38 @@ class ProgressResolutionPolicyTest {
         assertEquals(freshLower, ProgressResolutionPolicy.bestSnapshot(listOf(staleFarther, freshLower)))
     }
 
+    @Test
+    fun oneMinuteAheadInALongAudiobookPulls() {
+        val remote = SyncSnapshot(percentage = 0.0503f, positionMs = 3_660_000L,
+            source = "Audiobookshelf", updatedAt = 10_000L)
+        assertEquals(ProgressResolutionPolicy.Decision.PULL,
+            ProgressResolutionPolicy.resolve(0.05f, 1_000L, remote, localPositionMs = 3_600_000L))
+    }
+
+    @Test
+    fun audioPositionWinsOverStaleServerPercentage() {
+        val remote = SyncSnapshot(percentage = 0.05f, positionMs = 1_800_000L,
+            source = "Audiobookshelf", updatedAt = 10_000L)
+        assertEquals(ProgressResolutionPolicy.Decision.PULL,
+            ProgressResolutionPolicy.resolve(0.05f, 1_000L, remote, localPositionMs = 900_000L))
+    }
+
+    @Test
+    fun newerRemoteAudioRewindStillConflicts() {
+        val remote = SyncSnapshot(percentage = 0.05f, positionMs = 3_540_000L,
+            source = "Audiobookshelf", updatedAt = 10_000L)
+        assertEquals(ProgressResolutionPolicy.Decision.CONFLICT,
+            ProgressResolutionPolicy.resolve(0.05f, 1_000L, remote, localPositionMs = 3_600_000L))
+    }
+
+    @Test
+    fun subsecondAudioDifferenceStaysPut() {
+        val remote = SyncSnapshot(percentage = 0.05f, positionMs = 3_600_500L,
+            source = "Audiobookshelf", updatedAt = 10_000L)
+        assertEquals(ProgressResolutionPolicy.Decision.NONE,
+            ProgressResolutionPolicy.resolve(0.05f, 1_000L, remote, localPositionMs = 3_600_000L))
+    }
+
     private fun fragmentLocator(id: String) =
         """{"href":"OEBPS/text/ch1.xhtml","type":"application/xhtml+xml","locations":{"fragments":["$id"]}}"""
 

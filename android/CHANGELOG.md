@@ -2,6 +2,13 @@
 
 Release notes for the Android app. Versions are `<name> build <code>`, matching `versionName` and `versionCode` in `app/build.gradle.kts`.
 
+## 1.2 build 58 (unreleased)
+
+- Reduce memory use during library refreshes and preserve Audiobookshelf narrators and download status after sync.
+- Fix E-ink navigation, encrypted preference recovery and interrupted narration.
+- Import EPUB and AZW3 from Files. Some file managers offer Enve for other formats with the same generic file type. Enve rejects unsupported files when opened.
+- Queue offline BookOrbit edits and add smart library filters and Book Drop.
+
 ## 1.2 build 57 — 2026-11-13
 
 - Move native Silo connections to API v2, including profiles, downloads, progress and annotations.

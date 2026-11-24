@@ -90,84 +90,11 @@ struct LibraryBrowsePreferences: Equatable {
     }
 }
 
-enum LibrarySeriesFilter: String, CaseIterable, Codable {
-    case all
-    case inSeries
-    case standalone
-
-    var title: String {
-        switch self {
-        case .all: "Any"
-        case .inSeries: "In a series"
-        case .standalone: "Standalone"
-        }
-    }
-}
-
-struct LibraryAdvancedFilters: Codable, Equatable {
-    var genres: Set<String> = []
-    var languages: Set<String> = []
-    var minimumRating: Double?
-    var series: LibrarySeriesFilter = .all
-
-    var isActive: Bool {
-        !genres.isEmpty || !languages.isEmpty || minimumRating != nil || series != .all
-    }
-
-    static let empty = LibraryAdvancedFilters()
-}
-
-struct LibraryAdvancedFilterOptions {
-    var genres: [String] = []
-    var languages: [String] = []
-}
-
-enum LibraryAdvancedFilterPolicy {
-    static func matches(_ book: Book, filters: LibraryAdvancedFilters) -> Bool {
-        if !filters.genres.isEmpty {
-            let selected = Set(filters.genres.map(normalized))
-            let bookGenres = Set((book.genres ?? []).map(normalized))
-            guard !selected.isDisjoint(with: bookGenres) else { return false }
-        }
-        if !filters.languages.isEmpty {
-            let selected = Set(filters.languages.map(normalized))
-            guard let language = book.language.map(normalized), selected.contains(language) else { return false }
-        }
-        if let minimumRating = filters.minimumRating,
-            max(book.personalRating ?? 0, book.goodreadsRating ?? 0) < minimumRating
-        {
-            return false
-        }
-        let hasSeries = !(book.series?.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty ?? true)
-        switch filters.series {
-        case .all: break
-        case .inSeries where !hasSeries: return false
-        case .standalone where hasSeries: return false
-        default: break
-        }
-        return true
-    }
-
-    static func options(from books: [Book]) -> LibraryAdvancedFilterOptions {
-        LibraryAdvancedFilterOptions(
-            genres: uniqueSorted(books.flatMap { $0.genres ?? [] }),
-            languages: uniqueSorted(books.compactMap(\.language))
-        )
-    }
-
-    private static func uniqueSorted(_ values: [String]) -> [String] {
-        var seen = Set<String>()
-        return
-            values
-            .map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }
-            .filter { !$0.isEmpty && seen.insert(normalized($0)).inserted }
-            .sorted { $0.localizedStandardCompare($1) == .orderedAscending }
-    }
-
-    private static func normalized(_ value: String) -> String {
-        value.trimmingCharacters(in: .whitespacesAndNewlines)
-            .folding(options: [.caseInsensitive, .diacriticInsensitive], locale: .current)
-    }
+enum LibraryRemoteCatalogState: Equatable {
+    case loading
+    case loaded(hasMore: Bool)
+    case onDeviceOnly
+    case failed(String)
 }
 
 @Observable
@@ -210,9 +137,21 @@ final class LibraryModel {
     private(set) var advancedFilters: LibraryAdvancedFilters
     private(set) var advancedFilterOptions = LibraryAdvancedFilterOptions()
     private(set) var isLoadingAdvancedFilterOptions = false
+    private(set) var advancedFilterOptionsError: String?
+    private(set) var hasMoreAdvancedFilterOptions = false
+    @ObservationIgnored private var filterOptionsGeneration = 0
 
     private(set) var isSelecting = false
     private(set) var selectedIds: Set<String> = []
+
+    private(set) var remoteCatalog: LibraryRemoteCatalogState?
+    private(set) var isLoadingRemotePage = false
+    private(set) var remotePageError: String?
+    private(set) var localScopeNotice: String?
+    private(set) var remoteIssues: [CatalogLaneIssue] = []
+    @ObservationIgnored private var remoteSession: RemoteCatalogSession?
+    @ObservationIgnored private var remoteTask: Task<Void, Never>?
+    @ObservationIgnored private var restrictedCatalogProviders: Set<UUID> = []
 
     @ObservationIgnored private var rawPages: [Book] = []
     @ObservationIgnored private var pageCursor: Book?
@@ -245,6 +184,20 @@ final class LibraryModel {
         case recentKeyset
         case sortedOffset
         case comicOffset
+        case remoteCursor
+    }
+
+    private struct RemoteCatalogKey: Equatable {
+        let source: LibrarySourceFilter
+        let request: RemoteCatalogRequest
+        let scope: RemoteCatalogScope
+    }
+
+    private struct RemoteCatalogSession {
+        let id = UUID()
+        let key: RemoteCatalogKey
+        var entries: [CatalogEntry] = []
+        var cursor: RemoteCatalogCursor?
     }
 
     private struct BrowseQuery: Equatable {
@@ -475,6 +428,13 @@ final class LibraryModel {
 
     var resultSummary: String {
         let loaded = books.count
+        switch remoteCatalog {
+        case .loading: return "Loading"
+        case .loaded(hasMore: true): return "\(loaded.formatted()) loaded"
+        case .onDeviceOnly: return "\(loaded.formatted()) on this device"
+        case .failed: return "Unavailable"
+        case .loaded(hasMore: false), nil: break
+        }
         if resultTotalCount > loaded {
             return "\(loaded.formatted()) of \(resultTotalCount.formatted()) loaded"
         }
@@ -541,15 +501,54 @@ final class LibraryModel {
         setAdvancedFilters(filters)
     }
 
-    func loadAdvancedFilterOptions() async {
-        guard !isLoadingAdvancedFilterOptions else { return }
+    var usesServerFilterOptions: Bool {
+        let library = (profileSession?.engine ?? EnveEngine.shared).library
+        return status == .all && media != .comics && media != .podcasts && library.supportsRemoteCatalog(sourceFilter)
+    }
+
+    var usesServerCatalogFilters: Bool {
+        remoteCatalogRequest(library: (profileSession?.engine ?? EnveEngine.shared).library) != nil
+    }
+
+    var advancedFilterOptionsScope: String {
+        "\(sourceFilter)|\(media)|\(status)|\(readingEnabled)"
+    }
+
+    func loadAdvancedFilterOptions(search: String = "") async {
+        guard profileSession?.isRetired != true else { return }
+        filterOptionsGeneration += 1
+        let generation = filterOptionsGeneration
         isLoadingAdvancedFilterOptions = true
-        defer { isLoadingAdvancedFilterOptions = false }
+        advancedFilterOptionsError = nil
+        defer { if generation == filterOptionsGeneration { isLoadingAdvancedFilterOptions = false } }
         let library = (profileSession?.engine ?? EnveEngine.shared).library
         let media = media
-        let list = await sourceScopedBooks(library: library, mediaType: nil, boundedForSupportData: true)
-            .filter { media.matches($0) && (status == .downloaded || library.matchesStatus($0, status: status)) }
-        advancedFilterOptions = LibraryAdvancedFilterPolicy.options(from: list)
+        let query = search.trimmingCharacters(in: .whitespacesAndNewlines)
+        let options: LibraryAdvancedFilterOptions
+        var hasMore = false
+        var error: String?
+        if usesServerFilterOptions {
+            let result = await library.remoteCatalogFilterOptions(
+                sourceFilter: sourceFilter, mediaType: remoteMediaType, search: query
+            )
+            options = LibraryAdvancedFilterOptions(genres: result.options.genres, languages: result.options.languages)
+            hasMore = result.options.hasMore
+            if !result.issues.isEmpty {
+                error = result.issues.map { "\($0.sourceName): \($0.message ?? "Showing downloads on this device.")" }.joined(separator: "\n")
+            }
+        } else {
+            let list = await sourceScopedBooks(library: library, mediaType: nil, boundedForSupportData: true)
+                .filter { media.matches($0) && (status == .downloaded || library.matchesStatus($0, status: status)) }
+            let local = LibraryAdvancedFilterPolicy.options(from: list)
+            options = LibraryAdvancedFilterOptions(
+                genres: local.genres.filter { query.isEmpty || $0.localizedStandardContains(query) },
+                languages: local.languages.filter { query.isEmpty || $0.localizedStandardContains(query) }
+            )
+        }
+        guard generation == filterOptionsGeneration, !Task.isCancelled, profileSession?.isRetired != true else { return }
+        advancedFilterOptions = options
+        hasMoreAdvancedFilterOptions = hasMore
+        advancedFilterOptionsError = error
     }
 
     private func setAdvancedFilters(_ filters: LibraryAdvancedFilters) {
@@ -786,11 +785,16 @@ final class LibraryModel {
         let ids = Set(targets.map(\.uniqueId))
         books.removeAll { ids.contains($0.uniqueId) }
         rawPages.removeAll { ids.contains($0.uniqueId) }
+        remoteSession?.entries.removeAll { ids.contains($0.book.uniqueId) }
     }
 
     func updateSearch(_ text: String) {
         searchTask?.cancel()
-        if text.trimmingCharacters(in: .whitespaces).isEmpty {
+        let trimmed = text.trimmingCharacters(in: .whitespaces)
+        if trimmed != searchQuery.trimmingCharacters(in: .whitespaces) {
+            invalidateRemoteCatalog()
+        }
+        if trimmed.isEmpty {
             guard isSearchActive else { return }
             searchQuery = ""
             if facet != .books {
@@ -821,6 +825,7 @@ final class LibraryModel {
     }
 
     private func scheduleReload() {
+        invalidateRemoteCatalog()
         let session = profileSession
         Task { [weak self] in
             defer { withExtendedLifetime(session) {} }
@@ -841,7 +846,8 @@ final class LibraryModel {
             let typedComicLibrary = (profileSession?.engine ?? EnveEngine.shared).sources.librarySourceSnapshot.libraries.contains {
                 $0.providerId == providerId && $0.id == libraryId && $0.isComic
             }
-            let comicCount = typedComicLibrary ? 0 : await library.comicBookCount(sourceFilter: sourceFilter)
+            let comicCount = typedComicLibrary || library.supportsRemoteCatalog(sourceFilter)
+                ? 0 : await library.comicBookCount(sourceFilter: sourceFilter)
             let total = comicCount > 0 ? await library.bookCount(sourceFilter: sourceFilter, mediaType: "ebook") : 0
             if typedComicLibrary || (comicCount > 0 && comicCount == total) {
                 media = .comics
@@ -870,27 +876,48 @@ final class LibraryModel {
             lastBrowseQuery = query
         }
         excludedLibraryKeys = (profileSession?.preferences ?? LibraryDisplayPreferencesStore.shared).loadPreferences().excludedLibraryIds
-        totalLibraryCount = await library.totalBookCount()
-        if facet == .books || isSearchActive {
-            if query.status != .downloaded, readingEnabled, await shouldBuildWorkIndex(library: library) {
-                await rebuildWorkIndex()
-            } else {
-                workHiddenIds = []
-                workRefByRep = [:]
-                libraryRecollapse()
-            }
+        if let request = remoteCatalogRequest(library: library) {
+            await loadRemoteCatalog(request, library: library)
+            return
         }
+        endRemoteCatalog()
+        restrictedCatalogProviders = status == .downloaded ? [] : library.unreachableCatalogProviderIds(for: sourceFilter)
+        localScopeNotice = localOnlyNotice(library: library)
+        // A query needs neither a fresh catalog count, the work index, nor a walk of every download.
+        let searchesOnly = isSearchActive && query.status != .downloaded
         let storage = session?.localStorage ?? LocalStorageManager.shared
         let audioKeys = Set(storage.downloadedAudiobookIds())
-        let downloadedEbooks = await library.downloadedEbooks(limit: max(totalLibraryCount, 1))
-        let downloadedAudio = query.status == .downloaded ? await library.downloadedAudiobooks(storageKeys: audioKeys) : []
-        guard gen == generation else { return }
-        downloadedBookIds = Set(downloadedEbooks.map(\.uniqueId))
+        if searchesOnly {
+            offlineBooks = []
+        } else {
+            totalLibraryCount = await library.totalBookCount()
+            if facet == .books || isSearchActive {
+                if query.status != .downloaded, readingEnabled, await shouldBuildWorkIndex(library: library) {
+                    await rebuildWorkIndex()
+                } else {
+                    workHiddenIds = []
+                    workRefByRep = [:]
+                    libraryRecollapse()
+                }
+            }
+            let downloadedEbooks = await library.downloadedEbooks(limit: max(totalLibraryCount, 1))
+            let downloadedAudio = query.status == .downloaded ? await library.downloadedAudiobooks(storageKeys: audioKeys) : []
+            guard gen == generation else { return }
+            downloadedBookIds = Set(downloadedEbooks.map(\.uniqueId))
+            offlineBooks = query.status == .downloaded ? downloadedEbooks + downloadedAudio : []
+        }
         downloadedAudioStorageKeys = audioKeys
-        offlineBooks = query.status == .downloaded ? downloadedEbooks + downloadedAudio : []
 
         if isSearchActive {
-            let results = await library.searchBooks(query: searchQuery, sourceFilter: sourceFilter, limit: 200)
+            let results: [Book]
+            if status == .downloaded {
+                results = RemoteCatalogRequest(search: searchQuery, mediaType: nil, sort: .title).onDeviceBooks(
+                    from: offlineBooks, providerId: sourceFilter.providerId, libraryId: sourceFilter.libraryId,
+                    isOnDevice: { _ in true }
+                )
+            } else {
+                results = await library.searchBooks(query: searchQuery, sourceFilter: sourceFilter, limit: 200)
+            }
             guard gen == generation else { return }
             let media = media
             let offlineIDs = Set(offlineBooks.map(\.uniqueId))
@@ -899,6 +926,11 @@ final class LibraryModel {
                     && (status == .downloaded ? offlineIDs.contains($0.uniqueId) : library.matchesStatus($0, status: status))
                     && libraryMatchesSource($0)
                     && LibraryAdvancedFilterPolicy.matches($0, filters: advancedFilters)
+            }
+            if searchesOnly {
+                let ids = await library.offlineBookIDs(in: kept.filter { $0.mediaType == .ebook })
+                guard gen == generation else { return }
+                downloadedBookIds = ids
             }
             books = library.applySort(kept, descriptors: sortDescriptors)
             resultTotalCount = kept.count
@@ -1080,11 +1112,16 @@ final class LibraryModel {
 
     func loadNextPageIfNeeded(currentBookId: String) {
         let triggerIndex = max(displayBooks.count - Self.pagePrefetchDistance, 0)
-        guard isPagedMode, !isLoadingNextPage, !isSearchActive,
-            displayBooks.indices.contains(triggerIndex),
-            displayBooks[triggerIndex].uniqueId == currentBookId,
+        guard isPagedMode, !isLoadingNextPage,
+            let visibleIndex = displayBooks.firstIndex(where: { $0.uniqueId == currentBookId }),
+            visibleIndex >= triggerIndex,
             pagingMode != .none
         else { return }
+        if pagingMode == .remoteCursor {
+            if remotePageError == nil { loadNextRemotePage() }
+            return
+        }
+        guard !isSearchActive else { return }
         isLoadingNextPage = true
         let gen = generation
         let mode = pagingMode
@@ -1112,7 +1149,7 @@ final class LibraryModel {
                 next = await loadSortedPage(library: library, offset: offset, limit: Self.pageSize)
             case .comicOffset:
                 next = await library.comicBooksPage(sourceFilter: sourceFilter, offset: offset, limit: Self.pageSize, sort: storeSortDescriptors)
-            case .none:
+            case .none, .remoteCursor:
                 next = []
             }
             defer { isLoadingNextPage = false }
@@ -1133,7 +1170,7 @@ final class LibraryModel {
             case .comicOffset:
                 pageOffset = offset + next.count
                 if next.count < Self.pageSize { pagingMode = .none }
-            case .none:
+            case .none, .remoteCursor:
                 pagingMode = .none
             }
             let media = media
@@ -1193,12 +1230,253 @@ final class LibraryModel {
         )
     }
 
+    func refreshFromServer() async {
+        remoteTask?.cancel()
+        remoteSession = nil
+        await reload()
+    }
+
+    @discardableResult
+    func loadMoreRemote() -> Task<Void, Never>? {
+        remotePageError = nil
+        return loadNextRemotePage()
+    }
+
+    private var remoteSort: RemoteCatalogSort? {
+        let primary = sortDescriptors.first ?? Self.defaultSortDescriptor
+        switch (primary.field, primary.direction) {
+        case (.title, .ascending): return .title
+        case (.recent, .descending): return .recentlyAdded
+        default: return nil
+        }
+    }
+
+    private var remoteMediaType: AppMediaType? {
+        switch media {
+        case .all: readingEnabled ? nil : .audiobook
+        case .audiobooks: .audiobook
+        case .ebooks: .ebook
+        case .comics, .podcasts: nil
+        }
+    }
+
+    private func remoteCatalogRequest(library: LibraryEngine) -> RemoteCatalogRequest? {
+        guard facet == .books || isSearchActive, status == .all,
+            advancedFilters.minimumRating == nil, advancedFilters.series == .all,
+            media != .comics, media != .podcasts, library.supportsRemoteCatalog(sourceFilter)
+        else { return nil }
+        let search = searchQuery.trimmingCharacters(in: .whitespacesAndNewlines)
+        return RemoteCatalogRequest(
+            search: search.isEmpty ? nil : search, mediaType: remoteMediaType, sort: remoteSort ?? .title,
+            genres: advancedFilters.genres, languages: advancedFilters.languages
+        )
+    }
+
+    private func localOnlyNotice(library: LibraryEngine) -> String? {
+        guard status != .downloaded, media != .podcasts, library.supportsRemoteCatalog(sourceFilter) else { return nil }
+        if !restrictedCatalogProviders.isEmpty {
+            return "Server unavailable. Its books are limited to downloads on this device."
+        }
+        return facet == .books || isSearchActive
+            ? "These filters use cached server listings, which may be incomplete."
+            : "\(facet.title) use cached server listings, which may be incomplete."
+    }
+
+    private func loadRemoteCatalog(_ request: RemoteCatalogRequest, library: LibraryEngine) async {
+        localScopeNotice = remoteSort == nil ? "Server sources sort by title or date added." : nil
+        restrictedCatalogProviders = []
+        workHiddenIds = []
+        workRefByRep = [:]
+        rawPages = []
+        pageCursor = nil
+        pageOffset = 0
+        resultTotalCount = 0
+        let key = RemoteCatalogKey(source: sourceFilter, request: request, scope: library.remoteCatalogScope(for: sourceFilter))
+        if let current = remoteSession, current.key == key {
+            switch remoteCatalog {
+            case .loading:
+                return
+            case .loaded where !remoteIssues.contains(where: { $0.message == nil }):
+                let restored = await library.presentableBooks(for: current.entries)
+                await presentRemote(restored, appending: false, library: library, sessionId: current.id)
+                return
+            case .loaded, .onDeviceOnly, .failed, nil:
+                break
+            }
+        }
+
+        remoteTask?.cancel()
+        let session = RemoteCatalogSession(key: key)
+        remoteSession = session
+        isLoadingNextPage = false
+        isLoadingRemotePage = false
+        remotePageError = nil
+        remoteIssues = []
+        pagingMode = .none
+        isPagedMode = false
+        books = []
+        remoteCatalog = .loading
+        hasLoaded = true
+
+        let id = session.id
+        let task = Task { [weak self, profileSession] in
+            defer { withExtendedLifetime(profileSession) {} }
+            guard let self else { return }
+            defer {
+                if remoteSession?.id == id { isLoadingRemotePage = false }
+            }
+            let result = await library.remoteCatalogPage(sourceFilter: key.source, request: request, after: nil) { [weak self] entries in
+                guard let self, !Task.isCancelled, self.isCurrentRemoteSession(id, library: library) else { return }
+                self.remoteSession?.entries = entries
+                let partial = await library.presentableBooks(for: entries)
+                guard await self.presentRemote(partial, appending: false, library: library, sessionId: id) else { return }
+                self.remoteCatalog = .loaded(hasMore: true)
+                self.isLoadingRemotePage = true
+            }
+            guard !Task.isCancelled, isCurrentRemoteSession(id, library: library) else { return }
+            remoteSession?.entries = result.entries
+            remoteSession?.cursor = result.next
+            remoteIssues = result.issues
+            if !result.reachedSource, let failure = result.issues.first(where: { $0.message != nil }),
+                !result.issues.contains(where: { $0.message == nil })
+            {
+                books = []
+                remoteCatalog = .failed(failure.message ?? "")
+                return
+            }
+            guard await presentRemote(result.books, appending: false, library: library, sessionId: id) else { return }
+            remoteCatalog = result.reachedSource || result.issues.isEmpty
+                ? .loaded(hasMore: result.next != nil) : .onDeviceOnly
+            pagingMode = result.next == nil ? .none : .remoteCursor
+            isPagedMode = result.next != nil
+        }
+        remoteTask = task
+        await task.value
+    }
+
+    @discardableResult
+    private func loadNextRemotePage() -> Task<Void, Never>? {
+        let library = (profileSession?.engine ?? EnveEngine.shared).library
+        guard let session = remoteSession, let cursor = session.cursor, !isLoadingRemotePage,
+            isCurrentRemoteSession(session.id, library: library)
+        else { return nil }
+        isLoadingNextPage = true
+        isLoadingRemotePage = true
+        remotePageError = nil
+        let id = session.id
+        let key = session.key
+        remoteTask = Task { [weak self, profileSession] in
+            defer { withExtendedLifetime(profileSession) {} }
+            guard let self else { return }
+            defer {
+                if remoteSession?.id == id {
+                    isLoadingNextPage = false
+                    isLoadingRemotePage = false
+                }
+            }
+            let result = await library.remoteCatalogPage(sourceFilter: key.source, request: key.request, after: cursor)
+            guard !Task.isCancelled, isCurrentRemoteSession(id, library: library) else { return }
+            let known = Set(remoteSession?.entries.map(\.book.uniqueId) ?? [])
+            remoteSession?.entries.append(contentsOf: result.entries.filter { !known.contains($0.book.uniqueId) })
+            for issue in result.issues where !remoteIssues.contains(issue) {
+                remoteIssues.append(issue)
+            }
+            if !result.reachedSource, result.entries.isEmpty, let failure = result.issues.first(where: { $0.message != nil }) {
+                remotePageError = failure.message
+                return
+            }
+            let lost = Set(result.issues.filter { $0.message == nil }.map(\.providerId))
+            if !lost.isEmpty {
+                restrictedCatalogProviders.formUnion(lost)
+                remoteSession?.entries.removeAll { lost.contains($0.book.providerId) && !library.isOnDevice($0.book) }
+                books = books.filter(libraryMatchesSource)
+            }
+            remoteSession?.cursor = result.next
+            guard await presentRemote(
+                result.books.filter { !known.contains($0.uniqueId) },
+                appending: true,
+                library: library,
+                sessionId: id
+            ) else { return }
+            if case .loaded = remoteCatalog {
+                let hasRemoteCards = remoteSession?.entries.contains { !library.isOnDevice($0.book) } == true
+                remoteCatalog = result.reachedSource || lost.isEmpty || hasRemoteCards || result.next != nil
+                    ? .loaded(hasMore: result.next != nil) : .onDeviceOnly
+            }
+            if result.next == nil {
+                pagingMode = .none
+                isPagedMode = false
+            }
+        }
+        return remoteTask
+    }
+
+    @discardableResult
+    private func presentRemote(_ list: [Book], appending: Bool, library: LibraryEngine, sessionId: UUID) async -> Bool {
+        let audioKeys = Set((profileSession?.localStorage ?? LocalStorageManager.shared).downloadedAudiobookIds())
+        let ebookIds = await library.offlineBookIDs(in: list.filter { $0.mediaType == .ebook })
+        guard !Task.isCancelled, isCurrentRemoteSession(sessionId, library: library) else { return false }
+        downloadedAudioStorageKeys = audioKeys
+        let kept = list.filter(libraryMatchesSource)
+        if appending {
+            downloadedBookIds.formUnion(ebookIds)
+            books.append(contentsOf: kept)
+        } else {
+            downloadedBookIds = ebookIds
+            books = kept
+        }
+        return true
+    }
+
+    private func isCurrentRemoteSession(_ id: UUID, library: LibraryEngine) -> Bool {
+        guard profileSession?.isRetired != true, let session = remoteSession, session.id == id else { return false }
+        guard library.remoteCatalogScope(for: session.key.source) == session.key.scope else {
+            scheduleReload()
+            return false
+        }
+        return true
+    }
+
+    private func endRemoteCatalog() {
+        guard remoteSession != nil || remoteCatalog != nil else { return }
+        remoteTask?.cancel()
+        remoteTask = nil
+        remoteSession = nil
+        remoteCatalog = nil
+        remoteIssues = []
+        if isLoadingRemotePage { isLoadingNextPage = false }
+        isLoadingRemotePage = false
+        remotePageError = nil
+        if pagingMode == .remoteCursor { pagingMode = .none }
+    }
+
+    // Runs as the query changes, before any debounce, so a slower superseded response can never be shown under the new query.
+    private func invalidateRemoteCatalog() {
+        guard remoteSession != nil || remoteCatalog != nil else { return }
+        remoteTask?.cancel()
+        remoteTask = nil
+        remoteSession = nil
+        if isLoadingRemotePage { isLoadingNextPage = false }
+        isLoadingRemotePage = false
+        remotePageError = nil
+        remoteIssues = []
+        pagingMode = .none
+        isPagedMode = false
+        books = []
+        remoteCatalog = .loading
+    }
+
     private static func sourceMediaKey(_ source: LibrarySourceFilter) -> String {
         "imagine.library.source.media.\(source.rawValue)"
     }
 
     private func libraryMatchesSource(_ book: Book) -> Bool {
         guard preferences.includesLibraryBook(book) else { return false }
+        if (!NetworkPolicyService.shared.isConnected || restrictedCatalogProviders.contains(book.providerId)),
+            !(profileSession?.engine ?? EnveEngine.shared).library.isOnDevice(book)
+        {
+            return false
+        }
         if !excludedLibraryKeys.isEmpty,
             excludedLibraryKeys.contains("\(book.providerId.uuidString)_\(book.libraryId)")
         {
@@ -1251,6 +1529,7 @@ final class LibraryModel {
 
     private func loadSeriesAggregates(gen: Int, library: LibraryEngine) async {
         let isSourceOnly = readingEnabled && status == .all && !advancedFilters.isActive && excludedLibraryKeys.isEmpty
+            && restrictedCatalogProviders.isEmpty
         let merged: [BrowseSeriesAggregate]
         switch sourceFilter {
         case .all where isSourceOnly:
@@ -1269,23 +1548,23 @@ final class LibraryModel {
     }
 
     private func loadAuthorAggregates(gen: Int, library: LibraryEngine) async {
-        if !readingEnabled || sourceFilter != .all || status != .all || advancedFilters.isActive {
+        if !readingEnabled || sourceFilter != .all || status != .all || advancedFilters.isActive || !restrictedCatalogProviders.isEmpty {
             let books = await sourceScopedBooksForCurrentMedia(library: library, boundedForSupportData: readingEnabled)
             let merged = library.authorAggregates(from: books)
             guard gen == generation else { return }
-            authorAggregates = merged
+            if authorAggregates != merged { authorAggregates = merged }
             loadedAggregateFacets.insert(.authors)
             return
         }
 
         let merged = await library.authorAggregates(mediaScope: mediaScope)
-        guard gen == generation else { return }
-        authorAggregates = merged
+        guard gen == generation, !Task.isCancelled else { return }
+        if authorAggregates != merged { authorAggregates = merged }
         loadedAggregateFacets.insert(.authors)
     }
 
     private func loadNarratorAggregates(gen: Int, library: LibraryEngine) async {
-        if !readingEnabled || sourceFilter != .all || status != .all || advancedFilters.isActive {
+        if !readingEnabled || sourceFilter != .all || status != .all || advancedFilters.isActive || !restrictedCatalogProviders.isEmpty {
             let books = await sourceScopedBooksForCurrentMedia(library: library, boundedForSupportData: readingEnabled)
             let merged = library.narratorAggregates(from: books)
             guard gen == generation else { return }
@@ -1301,7 +1580,7 @@ final class LibraryModel {
     }
 
     private func loadGenreAggregates(gen: Int, library: LibraryEngine) async {
-        if !readingEnabled || sourceFilter != .all || status != .all || advancedFilters.isActive {
+        if !readingEnabled || sourceFilter != .all || status != .all || advancedFilters.isActive || !restrictedCatalogProviders.isEmpty {
             let books = await sourceScopedBooksForCurrentMedia(library: library, boundedForSupportData: readingEnabled)
             let merged = library.genreAggregates(from: books)
             guard gen == generation else { return }
@@ -1318,7 +1597,7 @@ final class LibraryModel {
 
     func books(forGenre aggregate: BrowseGenreAggregate) async -> [Book] {
         let library = (profileSession?.engine ?? EnveEngine.shared).library
-        if readingEnabled, sourceFilter == .all, status == .all, !advancedFilters.isActive {
+        if readingEnabled, sourceFilter == .all, status == .all, !advancedFilters.isActive, restrictedCatalogProviders.isEmpty {
             return await library.books(forGenre: aggregate, mediaScope: mediaScope)
         }
         let matchingKeys = Set(aggregate.matchingGenres.map(Self.genreLookupKey))
@@ -1360,6 +1639,7 @@ final class LibraryModel {
         Self.markHidden(book)
         books.removeAll { $0.uniqueId == book.uniqueId }
         rawPages.removeAll { $0.uniqueId == book.uniqueId }
+        remoteSession?.entries.removeAll { $0.book.uniqueId == book.uniqueId }
     }
 
     static func markHidden(_ book: Book, profileSession: ProfileSession? = nil) {

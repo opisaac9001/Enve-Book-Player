@@ -10,6 +10,8 @@ import okhttp3.ResponseBody
 import retrofit2.Response
 import retrofit2.http.*
 
+const val GRIMMORY_MAX_PAGE_SIZE = 100
+
 @Suppress("unused")
 interface GrimmoryApi {
 
@@ -194,33 +196,27 @@ interface GrimmoryApi {
         @Path("itemId") itemId: String,
     ): Response<JsonObject>
 
-    @GET("api/v1/app/books")
-    suspend fun getBooks(
-        @Query("libraryId") libraryId: String? = null,
-        @Query("shelfId") shelfId: String? = null,
-        @Query("status") status: String? = null,
-        @Query("search") search: String? = null,
-        @Query("fileType") fileType: String? = null,
-        @Query("minRating") minRating: Int? = null,
-        @Query("maxRating") maxRating: Int? = null,
-        @Query("authors") authors: String? = null,
-        @Query("language") language: String? = null,
+    @GET("api/v1/books/page")
+    suspend fun getBooksPage(
+        @Query("facet") facets: List<String> = emptyList(),
+        @Query("query") query: String? = null,
+        @Query("sort") sort: String,
         @Query("page") page: Int = 0,
-        @Query("size") size: Int = 50,
-        @Query("sort") sort: String = "addedOn",
-        @Query("dir") dir: String = "desc",
-    ): Response<PaginatedBooksResponse>
+        @Query("size") size: Int = GRIMMORY_MAX_PAGE_SIZE,
+    ): Response<GrimmoryBrowsePage<LegacyBookloreBookDto>>
 
-    @GET("api/v1/app/books/ids")
-    fun getCatalogBookIds(@Query("libraryId") libraryId: String?): retrofit2.Call<kotlinx.serialization.json.JsonElement>
+    @GET("api/v1/books/ids")
+    fun getCatalogBookIds(
+        @Query("facet") facets: List<String>,
+        @Query("sort") sort: String,
+    ): retrofit2.Call<kotlinx.serialization.json.JsonElement>
 
-    @GET("api/v1/app/books")
+    @GET("api/v1/books/page")
     fun getCatalogBooks(
-        @Query("libraryId") libraryId: String?,
+        @Query("facet") facets: List<String>,
+        @Query("sort") sort: String,
         @Query("page") page: Int,
         @Query("size") size: Int,
-        @Query("sort") sort: String,
-        @Query("dir") dir: String,
     ): retrofit2.Call<kotlinx.serialization.json.JsonElement>
 
     @GET("api/v1/books/batch")
@@ -232,47 +228,15 @@ interface GrimmoryApi {
     @GET("api/v1/libraries")
     fun getCatalogLibraries(): retrofit2.Call<List<LibraryDto>>
 
-    @GET("api/v1/app/books/{bookId}")
-    suspend fun getBookDetail(@Path("bookId") bookId: String): Response<BookDetailDto>
-
-    @GET("api/v1/app/books/continue-listening")
-    suspend fun getContinueListening(
-        @Query("limit") limit: Int = 10,
-    ): Response<List<BookSummaryDto>>
-
-    @GET("api/v1/app/books/continue-reading")
-    suspend fun getContinueReading(
-        @Query("limit") limit: Int = 10,
-    ): Response<List<BookSummaryDto>>
-
-    @GET("api/v1/app/books/recently-added")
-    suspend fun getRecentlyAdded(
-        @Query("limit") limit: Int = 10,
-    ): Response<List<BookSummaryDto>>
-
-    @GET("api/v1/app/books/recently-scanned")
-    suspend fun getRecentlyScanned(
-        @Query("limit") limit: Int = 10,
-    ): Response<List<BookSummaryDto>>
-
-    @GET("api/v1/app/books/random")
-    suspend fun getRandomBooks(
-        @Query("page") page: Int = 0,
-        @Query("size") size: Int = 20,
-        @Query("libraryId") libraryId: String? = null,
-    ): Response<PaginatedBooksResponse>
-
-    @GET("api/v1/app/books/search")
-    suspend fun searchBooks(
-        @Query("q") query: String,
-        @Query("page") page: Int = 0,
-        @Query("size") size: Int = 20,
-    ): Response<PaginatedBooksResponse>
-
-    @PUT("api/v1/app/books/{bookId}/status")
-    suspend fun updateBookStatus(
+    @GET("api/v1/books/{bookId}")
+    suspend fun getBook(
         @Path("bookId") bookId: String,
-        @Body request: UpdateStatusRequest,
+        @Query("withDescription") withDescription: Boolean = true,
+    ): Response<LegacyBookloreBookDto>
+
+    @POST("api/v1/books/status")
+    suspend fun updateReadStatus(
+        @Body request: ReadStatusUpdateRequest,
     ): Response<Unit>
 
     @PUT("api/v1/books/personal-rating")
@@ -285,11 +249,8 @@ interface GrimmoryApi {
         @Path("bookId") bookId: String,
     ): Response<AudiobookInfoDto>
 
-    @GET("api/v1/app/shelves")
-    suspend fun getShelves(): Response<List<ShelfDto>>
-
     @GET("api/v1/shelves")
-    suspend fun getLegacyShelves(): Response<List<ShelfDto>>
+    suspend fun getShelves(): Response<List<ShelfDto>>
 
     @POST("api/v1/shelves")
     suspend fun createShelf(@Body request: GrimmoryCreateShelfRequest): Response<ShelfDto>
@@ -302,60 +263,21 @@ interface GrimmoryApi {
         @Path("shelfId") shelfId: String,
     ): Response<List<LegacyBookloreBookDto>>
 
-    @GET("api/v1/app/shelves/magic")
+    @GET("api/magic-shelves")
     suspend fun getMagicShelves(): Response<List<MagicShelfDto>>
 
-    @GET("api/v1/app/shelves/magic/{magicShelfId}/books")
-    suspend fun getMagicShelfBooks(
-        @Path("magicShelfId") magicShelfId: String,
+    @GET("api/v1/books/facets/series")
+    suspend fun getSeriesFacet(
         @Query("page") page: Int = 0,
-        @Query("size") size: Int = 20,
-    ): Response<PaginatedBooksResponse>
+        @Query("size") size: Int = GRIMMORY_MAX_PAGE_SIZE,
+    ): Response<GrimmoryFacetGroupsResponse>
 
-    @GET("api/v1/app/series")
-    suspend fun getSeries(
-        @Query("page") page: Int = 0,
-        @Query("size") size: Int = 50,
-        @Query("sort") sort: String = "recentlyAdded",
-        @Query("dir") dir: String = "desc",
-        @Query("libraryId") libraryId: String? = null,
-        @Query("search") search: String? = null,
-        @Query("status") status: String? = null,
-    ): Response<PaginatedSeriesResponse>
-
-    @GET("api/v1/app/series/{seriesName}/books")
-    suspend fun getSeriesBooks(
-        @Path("seriesName") seriesName: String,
-        @Query("page") page: Int = 0,
-        @Query("size") size: Int = 20,
-        @Query("sort") sort: String = "seriesNumber",
-        @Query("dir") dir: String = "asc",
-        @Query("libraryId") libraryId: String? = null,
-    ): Response<PaginatedBooksResponse>
-
-    @GET("api/v1/app/notebook/books")
-    suspend fun getNotebookBooks(
-        @Query("page") page: Int = 0,
-        @Query("size") size: Int = 20,
-        @Query("search") search: String? = null,
-    ): Response<PaginatedNotebookBooksResponse>
-
-    @GET("api/v1/app/notebook/books/{bookId}/entries")
+    @GET("api/v1/notebook")
     suspend fun getNotebookEntries(
-        @Path("bookId") bookId: String,
-        @Query("page") page: Int = 0,
-        @Query("size") size: Int = 20,
-        @Query("types") types: String? = null,
-        @Query("search") search: String? = null,
-        @Query("sort") sort: String = "date_desc",
-    ): Response<PaginatedNotebookEntriesResponse>
-
-    @GET("api/v1/app/filter-options")
-    suspend fun getFilters(
-        @Query("libraryId") libraryId: String? = null,
-        @Query("shelfId") shelfId: String? = null,
-        @Query("magicShelfId") magicShelfId: String? = null,
-    ): Response<FilterOptionsDto>
+        @Query("size") size: Int,
+        @Query("types") types: List<String> = listOf("NOTE", "HIGHLIGHT", "BOOKMARK"),
+        @Query("sort") sort: String = "desc",
+    ): Response<GrimmoryBrowsePage<NotebookEntryDto>>
 
     @GET("api/v1/books/{bookId}/recommendations")
     suspend fun getBookRecommendations(
@@ -465,21 +387,13 @@ interface GrimmoryApi {
         @Path("bookmarkId") bookmarkId: Long,
     ): Response<Unit>
 
-    @GET("api/v1/app/authors")
+    @GET("api/v1/authors/page")
     suspend fun getAuthors(
-        @Query("page") page: Int = 0,
-        @Query("size") size: Int = 30,
+        @Query("query") query: String? = null,
         @Query("sort") sort: String = "name",
-        @Query("dir") dir: String = "asc",
-        @Query("libraryId") libraryId: String? = null,
-        @Query("search") search: String? = null,
-        @Query("hasPhoto") hasPhoto: Boolean? = null,
-    ): Response<PaginatedAuthorsResponse>
-
-    @GET("api/v1/app/authors/{authorId}")
-    suspend fun getAuthorDetail(
-        @Path("authorId") authorId: String,
-    ): Response<AuthorDetailDto>
+        @Query("page") page: Int = 0,
+        @Query("size") size: Int = GRIMMORY_MAX_PAGE_SIZE,
+    ): Response<GrimmoryBrowsePage<AuthorSummaryDto>>
 
     @GET("api/v1/app/books/{bookId}/progress")
     suspend fun getAppBookProgress(
@@ -490,12 +404,6 @@ interface GrimmoryApi {
     suspend fun getBookProgressDetail(
         @Path("bookId") bookId: String,
     ): Response<GrimmoryBookProgressDetailDto>
-
-    @PUT("api/v1/app/books/{bookId}/progress")
-    suspend fun putAppBookProgress(
-        @Path("bookId") bookId: String,
-        @Body request: GrimmoryUpdateProgressRequest,
-    ): Response<Unit>
 
     @POST("api/v1/books/progress")
     suspend fun postBookProgress(
