@@ -37,8 +37,11 @@ import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.RectangleShape
 import androidx.compose.ui.layout.onSizeChanged
 import androidx.compose.ui.platform.LocalDensity
+import androidx.compose.ui.platform.LocalWindowInfo
 import androidx.compose.ui.unit.dp
 import com.enve.hearth.shell.profileViewModel
+import androidx.lifecycle.Lifecycle
+import androidx.lifecycle.compose.LifecycleEventEffect
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import coil.ImageLoader
 import com.enve.core.data.model.AppMediaType
@@ -53,8 +56,11 @@ import com.enve.hearth.design.LocalHearthImageLoader
 import com.enve.hearth.design.LocalMantelInset
 import com.enve.hearth.design.Overline
 import com.enve.hearth.bookorbit.BookOrbitAchievementsScreen
+import com.enve.hearth.bookorbit.BookOrbitBookDropScreen
 import com.enve.hearth.bookorbit.BookOrbitHighlightsScreen
 import com.enve.hearth.bookorbit.BookOrbitInsightsScreen
+import com.enve.hearth.bookorbit.BookOrbitSmartScopesScreen
+import com.enve.hearth.bookorbit.BookOrbitTool
 import com.enve.hearth.design.parseHexColor
 import com.enve.hearth.detail.BookDetailScreen
 import com.enve.hearth.hasPlayableAudio
@@ -63,6 +69,7 @@ import com.enve.hearth.home.HearthHomeScreen
 import com.enve.hearth.journal.HearthCompletionCenterScreen
 import com.enve.hearth.journal.HearthInsightsScreen
 import com.enve.hearth.journal.HearthJournalScreen
+import com.enve.hearth.journal.HearthReadingRecapScreen
 import com.enve.hearth.journal.HearthStatsHubScreen
 import com.enve.hearth.library.HearthLibraryScreen
 import com.enve.hearth.listeningposition.ListeningPositionScanScreen
@@ -82,6 +89,8 @@ fun HearthRoot(
     onOpenProfiles: (() -> Unit)? = null,
     profileName: String? = null,
     initialShowSettings: Boolean = false,
+    showLibraryRequest: Boolean = false,
+    onLibraryRequestConsumed: () -> Unit = {},
     showPlayerRequest: Boolean = false,
     onPlayerRequestConsumed: () -> Unit = {},
     positionLinkRequest: String? = null,
@@ -139,14 +148,31 @@ fun HearthRoot(
             var showSettings by rememberSaveable { mutableStateOf(initialShowSettings) }
             var showCompletionCenter by rememberSaveable { mutableStateOf(false) }
             var showInsights by rememberSaveable { mutableStateOf(false) }
+            var showRecaps by rememberSaveable { mutableStateOf(false) }
             var showStatsHub by rememberSaveable { mutableStateOf(false) }
             var showSleepInsights by rememberSaveable { mutableStateOf(false) }
-            var showBookOrbitInsights by rememberSaveable { mutableStateOf(false) }
-            var showBookOrbitAchievements by rememberSaveable { mutableStateOf(false) }
-            var showBookOrbitHighlights by rememberSaveable { mutableStateOf(false) }
+            var bookOrbitTool by rememberSaveable { mutableStateOf<BookOrbitTool?>(null) }
+            var bookOrbitAccountId by rememberSaveable { mutableStateOf<String?>(null) }
             var detailBook by remember { mutableStateOf<Book?>(null) }
             var episodeBook by remember { mutableStateOf<Book?>(null) }
             var castBlockedTitle by remember { mutableStateOf<String?>(null) }
+            LaunchedEffect(showLibraryRequest) {
+                if (showLibraryRequest) {
+                    showSettings = false
+                    showPlayer = false
+                    showCompletionCenter = false
+                    showInsights = false
+                    showRecaps = false
+                    showStatsHub = false
+                    showSleepInsights = false
+                    bookOrbitTool = null
+                    detailBook = null
+                    episodeBook = null
+                    tab = HearthTab.LIBRARY
+                    startupTabApplied = true
+                    onLibraryRequestConsumed()
+                }
+            }
             LaunchedEffect(openBookRequest) {
                 if (openBookRequest != null) {
                     showSettings = false
@@ -201,16 +227,29 @@ fun HearthRoot(
                     onPlayerRequestConsumed()
                 }
             }
+            val listPaneWidth = HearthPanes.listPaneWidth(
+                with(LocalDensity.current) { LocalWindowInfo.current.containerSize.width.toDp() },
+            )
+            val smartScopesOpen = bookOrbitTool == BookOrbitTool.SMART_SCOPES
+            val detailInPane = listPaneWidth != null &&
+                (smartScopesOpen || (tab == HearthTab.LIBRARY && bookOrbitTool == null))
             LaunchedEffect(nowPlaying, showPlayer, pendingPlayerBookId) {
                 val pending = pendingPlayerBookId
                 if (nowPlaying == null && pending == null) showPlayer = false
                 if (showPlayer && pending != null && nowPlaying?.bookId == pending) {
                     pendingPlayerBookId = null
-                    if (detailBook?.isPodcastShow != true) detailBook = null
+                    if (detailBook?.isPodcastShow != true && !detailInPane) detailBook = null
                 }
             }
-            val bookOrbitOverlayVisible = showBookOrbitInsights || showBookOrbitAchievements || showBookOrbitHighlights
-            val overlayVisible = showPlayer || showSettings || showCompletionCenter || showInsights ||
+            LifecycleEventEffect(Lifecycle.Event.ON_START) { vm.replayPendingEdits() }
+            val openBookOrbitTool: (BookOrbitTool, String?) -> Unit = { tool, accountId ->
+                showSettings = false
+                if (detailInPane) detailBook = null
+                bookOrbitAccountId = accountId
+                bookOrbitTool = tool
+            }
+            val bookOrbitOverlayVisible = bookOrbitTool != null
+            val overlayVisible = showPlayer || showSettings || showCompletionCenter || showInsights || showRecaps ||
                 showStatsHub || showSleepInsights || bookOrbitOverlayVisible || detailBook != null || episodeBook != null
             BackHandler(enabled = overlayVisible || tab != HearthTab.HEARTH) {
                 when {
@@ -221,9 +260,8 @@ fun HearthRoot(
                     showSettings -> showSettings = false
                     episodeBook != null -> episodeBook = null
                     detailBook != null -> detailBook = null
-                    showBookOrbitInsights -> showBookOrbitInsights = false
-                    showBookOrbitAchievements -> showBookOrbitAchievements = false
-                    showBookOrbitHighlights -> showBookOrbitHighlights = false
+                    bookOrbitTool != null -> bookOrbitTool = null
+                    showRecaps -> showRecaps = false
                     showInsights -> showInsights = false
                     showStatsHub -> showStatsHub = false
                     showSleepInsights -> showSleepInsights = false
@@ -277,9 +315,53 @@ fun HearthRoot(
                     showPlayer = true
                 } else {
                     onOpenAnnotation(book, annotation)
-                    detailBook = null
+                    if (!detailInPane) detailBook = null
                 }
             }
+            val detailContent: @Composable (Book) -> Unit = { b ->
+                if (b.isPodcastShow) {
+                    PodcastShowScreen(
+                        initial = b,
+                        onBack = {
+                            detailBook = null
+                            pendingPlayerBookId = null
+                        },
+                        onPlay = {
+                            pendingPlayerBookId = it.id
+                            vm.openAudio(it)
+                            showPlayer = true
+                        },
+                        onOpenEpisode = { episodeBook = it },
+                    )
+                } else {
+                    BookDetailScreen(
+                        initial = b,
+                        onBack = {
+                            detailBook = null
+                            pendingPlayerBookId = null
+                        },
+                        onListen = {
+                            pendingPlayerBookId = it.id
+                            vm.openAudio(it)
+                            showPlayer = true
+                        },
+                        onListenAt = { book, positionMs ->
+                            pendingPlayerBookId = book.id
+                            vm.openAudioAt(book, positionMs)
+                            showPlayer = true
+                        },
+                        onRead = {
+                            onOpenEbook(it)
+                            if (!detailInPane) detailBook = null
+                        },
+                        onOpenBook = { detailBook = it },
+                        onAskLibrarian = onAskLibrarian,
+                        onOpenAnnotation = jumpToAnnotation,
+                    )
+                }
+            }
+            val paneBook = detailBook
+            val paneDetail: (@Composable () -> Unit)? = if (paneBook == null) null else { { detailContent(paneBook) } }
 
             val einkOn = einkState.active
             val view = androidx.compose.ui.platform.LocalView.current
@@ -291,6 +373,7 @@ fun HearthRoot(
                 showSettings,
                 showCompletionCenter,
                 showInsights,
+                showRecaps,
                 showSleepInsights,
                 bookOrbitOverlayVisible,
             ) {
@@ -315,15 +398,21 @@ fun HearthRoot(
                         onOpenPodcasts = { tab = HearthTab.PODCASTS },
                         onOpenHardcover = { onOpenSettingsDestination(HearthSettingsDestination.Hardcover) },
                     )
-                    HearthTab.LIBRARY -> HearthLibraryScreen(
-                        covered = overlayVisible,
-                        onSelectBook = selectBook,
-                        onPlayBook = playBook,
-                        onListenBook = listenBook,
-                        onPlaybackStarted = { showPlayer = true },
-                        onAddSource = onManageSources,
-                        onOpenSettings = { showSettings = true },
-                    )
+                    HearthTab.LIBRARY -> HearthListDetail(
+                        listWidth = listPaneWidth,
+                        detail = paneDetail.takeIf { bookOrbitTool == null },
+                    ) {
+                        HearthLibraryScreen(
+                            covered = overlayVisible,
+                            onSelectBook = selectBook,
+                            onPlayBook = playBook,
+                            onListenBook = listenBook,
+                            onPlaybackStarted = { showPlayer = true },
+                            onAddSource = onManageSources,
+                            onOpenSettings = { showSettings = true },
+                            onOpenBookOrbitTool = { tool -> openBookOrbitTool(tool, null) },
+                        )
+                    }
                     HearthTab.PODCASTS -> PodcastsScreen(
                         onOpenShow = selectBook,
                         onOpenEpisode = { episodeBook = it },
@@ -333,6 +422,7 @@ fun HearthRoot(
                         onSelectBook = selectBook,
                         onOpenCompletions = { showCompletionCenter = true },
                         onOpenInsights = { showInsights = true },
+                        onOpenRecaps = { showRecaps = true },
                         onOpenStatsHub = { showStatsHub = true },
                         onOpenSleep = { showSleepInsights = true },
                         onOpenSettings = { showSettings = true },
@@ -351,7 +441,10 @@ fun HearthRoot(
                     )
                     MantelBar(
                         selected = tab,
-                        onSelect = { tab = it },
+                        onSelect = {
+                            if (detailInPane) detailBook = null
+                            tab = it
+                        },
                         lastOpenedBook = mantelDisplayBook,
                         nowPlaying = nowPlaying,
                         transport = transport,
@@ -369,8 +462,23 @@ fun HearthRoot(
                 ) {
                     HearthInsightsScreen(
                         onBack = { showInsights = false },
+                        onOpenRecaps = { showInsights = false; showRecaps = true },
                         onSelectBook = {
                             showInsights = false
+                            detailBook = it
+                        },
+                    )
+                }
+
+                AnimatedVisibility(
+                    visible = showRecaps,
+                    enter = enterT,
+                    exit = exitT,
+                ) {
+                    HearthReadingRecapScreen(
+                        onBack = { showRecaps = false },
+                        onSelectBook = {
+                            showRecaps = false
                             detailBook = it
                         },
                     )
@@ -383,9 +491,7 @@ fun HearthRoot(
                 ) {
                     HearthStatsHubScreen(
                         onBack = { showStatsHub = false },
-                        onOpenBookOrbit = {
-                            showBookOrbitInsights = true
-                        },
+                        onOpenBookOrbit = { openBookOrbitTool(BookOrbitTool.INSIGHTS, null) },
                     )
                 }
 
@@ -397,40 +503,48 @@ fun HearthRoot(
                     HearthSleepInsightsScreen(onBack = { showSleepInsights = false })
                 }
 
-                AnimatedVisibility(
-                    visible = showBookOrbitInsights,
-                    enter = enterT,
-                    exit = exitT,
-                ) {
-                    BookOrbitInsightsScreen(
-                        onBack = { showBookOrbitInsights = false },
-                        onOpenBook = {
-                            showBookOrbitInsights = false
+                BookOrbitTool.entries.forEach { tool ->
+                    AnimatedVisibility(
+                        visible = bookOrbitTool == tool,
+                        enter = enterT,
+                        exit = exitT,
+                    ) {
+                        val close = { bookOrbitTool = null }
+                        val openFromTool: (Book) -> Unit = {
+                            bookOrbitTool = null
                             detailBook = it
-                        },
-                    )
-                }
-
-                AnimatedVisibility(
-                    visible = showBookOrbitAchievements,
-                    enter = enterT,
-                    exit = exitT,
-                ) {
-                    BookOrbitAchievementsScreen(onBack = { showBookOrbitAchievements = false })
-                }
-
-                AnimatedVisibility(
-                    visible = showBookOrbitHighlights,
-                    enter = enterT,
-                    exit = exitT,
-                ) {
-                    BookOrbitHighlightsScreen(
-                        onBack = { showBookOrbitHighlights = false },
-                        onOpenBook = {
-                            showBookOrbitHighlights = false
-                            detailBook = it
-                        },
-                    )
+                        }
+                        when (tool) {
+                            BookOrbitTool.INSIGHTS -> BookOrbitInsightsScreen(onBack = close, onOpenBook = openFromTool)
+                            BookOrbitTool.ACHIEVEMENTS -> BookOrbitAchievementsScreen(
+                                onBack = close,
+                                initialAccountId = bookOrbitAccountId,
+                            )
+                            BookOrbitTool.HIGHLIGHTS -> BookOrbitHighlightsScreen(
+                                onBack = close,
+                                onOpenBook = openFromTool,
+                                initialAccountId = bookOrbitAccountId,
+                            )
+                            BookOrbitTool.BOOK_DROP -> BookOrbitBookDropScreen(
+                                initialAccountId = bookOrbitAccountId,
+                                onBack = close,
+                            )
+                            BookOrbitTool.SMART_SCOPES -> HearthListDetail(
+                                listWidth = listPaneWidth,
+                                detail = paneDetail,
+                            ) {
+                                BookOrbitSmartScopesScreen(
+                                    initialAccountId = bookOrbitAccountId,
+                                    selectedBookKey = detailBook?.uniqueKey.takeIf { listPaneWidth != null },
+                                    onBack = {
+                                        if (listPaneWidth != null) detailBook = null
+                                        bookOrbitTool = null
+                                    },
+                                    onOpenBook = { detailBook = it },
+                                )
+                            }
+                        }
+                    }
                 }
 
                 AnimatedVisibility(
@@ -448,49 +562,11 @@ fun HearthRoot(
                 }
 
                 AnimatedVisibility(
-                    visible = detailBook != null,
+                    visible = detailBook != null && !detailInPane,
                     enter = enterT,
                     exit = exitT,
                 ) {
-                    detailBook?.let { b ->
-                        if (b.isPodcastShow) {
-                            PodcastShowScreen(
-                                initial = b,
-                                onBack = {
-                                    detailBook = null
-                                    pendingPlayerBookId = null
-                                },
-                                onPlay = {
-                                    pendingPlayerBookId = it.id
-                                    vm.openAudio(it)
-                                    showPlayer = true
-                                },
-                                onOpenEpisode = { episodeBook = it },
-                            )
-                        } else {
-                            BookDetailScreen(
-                                initial = b,
-                                onBack = {
-                                    detailBook = null
-                                    pendingPlayerBookId = null
-                                },
-                                onListen = {
-                                    pendingPlayerBookId = it.id
-                                    vm.openAudio(it)
-                                    showPlayer = true
-                                },
-                                onListenAt = { book, positionMs ->
-                                    pendingPlayerBookId = book.id
-                                    vm.openAudioAt(book, positionMs)
-                                    showPlayer = true
-                                },
-                                onRead = { onOpenEbook(it); detailBook = null },
-                                onOpenBook = { detailBook = it },
-                                onAskLibrarian = onAskLibrarian,
-                                onOpenAnnotation = jumpToAnnotation,
-                            )
-                        }
-                    }
+                    detailBook?.let { b -> detailContent(b) }
                 }
 
                 AnimatedVisibility(
@@ -517,6 +593,7 @@ fun HearthRoot(
                         onManageSources = onManageSources,
                         onOpenDestination = onOpenSettingsDestination,
                         onOpdsAuthorize = onOpdsAuthorize,
+                        onOpenBookOrbitTool = openBookOrbitTool,
                     )
                 }
 

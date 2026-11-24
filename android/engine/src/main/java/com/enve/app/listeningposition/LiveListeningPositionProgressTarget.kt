@@ -112,7 +112,10 @@ class LiveListeningPositionProgressTarget @Inject constructor(
                 val unchanged = before != null && after?.copy(lastReadTime = before.lastReadTime, inProgress = before.inProgress) == before
                 if (queued != null && unchanged && sync.accepts(queued.createdAt)) {
                     rewinds.recordOutboundWrite(RemoteProgressWriteKey.of(book), book.epubProgress ?: book.readProgress, null, book.epubLocator)
-                    pending.deleteIfUnchanged(book.id, book.source.name, book.connectionId.orEmpty(), queued.createdAt, queued.percentage)
+                    pending.deleteIfUnchanged(
+                        book.id, book.source.name, book.connectionId.orEmpty(), queued.createdAt,
+                        queued.percentage, queued.mediaType, queued.isFinished,
+                    )
                 }
             } else repository.syncAudiobookProgress(book, book.currentTime, book.readProgress).getOrThrow()
         } catch (error: CancellationException) {

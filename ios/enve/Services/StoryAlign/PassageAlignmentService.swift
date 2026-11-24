@@ -1174,7 +1174,7 @@ final class PassageAlignmentService {
     }
 
     private func ebookURL(_ ebook: Book) -> URL? {
-        profileSession.ebooks.resolveExistingLocalEbookURL(bookIdentifier: ebook.id, ebookFileURL: ebook.ebookFileURL, filePath: ebook.filePath)
+        profileSession.ebooks.resolveExistingLocalEbookURL(for: ebook)
     }
 
     private nonisolated static func isEPUB(_ url: URL?) -> Bool {

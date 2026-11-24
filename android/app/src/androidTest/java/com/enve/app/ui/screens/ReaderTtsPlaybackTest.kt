@@ -2,17 +2,18 @@ package com.enve.app.ui.screens
 
 import android.content.Context
 import androidx.compose.ui.semantics.SemanticsActions
+import androidx.compose.ui.semantics.getOrNull
 import androidx.compose.ui.test.SemanticsMatcher
-import androidx.compose.ui.test.hasAnyDescendant
-import androidx.compose.ui.test.hasText
-import androidx.compose.ui.test.performSemanticsAction
-import androidx.compose.ui.test.onFirst
 import androidx.compose.ui.test.hasClickAction
 import androidx.compose.ui.test.hasContentDescription
+import androidx.compose.ui.test.hasScrollToNodeAction
+import androidx.compose.ui.test.hasText
+import androidx.compose.ui.test.isSelectable
 import androidx.compose.ui.test.junit4.createEmptyComposeRule
 import androidx.compose.ui.test.onNodeWithText
-import androidx.compose.ui.test.performScrollTo
 import androidx.compose.ui.test.performClick
+import androidx.compose.ui.test.performScrollToNode
+import androidx.compose.ui.test.performSemanticsAction
 import androidx.lifecycle.ViewModelProvider
 import androidx.test.core.app.ActivityScenario
 import androidx.test.core.app.ApplicationProvider
@@ -65,6 +66,18 @@ class ReaderTtsPlaybackTest {
     private fun click(description: String) =
         compose.onNode(hasContentDescription(description) and hasClickAction()).performClick()
 
+    private fun openVoicePicker() {
+        compose.onNode(SemanticsMatcher("Choose a voice") {
+            it.config.getOrNull(SemanticsActions.OnClick)?.label == "Choose a voice"
+        }).performSemanticsAction(SemanticsActions.OnClick)
+    }
+
+    private fun dismissSpeechSheet() {
+        compose.onNode(SemanticsMatcher.keyIsDefined(SemanticsActions.Dismiss))
+            .performSemanticsAction(SemanticsActions.Dismiss)
+        compose.waitForIdle()
+    }
+
     private fun verify(engine: ReaderEngineKind, narrator: NarratorPack? = null) = runBlocking {
         val context = ApplicationProvider.getApplicationContext<Context>()
         val coordinator = EntryPointAccessors.fromApplication(context, ProfileActivityBinding.DeviceEntryPoint::class.java).profiles()
@@ -94,10 +107,11 @@ class ReaderTtsPlaybackTest {
                     await { vm.state.value.ttsPlayback.active && !vm.state.value.ttsPlayback.playing }
                     if (narrator != null) {
                         click("Voice and speed")
-                        compose.onNodeWithText(narrator.title).performScrollTo().performClick()
-                        await { vm.state.value.ttsNarratorPack == narrator }
+                        openVoicePicker()
+                        val choice = hasText(narrator.title) and isSelectable()
+                        compose.onNode(hasScrollToNodeAction()).performScrollToNode(choice)
                         if (vm.state.value.ttsNarratorPacks[narrator] != ReaderNarratorPackState.Installed) {
-                            compose.onNodeWithText("Download ${narrator.title} ·", substring = true).performScrollTo().performClick()
+                            compose.onNode(choice).performClick()
                             compose.onNodeWithText(narrator.terms).assertExists()
                             assertFalse(vm.state.value.ttsNarratorPacks[narrator] is ReaderNarratorPackState.Downloading)
                             compose.onNodeWithText("Agree and download").performClick()
@@ -110,7 +124,9 @@ class ReaderTtsPlaybackTest {
                                 }
                             }
                         }
-                        compose.onNodeWithText("Done").performScrollTo().performClick()
+                        compose.onNode(choice).performClick()
+                        await { vm.state.value.ttsNarratorPack == narrator }
+                        dismissSpeechSheet()
                         click("Resume read back")
                         withTimeout(180_000) {
                             while (vm.state.value.ttsPlayback.preparing) delay(100)
@@ -134,20 +150,17 @@ class ReaderTtsPlaybackTest {
                     assertTrue(vm.state.value.ttsPlayback.active)
                     assertFalse(vm.state.value.ttsPlayback.playing)
                     click("Voice and speed")
-                    compose.onNodeWithText("1.25×").performClick()
-                    assertEquals(1.25f, vm.state.value.prefs.ttsSpeed, 0.001f)
+                    val pace = if (vm.state.value.prefs.ttsSpeed == 1.25f) 1.5f else 1.25f
+                    compose.onNode(hasContentDescription("Pace")).performSemanticsAction(SemanticsActions.SetProgress) { it(pace) }
+                    assertEquals(pace, vm.state.value.prefs.ttsSpeed, 0.001f)
                     assertFalse(vm.state.value.ttsPlayback.playing)
                     assertTrue(vm.state.value.ttsVoices.isNotEmpty())
                     delay(5_200)
                     assertTrue(vm.state.value.showChrome)
                     assertTrue(vm.state.value.showTtsSheet)
                     if (narrator != null) {
-                        compose.onAllNodes(SemanticsMatcher.keyIsDefined(SemanticsActions.Expand))
-                            .onFirst().performSemanticsAction(SemanticsActions.Expand) { it() }
-                        compose.onNode(
-                            SemanticsMatcher.keyIsDefined(SemanticsActions.ScrollBy) and
-                                hasAnyDescendant(hasText("System voice")),
-                        ).performSemanticsAction(SemanticsActions.ScrollBy) { it(0f, 800f) }
+                        openVoicePicker()
+                        compose.onNode(hasScrollToNodeAction()).performScrollToNode(hasText(narrator.title) and isSelectable())
                         compose.waitForIdle()
                         val directory = File(context.getExternalFilesDir(null), "parity-verification").apply { mkdirs() }
                         InstrumentationRegistry.getInstrumentation().uiAutomation.takeScreenshot().let { bitmap ->
@@ -157,7 +170,7 @@ class ReaderTtsPlaybackTest {
                             bitmap.recycle()
                         }
                     }
-                    compose.onNodeWithText("Done").performScrollTo().performClick()
+                    dismissSpeechSheet()
                     click("Resume read back")
                     await { vm.state.value.ttsPlayback.playing && !vm.state.value.ttsPlayback.preparing }
                     click("Contents")

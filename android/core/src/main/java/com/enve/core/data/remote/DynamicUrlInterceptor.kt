@@ -25,7 +25,7 @@ class DynamicUrlInterceptor @Inject constructor(
             connectionRegistry.getConnectionsSync().find { it.id == connectionId }
         } else null
 
-        val serverUrl = if (connectionId != null) matchingConnection?.serverUrl else preferencesManager.getServerUrlSync()
+        val serverUrl = if (connectionId != null) matchingConnection?.serverUrl else LoginAttemptScope.get()?.serverUrl ?: preferencesManager.getServerUrlSync()
 
         if (serverUrl.isNullOrBlank()) {
             if (isPlaceholder) throw IOException("No server URL configured for request ${originalUrl.encodedPath}")

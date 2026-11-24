@@ -12,6 +12,8 @@ import com.enve.core.data.model.BookSource
 import com.enve.core.data.model.ReaderAnnotation
 import com.enve.core.data.provider.ProviderAdapter
 import com.enve.app.data.repository.AnnotationRepository
+import com.enve.app.data.repository.AnnotationScope
+import com.enve.app.data.repository.annotationScope
 import com.enve.app.data.repository.AggregatorRepository
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
@@ -45,20 +47,22 @@ class SyncCoordinator @Inject constructor(
 
     private val debounceJobs = ConcurrentHashMap<String, Job>()
 
-    private val annotationDebounceJobs = ConcurrentHashMap<String, Job>()
+    private val annotationDebounceJobs = ConcurrentHashMap<AnnotationScope, Job>()
 
     private val bookMutexes = ConcurrentHashMap<String, Mutex>()
 
-    private val knownBooks = ConcurrentHashMap<String, Book>()
+    private val annotationMutexes = ConcurrentHashMap<AnnotationScope, Mutex>()
+
+    private val knownBooks = ConcurrentHashMap<AnnotationScope, Book>()
 
     init {
-        annotationRepo.setChangeListener { bookId ->
-            scheduleAnnotationsPush(bookId)
+        annotationRepo.setChangeListener { target ->
+            scheduleAnnotationsPush(target)
         }
     }
 
     fun registerBook(book: Book) {
-        knownBooks[book.id] = book
+        knownBooks[book.annotationScope] = book
     }
 
     suspend fun pullOnOpen(book: Book): SyncSnapshot? {
@@ -90,7 +94,7 @@ class SyncCoordinator @Inject constructor(
         for (adapter in adapters) {
             if (adapter.source != book.source) continue
             if (!adapter.syncCapability.supports(SyncCapabilityFlag.PULL_ANNOTATIONS)) continue
-            adapter.fetchAnnotations(book).getOrNull()?.let { remote ->
+            aggregatorRepository.fetchAnnotations(book).getOrNull()?.let { remote ->
                 merged += remote
                 if (adapter.annotationsAreAuthoritative) {
                     authoritativeSource = adapter.source.name.lowercase()
@@ -103,40 +107,40 @@ class SyncCoordinator @Inject constructor(
             .map { (_, candidates) -> candidates.maxByOrNull { it.updatedAt }!! }
         val authoritative = authoritativeSource
         if (authoritative != null) {
-            annotationRepo.applyAuthoritativeRemote(book.id, authoritative, deduped)
+            annotationRepo.applyAuthoritativeRemote(book.annotationScope, authoritative, deduped)
         } else if (deduped.isNotEmpty()) {
-            annotationRepo.applyRemote(deduped)
+            annotationRepo.applyRemote(book.annotationScope, deduped)
         }
         return merged
     }
 
-    fun scheduleAnnotationsPush(bookId: String, debounceMs: Long = 2_000) {
-        annotationDebounceJobs[bookId]?.cancel()
-        annotationDebounceJobs[bookId] = scope.launch {
+    fun scheduleAnnotationsPush(target: AnnotationScope, debounceMs: Long = 2_000) {
+        annotationDebounceJobs[target]?.cancel()
+        annotationDebounceJobs[target] = scope.launch {
             delay(debounceMs)
-            performAnnotationsPush(bookId)
+            performAnnotationsPush(target)
         }
     }
 
-    fun flushAnnotations(bookId: String) {
-        scope.launch { performAnnotationsPush(bookId) }
+    fun flushAnnotations(book: Book) {
+        scope.launch { performAnnotationsPush(book.annotationScope) }
     }
 
-    private suspend fun performAnnotationsPush(bookId: String) {
-        val book = knownBooks[bookId]
+    private suspend fun performAnnotationsPush(target: AnnotationScope) {
+        val book = knownBooks[target]
         if (book == null) {
-            Log.w(TAG, "Annotation push skipped because $bookId is not registered")
+            Log.w(TAG, "Annotation push skipped because ${target.bookId} is not registered")
             return
         }
-        val mutex = bookMutexes.getOrPut(bookId) { Mutex() }
+        val mutex = annotationMutexes.getOrPut(target) { Mutex() }
         mutex.withLock {
-            val dirty = annotationRepo.dirtyForBook(bookId)
+            val dirty = annotationRepo.dirtyFor(target)
             if (dirty.isEmpty()) return@withLock
 
             for (adapter in adapters) {
                 if (adapter.source != book.source) continue
                 if (!adapter.syncCapability.supports(SyncCapabilityFlag.PUSH_ANNOTATIONS)) continue
-                val result = adapter.pushAnnotations(book, dirty)
+                val result = aggregatorRepository.pushAnnotations(book, dirty)
                 result.exceptionOrNull()?.let {
                     Log.w(TAG, "Annotation push failed for ${book.id} via ${adapter.source}", it)
                 }
@@ -257,7 +261,13 @@ class SyncCoordinator @Inject constructor(
     ): OpenSyncResult {
         if (!serverSync.isEnabled) return OpenSyncResult.Apply(null, useRemote = false, allowRemoteCheckpoint = false)
         if (snapshot == null) return OpenSyncResult.Apply(null, useRemote = false)
-        return when (ProgressResolutionPolicy.resolve(localPercentage, localUpdatedAt, snapshot, localLocatorJson)) {
+        val audioPositionMs = when (book.mediaType) {
+            AppMediaType.AUDIOBOOK, AppMediaType.PODCAST ->
+                if (book.currentTime > 0L) book.currentTime * 1000L
+                else (book.duration * localPercentage * 1000L).toLong().takeIf { book.duration > 0L }
+            AppMediaType.EBOOK -> null
+        }
+        return when (ProgressResolutionPolicy.resolve(localPercentage, localUpdatedAt, snapshot, localLocatorJson, audioPositionMs)) {
             ProgressResolutionPolicy.Decision.NONE -> OpenSyncResult.Apply(snapshot, useRemote = false)
             ProgressResolutionPolicy.Decision.PULL -> OpenSyncResult.Apply(snapshot, useRemote = true)
             ProgressResolutionPolicy.Decision.PUSH -> OpenSyncResult.Apply(snapshot, useRemote = false, allowRemoteCheckpoint = false)
@@ -278,8 +288,8 @@ class SyncCoordinator @Inject constructor(
                     RemoteRewindVerdict.DISMISSED -> OpenSyncResult.Apply(snapshot, useRemote = false, allowRemoteCheckpoint = false)
                     RemoteRewindVerdict.NOT_REWIND,
                     RemoteRewindVerdict.UNCONFIRMED -> {
-                        val localPositionMs =
-                            if (book.duration > 0L) (book.duration * localPercentage * 1000L).toLong() else null
+                        val localPositionMs = audioPositionMs
+                            ?: (book.duration * localPercentage * 1000L).toLong().takeIf { book.duration > 0L }
                         OpenSyncResult.Conflict(
                             local = ProgressOption(
                                 percentage = localPercentage,

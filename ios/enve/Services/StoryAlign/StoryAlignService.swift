@@ -1079,11 +1079,7 @@ final class StoryAlignService {
     }
 
     private func resolveEpubURL(_ book: Book) -> URL? {
-        (profileSession?.ebooks ?? LocalEbookImporter.shared).resolveExistingLocalEbookURL(
-            bookIdentifier: book.id,
-            ebookFileURL: book.ebookFileURL,
-            filePath: book.filePath
-        )
+        (profileSession?.ebooks ?? LocalEbookImporter.shared).resolveExistingLocalEbookURL(for: book)
     }
 
     private func prepareEpubURL(_ book: Book) async throws -> URL? {

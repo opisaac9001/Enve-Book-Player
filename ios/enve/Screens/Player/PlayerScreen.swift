@@ -597,9 +597,38 @@ struct PlayerScreen: View {
             Spacer()
             readingOptionsMenu
             queueButton
+            #if os(iOS) && canImport(GoogleCast)
+            castButton
+            #endif
             airPlayButton
         }
     }
+
+    #if os(iOS) && canImport(GoogleCast)
+    private var castButton: some View {
+        let connection = profileSession.playback.cast.connection
+        return PlayerCastButton(tint: connection == .disconnected ? hearth.text : ambient)
+            .frame(width: 44, height: 44)
+            .background {
+                HearthChromeBackground(
+                    shape: .circle,
+                    fill: hearth.bgElevated,
+                    stroke: hearth.hairline,
+                    tint: hearth.bgElevated
+                )
+            }
+            .accessibilityLabel("Cast")
+            .accessibilityValue(castAccessibilityValue(connection))
+    }
+
+    private func castAccessibilityValue(_ connection: CastConnectionState) -> String {
+        switch connection {
+        case .disconnected: "Not connected"
+        case .connecting: "Connecting"
+        case .connected(let deviceName): "Connected to \(deviceName)"
+        }
+    }
+    #endif
 
     @ViewBuilder
     private var closeOrDetailsButton: some View {

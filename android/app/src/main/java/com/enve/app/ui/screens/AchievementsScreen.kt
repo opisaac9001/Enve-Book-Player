@@ -306,7 +306,7 @@ private fun AchievementRow(achievement: Achievement) {
                 ),
             contentAlignment = Alignment.Center,
         ) {
-            Text(achievement.icon, fontSize = DS.FontSize.Title3.scaled(metrics))
+            Icon(achievement.icon, contentDescription = null, modifier = Modifier.size(22.dp))
         }
         Spacer(Modifier.width(DS.Spacing.MD.scaled(metrics)))
         Column(modifier = Modifier.weight(1f)) {

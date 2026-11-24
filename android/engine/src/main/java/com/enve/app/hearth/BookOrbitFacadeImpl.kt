@@ -3,6 +3,10 @@ package com.enve.app.hearth
 import com.enve.bookorbit.BookOrbitAnnotationHubFilter
 import com.enve.core.reader.highlightColorHex
 import com.enve.bookorbit.BookOrbitAnnotationHubRepository
+import com.enve.bookorbit.BookOrbitBookDrop
+import com.enve.bookorbit.BookOrbitDockQuery
+import com.enve.bookorbit.BookOrbitDockUpload
+import com.enve.bookorbit.BookOrbitSmartScopes
 import com.enve.bookorbit.BookOrbitDashboard
 import com.enve.bookorbit.BookOrbitDiscoveryRepository
 import com.enve.bookorbit.BookOrbitInsightsRepository
@@ -21,6 +25,15 @@ import com.enve.engine.bookorbit.BookOrbitAccount
 import com.enve.engine.bookorbit.BookOrbitAchievement
 import com.enve.engine.bookorbit.BookOrbitAchievementCategory
 import com.enve.engine.bookorbit.BookOrbitAchievements
+import com.enve.engine.bookorbit.BookOrbitBookDropAccess
+import com.enve.engine.bookorbit.BookOrbitBookDropApplied
+import com.enve.engine.bookorbit.BookOrbitBookDropApproval
+import com.enve.engine.bookorbit.BookOrbitBookDropEdit
+import com.enve.engine.bookorbit.BookOrbitBookDropItem
+import com.enve.engine.bookorbit.BookOrbitBookDropLibrary
+import com.enve.engine.bookorbit.BookOrbitBookDropPage
+import com.enve.engine.bookorbit.BookOrbitBookDropQuery
+import com.enve.engine.bookorbit.BookOrbitBookDropSummary
 import com.enve.engine.bookorbit.BookOrbitChallenge
 import com.enve.engine.bookorbit.BookOrbitCompletionLatency
 import com.enve.engine.bookorbit.BookOrbitDailyHighlight
@@ -28,6 +41,7 @@ import com.enve.engine.bookorbit.BookOrbitDailyPoint
 import com.enve.engine.bookorbit.BookOrbitDiversity
 import com.enve.engine.bookorbit.BookOrbitExportFormat
 import com.enve.engine.bookorbit.BookOrbitFacade
+import com.enve.engine.bookorbit.BookOrbitFailureReason
 import com.enve.engine.bookorbit.BookOrbitFunnel
 import com.enve.engine.bookorbit.BookOrbitFunnelStage
 import com.enve.engine.bookorbit.BookOrbitGenreSlice
@@ -47,14 +61,25 @@ import com.enve.engine.bookorbit.BookOrbitRelated
 import com.enve.engine.bookorbit.BookOrbitRelatedBook
 import com.enve.engine.bookorbit.BookOrbitRhythm
 import com.enve.engine.bookorbit.BookOrbitScoreFacet
+import com.enve.engine.bookorbit.BookOrbitSmartScope
+import com.enve.engine.bookorbit.BookOrbitSmartScopePage
 import com.enve.engine.bookorbit.BookOrbitSourceSlice
 import com.enve.engine.bookorbit.BookOrbitStreak
 import com.enve.engine.bookorbit.BookOrbitSummary
+import com.enve.engine.bookorbit.BookOrbitToolException
 import com.enve.engine.bookorbit.BookOrbitWeekdaySlice
 import com.enve.engine.bookorbit.BookOrbitYearProjection
+import android.content.ContentResolver
+import android.content.Context
+import android.net.Uri
+import android.provider.OpenableColumns
+import dagger.hilt.android.qualifiers.ApplicationContext
+import kotlinx.coroutines.CancellationException
+import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.map
 import kotlinx.coroutines.withContext
+import java.io.IOException
 import java.time.DayOfWeek
 import java.time.Instant
 import java.time.LocalDateTime
@@ -77,6 +102,9 @@ class BookOrbitFacadeImpl @Inject constructor(
     private val insightsRepository: BookOrbitInsightsRepository,
     private val discoveryRepository: BookOrbitDiscoveryRepository,
     private val annotationHub: BookOrbitAnnotationHubRepository,
+    private val smartScopeSource: BookOrbitSmartScopes,
+    private val bookDrop: BookOrbitBookDrop,
+    @ApplicationContext private val context: Context,
 ) : BookOrbitFacade {
 
     override val accounts: Flow<List<BookOrbitAccount>> = connectionRegistry.connections.map { connections ->
@@ -154,6 +182,109 @@ class BookOrbitFacadeImpl @Inject constructor(
     override suspend fun openBook(connectionId: String, bookId: Int): Book? {
         bookCache.getByIdAndConnection(bookId.toString(), connectionId)?.let { return it.toBook() }
         return scoped(connectionId) { repository.getBook(bookId.toString(), null).getOrNull() }
+    }
+
+    override suspend fun smartScopes(connectionId: String): List<BookOrbitSmartScope>? = scoped(connectionId) {
+        smartScopeSource.list().fold(
+            onSuccess = { scopes -> scopes.map { it.toSmartScope() } },
+            onFailure = { failure ->
+                val mapped = failure.toBookOrbitToolException()
+                if (mapped.reason == BookOrbitFailureReason.UNSUPPORTED) null else throw mapped
+            },
+        )
+    }
+
+    override suspend fun smartScopeBooks(
+        connectionId: String,
+        scopeId: Int,
+        page: Int,
+        search: String,
+    ): BookOrbitSmartScopePage = tool(connectionId) {
+        smartScopeSource.books(scopeId, page, search).map { result ->
+            val remote = result.books.map { it.copy(connectionId = connectionId) }
+            val cached = bookCache.getByCacheKeys(remote.map(Book::uniqueKey)).associateBy { it.cacheKey }
+            BookOrbitSmartScopePage(
+                books = remote.map { book -> cached[book.uniqueKey]?.toBook() ?: book },
+                total = result.total,
+                page = result.page,
+            )
+        }
+    }
+
+    override suspend fun bookDropAccess(connectionId: String): BookOrbitBookDropAccess = tool(connectionId) {
+        bookDrop.access().map { it.toBookDropAccess() }
+    }
+
+    override suspend fun bookDropItems(connectionId: String, query: BookOrbitBookDropQuery): BookOrbitBookDropPage =
+        tool(connectionId) {
+            bookDrop.files(BookOrbitDockQuery(page = query.page, status = query.status?.wire, search = query.search))
+                .map { it.toBookDropPage() }
+        }
+
+    override suspend fun bookDropSummary(connectionId: String): BookOrbitBookDropSummary = tool(connectionId) {
+        bookDrop.summary().map { it.toBookDropSummary() }
+    }
+
+    override suspend fun bookDropLibraries(connectionId: String): List<BookOrbitBookDropLibrary> = tool(connectionId) {
+        bookDrop.libraries().map { libraries -> libraries.map { it.toBookDropLibrary() } }
+    }
+
+    override suspend fun importBookDropFile(connectionId: String, contentUri: String): BookOrbitBookDropItem {
+        val upload = try {
+            withContext(Dispatchers.IO) { describeUpload(Uri.parse(contentUri)) }
+        } catch (e: CancellationException) {
+            throw e
+        } catch (e: BookOrbitToolException) {
+            throw e
+        } catch (_: Exception) {
+            throw BookOrbitToolException(BookOrbitFailureReason.REJECTED, "That file couldn't be opened on this device.")
+        }
+        return tool(connectionId) { bookDrop.upload(upload).map { it.toBookDropItem() } }
+    }
+
+    override suspend fun updateBookDropItem(
+        connectionId: String,
+        itemId: Int,
+        edit: BookOrbitBookDropEdit,
+    ): BookOrbitBookDropItem = tool(connectionId) {
+        val current = bookDrop.file(itemId).getOrElse { return@tool Result.failure(it) }
+        bookDrop.update(current, edit.metadata?.toDockMetadata(), edit.targetLibraryId, edit.targetFolderId)
+            .map { it.toBookDropItem() }
+    }
+
+    override suspend fun applyFetchedBookDropMetadata(connectionId: String, itemIds: List<Int>): BookOrbitBookDropApplied =
+        tool(connectionId) { bookDrop.applyFetched(itemIds).map { it.toBookDropApplied() } }
+
+    override suspend fun approveBookDropItems(connectionId: String, itemIds: List<Int>): BookOrbitBookDropApproval =
+        tool(connectionId) { bookDrop.finalize(itemIds).map { it.toBookDropApproval() } }
+
+    override suspend fun discardBookDropItems(connectionId: String, itemIds: List<Int>) {
+        tool(connectionId) { bookDrop.discard(itemIds) }
+    }
+
+    private fun describeUpload(uri: Uri): BookOrbitDockUpload {
+        val resolver = context.contentResolver
+        var name: String? = null
+        var length: Long? = null
+        if (uri.scheme == ContentResolver.SCHEME_CONTENT) {
+            resolver.query(uri, arrayOf(OpenableColumns.DISPLAY_NAME, OpenableColumns.SIZE), null, null, null)?.use { cursor ->
+                if (cursor.moveToFirst()) {
+                    val nameColumn = cursor.getColumnIndex(OpenableColumns.DISPLAY_NAME)
+                    val sizeColumn = cursor.getColumnIndex(OpenableColumns.SIZE)
+                    if (nameColumn >= 0) name = cursor.getString(nameColumn)
+                    if (sizeColumn >= 0 && !cursor.isNull(sizeColumn)) length = cursor.getLong(sizeColumn)
+                }
+            }
+        }
+        val fileName = (name ?: uri.lastPathSegment)?.substringAfterLast('/')?.takeIf { it.isNotBlank() }
+            ?: throw BookOrbitToolException(BookOrbitFailureReason.REJECTED, "This file has no name BookOrbit can use.")
+        return BookOrbitDockUpload(fileName, length?.takeIf { it > 0L }) {
+            resolver.openInputStream(uri) ?: throw IOException("The selected file can no longer be read")
+        }
+    }
+
+    private suspend fun <T> tool(connectionId: String, block: suspend () -> Result<T>): T = scoped(connectionId) {
+        block().getOrElse { throw it.toBookOrbitToolException() }
     }
 
     private suspend fun <T> scoped(connectionId: String, block: suspend () -> T): T =

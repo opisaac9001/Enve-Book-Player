@@ -174,16 +174,28 @@ struct PlaybackComposition {
 enum ActivePlayback {
     static let composition: PlaybackComposition = {
         #if os(tvOS)
+        let profile = ProfileSession.owner
         let controller = AudioServicePlaybackController.shared
         controller.apply(LibraryDisplayPreferencesStore.shared.loadPreferences())
+        let sessions = PlayerSessionService(audiobookshelfService: profile.absService,
+            providerConnections: profile.providerConnections,
+            serverSyncEnabled: { profile.serverSyncEnabled })
+        let progress = PlayerProgressService(audiobookshelfService: profile.absService,
+            providerConnections: profile.providerConnections, profileSession: profile)
+        let streams = PlayerStreamURLResolver(audiobookshelfService: profile.absService,
+            providerConnections: profile.providerConnections, sessionService: sessions,
+            progressService: progress, profileSession: profile)
         let bookStarter = TVBookPlaybackCoordinator(
             controller: controller,
             loader: controller,
             preparationReporter: controller,
             failureReporter: controller,
-            providerConnections: AppState.shared.providerConnections,
-            bookQuerying: AppState.shared.bookStore,
-            libraryCache: AppState.shared
+            streamResolver: streams,
+            progressService: progress,
+            sessionService: sessions,
+            providerConnections: profile.providerConnections,
+            bookQuerying: profile.bookStore,
+            libraryCache: profile.appState
         )
         return PlaybackComposition(
             controller: controller,

@@ -18,6 +18,10 @@ enum BookStoreSQLTuner {
         "CREATE INDEX IF NOT EXISTS ZBOOKRECORD_BOOKID_IDX ON ZBOOKRECORD (ZBOOKID)",
         "CREATE INDEX IF NOT EXISTS ZBOOKRECORD_LIBRARY_PROVIDER_ADDED_UNIQUE_IDX ON ZBOOKRECORD (ZLIBRARYID, ZPROVIDERID, ZADDEDAT, ZUNIQUEID)",
         "CREATE INDEX IF NOT EXISTS ZBOOKRECORD_MEDIATYPE_ADDED_UNIQUE_IDX ON ZBOOKRECORD (ZMEDIATYPE, ZADDEDAT, ZUNIQUEID)",
+        "CREATE INDEX IF NOT EXISTS ZBOOKRECORD_MEDIATYPE_UNIQUEID_IDX ON ZBOOKRECORD (ZMEDIATYPE, ZUNIQUEID)",
+        "CREATE INDEX IF NOT EXISTS ZBOOKRECORD_MEDIATYPE_LASTUPDATE_UNIQUE_IDX ON ZBOOKRECORD (ZMEDIATYPE, ZLASTUPDATE, ZUNIQUEID)",
+        "CREATE INDEX IF NOT EXISTS ZBOOKRECORD_AUTHOR_MEDIATYPE_IDX ON ZBOOKRECORD (ZAUTHOR, ZMEDIATYPE)",
+        "CREATE INDEX IF NOT EXISTS ZBOOKRECORD_NARRATOR_MEDIATYPE_IDX ON ZBOOKRECORD (ZNARRATOR, ZMEDIATYPE)",
         "CREATE INDEX IF NOT EXISTS ZBOOKRECORD_SOURCE_MEDIATYPE_IDX ON ZBOOKRECORD (ZSOURCE, ZMEDIATYPE)",
         "CREATE INDEX IF NOT EXISTS ZBOOKRECORD_LASTUPDATE_IDX ON ZBOOKRECORD (ZLASTUPDATE)",
         "CREATE INDEX IF NOT EXISTS ZBOOKRECORD_TITLE_IDX ON ZBOOKRECORD (ZTITLE)",
@@ -103,7 +107,51 @@ enum BookStoreSQLTuner {
         }
     }
 
-    private static func errorMessage(_ db: OpaquePointer) -> String {
+    nonisolated static func downloadedAudiobookIDs(at storeURL: URL, storageKeys: Set<String>) throws -> Set<String> {
+        guard !storageKeys.isEmpty else { return [] }
+        var db: OpaquePointer?
+        guard sqlite3_open_v2(storeURL.path, &db, SQLITE_OPEN_READONLY | SQLITE_OPEN_FULLMUTEX, nil) == SQLITE_OK, let db else {
+            let message = db.map(errorMessage) ?? "unable to open BookStore SQLite database"
+            if let db { sqlite3_close(db) }
+            throw Error.sqlite(message)
+        }
+        defer { sqlite3_close(db) }
+        sqlite3_busy_timeout(db, 5000)
+
+        // Match download folder names without materializing every catalog record in SwiftData.
+        let storageKeySQL = ["/", "\\", ":", "?", "&", "="].reduce("ZSTABLEID") {
+            "replace(\($0),'\($1)','-')"
+        }
+        let keys = storageKeys.sorted()
+        var ids = Set<String>()
+        for start in stride(from: 0, to: keys.count, by: 500) {
+            try Task.checkCancellation()
+            let batch = keys[start..<min(start + 500, keys.count)]
+            let placeholders = Array(repeating: "?", count: batch.count).joined(separator: ",")
+            let sql = "SELECT ZSTABLEID FROM ZBOOKRECORD WHERE ZMEDIATYPE = 'audiobook' AND ZISDELETED = 0 AND \(storageKeySQL) IN (\(placeholders))"
+            var statement: OpaquePointer?
+            guard sqlite3_prepare_v2(db, sql, -1, &statement, nil) == SQLITE_OK, let statement else {
+                throw Error.sqlite(errorMessage(db))
+            }
+            defer { sqlite3_finalize(statement) }
+            let transient = unsafeBitCast(-1, to: sqlite3_destructor_type.self)
+            for (index, key) in batch.enumerated() {
+                guard sqlite3_bind_text(statement, Int32(index + 1), key, -1, transient) == SQLITE_OK else {
+                    throw Error.sqlite(errorMessage(db))
+                }
+            }
+            var status = sqlite3_step(statement)
+            while status == SQLITE_ROW {
+                try Task.checkCancellation()
+                if let text = sqlite3_column_text(statement, 0) { ids.insert(String(cString: text)) }
+                status = sqlite3_step(statement)
+            }
+            guard status == SQLITE_DONE else { throw Error.sqlite(errorMessage(db)) }
+        }
+        return ids
+    }
+
+    nonisolated private static func errorMessage(_ db: OpaquePointer) -> String {
         sqlite3_errmsg(db).map(String.init(cString:)) ?? "unknown SQLite error"
     }
 

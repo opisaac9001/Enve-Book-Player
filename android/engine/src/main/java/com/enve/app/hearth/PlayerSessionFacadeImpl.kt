@@ -2,6 +2,7 @@ package com.enve.app.hearth
 
 import com.enve.core.di.ApplicationScope
 import com.enve.app.playback.AudioPlaybackManager
+import com.enve.app.playback.AutoMediaBrowserHelper
 import com.enve.app.playback.PlaybackChapterStore
 import com.enve.app.playback.PlayerBookmarkService
 import com.enve.app.playback.PlayerSleepTimerService
@@ -9,6 +10,7 @@ import com.enve.app.data.repository.AnnotationRepository
 import com.enve.app.data.sync.SyncCoordinator
 import com.enve.core.data.local.BookCacheDao
 import com.enve.core.data.local.BookExtrasDao
+import com.enve.core.data.local.PreferencesManager
 import com.enve.core.data.local.decodeChapters
 import com.enve.core.data.local.decodeAudioTracks
 import com.enve.app.readium.PlayerReadAloudService
@@ -57,6 +59,7 @@ class PlayerSessionFacadeImpl @Inject constructor(
     private val bookCache: BookCacheDao,
     private val bookExtras: BookExtrasDao,
     private val readAloudService: PlayerReadAloudService,
+    preferences: PreferencesManager,
     @ApplicationScope parentScope: CoroutineScope =
         CoroutineScope(SupervisorJob() + Dispatchers.Default),
 ) : PlayerSessionFacade {
@@ -85,11 +88,13 @@ class PlayerSessionFacadeImpl @Inject constructor(
 
     private val _bookmarks = MutableStateFlow<List<AudiobookBookmark>>(emptyList())
     override val bookmarks: StateFlow<List<AudiobookBookmark>> = _bookmarks.asStateFlow()
-    private val migratedLegacyBookIds = mutableSetOf<String>()
+    private val migratedLegacyBookKeys = mutableSetOf<String>()
 
     private val _sleepRemaining = MutableStateFlow<Long?>(null)
     override val sleepRemainingSec: StateFlow<Long?> = _sleepRemaining.asStateFlow()
     private var sleepJob: Job? = null
+    private val sleepTimerFade = preferences.sleepTimerFade
+        .stateIn(scope, SharingStarted.Eagerly, false)
 
     init {
         scope.launch {
@@ -128,17 +133,18 @@ class PlayerSessionFacadeImpl @Inject constructor(
             }
         }
         scope.launch {
-            audioManager.currentBookIdFlow.collectLatest { bookId ->
-                if (bookId == null) {
+            combine(
+                audioManager.currentBookIdFlow,
+                audioManager.state.map { it.mediaId?.let(AutoMediaBrowserHelper::cacheKeyFrom) },
+            ) { bookId, cacheKey -> bookId to cacheKey }.distinctUntilChanged().collectLatest { (bookId, cacheKey) ->
+                val book = resolvePlayingBook(bookId, cacheKey)
+                if (book == null) {
                     _bookmarks.value = emptyList()
                     return@collectLatest
                 }
-                val book = bookCache.getById(bookId)?.toBook()
-                if (book != null) {
-                    hydrateChapters(book)
-                    migrateLegacyBookmarks(book)
-                }
-                annotations.byBookAndKind(bookId, AnnotationKind.BOOKMARK).collect { rows ->
+                hydrateChapters(book)
+                migrateLegacyBookmarks(book)
+                annotations.byBookAndKind(book.id, book.connectionId, AnnotationKind.BOOKMARK).collect { rows ->
                     _bookmarks.value = rows
                         .filter { AnnotationMedia.parse(it.media) == AnnotationMedia.AUDIOBOOK && it.audioPositionMs != null }
                         .map { it.toAudiobookBookmark() }
@@ -146,6 +152,11 @@ class PlayerSessionFacadeImpl @Inject constructor(
                 }
             }
         }
+    }
+
+    private suspend fun resolvePlayingBook(bookId: String?, cacheKey: String?): Book? {
+        if (bookId == null || cacheKey == null) return null
+        return bookCache.getByCacheKey(cacheKey)?.toBook()?.takeIf { it.id == bookId }
     }
 
     private suspend fun hydrateChapters(book: Book) {
@@ -200,13 +211,15 @@ class PlayerSessionFacadeImpl @Inject constructor(
 
     override fun addBookmark(note: String?) {
         val bookId = audioManager.currentBookId ?: return
+        val cacheKey = audioManager.state.value.mediaId?.let(AutoMediaBrowserHelper::cacheKeyFrom) ?: return
         scope.launch {
-            val book = bookCache.getById(bookId)?.toBook() ?: return@launch
+            val book = resolvePlayingBook(bookId, cacheKey) ?: return@launch
             val chapterTitle = chapters.value.getOrNull(currentChapterIndex.value)?.title
             sync.registerBook(book)
             val positionSec = currentPositionSec()
             annotations.create(
                 bookId = book.id,
+                connectionId = book.connectionId,
                 kind = AnnotationKind.BOOKMARK,
                 media = AnnotationMedia.AUDIOBOOK,
                 colorHex = "#F5921A",
@@ -221,8 +234,9 @@ class PlayerSessionFacadeImpl @Inject constructor(
 
     override fun deleteBookmark(bookmark: AudiobookBookmark) {
         scope.launch {
-            bookCache.getById(bookmark.bookId)?.toBook()?.let(sync::registerBook)
-            annotations.delete(bookmark.id)
+            val row = annotations.byId(bookmark.id) ?: return@launch
+            bookCache.getByIdAndConnection(row.bookId, row.connectionId)?.toBook()?.let(sync::registerBook)
+            annotations.delete(row.id)
         }
     }
 
@@ -234,7 +248,7 @@ class PlayerSessionFacadeImpl @Inject constructor(
         sleepJob = sleepTimerService.startSeconds(
             scope = scope,
             seconds = minutes.coerceAtLeast(0) * 60L,
-            isFadeEnabled = { true },
+            isFadeEnabled = { sleepTimerFade.value },
             onTick = { remaining -> _sleepRemaining.value = remaining },
             onFade = { volume -> audioManager.setVolume(volume) },
             onFinished = ::finishSleepTimer,
@@ -251,7 +265,7 @@ class PlayerSessionFacadeImpl @Inject constructor(
                 val playback = audioManager.state.value
                 chapterSleepRemainingSeconds(targetPositionMs, playback.currentPositionMs, playback.playbackSpeed)
             },
-            isFadeEnabled = { true },
+            isFadeEnabled = { sleepTimerFade.value },
             onTick = { remaining -> _sleepRemaining.value = remaining },
             onFade = { volume -> audioManager.setVolume(volume) },
             onFinished = ::finishSleepTimer,
@@ -291,11 +305,11 @@ class PlayerSessionFacadeImpl @Inject constructor(
     }
 
     private suspend fun migrateLegacyBookmarks(book: Book) {
-        if (!migratedLegacyBookIds.add(book.id)) return
+        if (!migratedLegacyBookKeys.add(book.uniqueKey)) return
         val legacy = legacyBookmarkService.loadBookmarks(book)
         if (legacy.isEmpty()) return
 
-        val existing = annotations.forBook(book.id)
+        val existing = annotations.forBook(book.id, book.connectionId)
             .filter { AnnotationKind.parse(it.kind) == AnnotationKind.BOOKMARK }
             .filter { AnnotationMedia.parse(it.media) == AnnotationMedia.AUDIOBOOK }
             .toMutableList()
@@ -309,6 +323,7 @@ class PlayerSessionFacadeImpl @Inject constructor(
             if (!alreadyMigrated) {
                 existing += annotations.create(
                     bookId = book.id,
+                    connectionId = book.connectionId,
                     kind = AnnotationKind.BOOKMARK,
                     media = AnnotationMedia.AUDIOBOOK,
                     colorHex = "#F5921A",

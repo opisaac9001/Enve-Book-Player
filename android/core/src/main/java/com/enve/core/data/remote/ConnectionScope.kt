@@ -24,7 +24,10 @@ object ConnectionScope {
         object : ExecutorService by delegate {
             override fun execute(command: Runnable) {
                 val captured = currentConnectionId.get()
-                delegate.execute { withConnectionId(captured) { command.run() } }
+                val login = LoginAttemptScope.get()
+                delegate.execute {
+                    withConnectionId(captured) { LoginAttemptScope.withAttempt(login) { command.run() } }
+                }
             }
         }
 }

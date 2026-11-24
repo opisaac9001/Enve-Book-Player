@@ -2628,6 +2628,10 @@ class AudiobookshelfProvider: IncrementalCatalogProvider, PlaybackSessionProvide
         return PlaybackSessionInfo(sessionId: "local-\(UUID().uuidString)", audioTracks: tracks, chapters: chapters(from: item.media))
     }
 
+    func receiverPlaybackSession(for book: Book) async throws -> PlaybackSessionInfo {
+        try await directPlayback(for: book)
+    }
+
     func startPlaybackSession(for book: Book) async throws -> PlaybackSessionInfo {
         if !serverSyncEnabled() { return try await directPlayback(for: book) }
 
@@ -2717,7 +2721,7 @@ class AudiobookshelfProvider: IncrementalCatalogProvider, PlaybackSessionProvide
     }
 
     func downloadEbook(for book: Book, onProgress: (@Sendable (Double) -> Void)? = nil) async throws -> URL {
-        if let cached = ebookImporter.cachedEbook(forBookId: book.id) {
+        if let cached = ebookImporter.cachedEbook(for: book) {
             onProgress?(1)
             return cached
         }
@@ -2758,7 +2762,7 @@ class AudiobookshelfProvider: IncrementalCatalogProvider, PlaybackSessionProvide
         return try ebookImporter.cacheRemoteEbook(
             tempURL: tempURL,
             preferredFilename: "\(book.title.replacingOccurrences(of: "/", with: "-")).\(fileExtension)",
-            bookIdentifier: book.id
+            bookIdentifier: book.ebookStorageID
         )
     }
 

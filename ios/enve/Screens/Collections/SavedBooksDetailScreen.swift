@@ -3,11 +3,12 @@ import SwiftUI
 struct SavedBooksDetailScreen: View {
     let list: SavedBooksStore.List
 
+    @Environment(\.profileSession) private var capturedSession
     @Environment(EnveEngine.self) private var engine
     @Environment(\.hearth) private var hearth
     @Environment(\.mantelInset) private var mantelInset
 
-    private let savedBooks = SavedBooksStore.shared
+    private var savedBooks: SavedBooksStore { (capturedSession ?? .owner).savedBooks }
     @State private var books: [Book] = []
     @State private var query = ""
     @State private var loaded = false

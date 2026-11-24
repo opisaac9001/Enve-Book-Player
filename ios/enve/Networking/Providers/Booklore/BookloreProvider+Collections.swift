@@ -31,51 +31,21 @@ extension BookloreProvider {
     }
 
     func fetchShelfSummaries() async throws -> [GrimmoryShelfSummary] {
-        var lastError: Error = ProviderError.invalidResponse
-
-        for path in ["/api/v1/app/shelves", "/api/v1/shelves"] {
-            do {
-                let request = try makeRequest(path: path)
-                let (data, response) = try await performAuthorizedRequest(request)
-                guard response.statusCode == 200 else {
-                    lastError = ProviderError.serverError("Shelf discovery returned HTTP \(response.statusCode)")
-                    continue
-                }
-                do {
-                    return try JSONDecoder().decode([GrimmoryShelfSummary].self, from: data)
-                } catch {
-                    lastError = error
-                }
-            } catch {
-                lastError = error
-            }
+        let request = try makeRequest(path: "/api/v1/shelves")
+        let (data, response) = try await performAuthorizedRequest(request)
+        guard response.statusCode == 200 else {
+            throw ProviderError.serverError("Shelf discovery returned HTTP \(response.statusCode)")
         }
-
-        throw lastError
+        return try JSONDecoder().decode([GrimmoryShelfSummary].self, from: data)
     }
 
     private func fetchMagicShelfSummaries() async throws -> [GrimmoryMagicShelfSummary] {
-        var lastError: Error = ProviderError.invalidResponse
-
-        for path in ["/api/v1/app/shelves/magic", "/api/magic-shelves"] {
-            do {
-                let request = try makeRequest(path: path)
-                let (data, response) = try await performAuthorizedRequest(request)
-                guard response.statusCode == 200 else {
-                    lastError = ProviderError.serverError("Magic Shelf discovery returned HTTP \(response.statusCode)")
-                    continue
-                }
-                do {
-                    return try JSONDecoder().decode([GrimmoryMagicShelfSummary].self, from: data)
-                } catch {
-                    lastError = error
-                }
-            } catch {
-                lastError = error
-            }
+        let request = try makeRequest(path: "/api/magic-shelves")
+        let (data, response) = try await performAuthorizedRequest(request)
+        guard response.statusCode == 200 else {
+            throw ProviderError.serverError("Magic Shelf discovery returned HTTP \(response.statusCode)")
         }
-
-        throw lastError
+        return try JSONDecoder().decode([GrimmoryMagicShelfSummary].self, from: data)
     }
 
     func fetchCollections(libraryId: String?) async throws -> [Collection] {
@@ -146,15 +116,15 @@ extension BookloreProvider {
         }
     }
 
-    private func fetchFilteredBookIds(filterName: String, filterId: Int) async throws -> [String] {
+    private func fetchFilteredBookIds(facet: String) async throws -> [String] {
         let request = try makeRequest(
-            path: "/api/v1/app/books/ids",
-            queryItems: [URLQueryItem(name: filterName, value: String(filterId))]
+            path: "/api/v1/books/ids",
+            queryItems: [URLQueryItem(name: "facet", value: facet)]
         )
         let (data, response) = try await performAuthorizedRequest(request)
         guard response.statusCode == 200 else {
             throw ProviderError.serverError(
-                "Book ID lookup for \(filterName) \(filterId) returned HTTP \(response.statusCode)"
+                "Book ID lookup for \(facet) returned HTTP \(response.statusCode)"
             )
         }
         return uniqueBookIds(
@@ -162,78 +132,32 @@ extension BookloreProvider {
         )
     }
 
+    func fetchShelfBooks(ids: [String]) async throws -> [Book] {
+        var books: [Book] = []
+        for start in stride(from: 0, to: ids.count, by: 500) {
+            try Task.checkCancellation()
+            let batch = ids[start..<min(start + 500, ids.count)]
+            let request = try makeRequest(
+                path: "/api/v1/books/batch",
+                queryItems: [URLQueryItem(name: "ids", value: batch.joined(separator: ","))]
+            )
+            let (data, response) = try await performAuthorizedRequest(request)
+            guard response.statusCode == 200 else {
+                throw ProviderError.serverError("Shelf books returned HTTP \(response.statusCode)")
+            }
+            let records = try JSONDecoder().decode([BookloreLegacyBook].self, from: data)
+            for record in records {
+                guard let libraryId = record.libraryId?.stringValue else {
+                    throw ProviderError.invalidResponse
+                }
+                books.append(mapToBook(record, fallbackLibraryId: libraryId))
+            }
+        }
+        return books
+    }
+
     private func fetchMagicShelfBookIds(shelfId: Int) async throws -> [String] {
-        do {
-            return try await fetchFilteredBookIds(filterName: "magicShelfId", filterId: shelfId)
-        } catch {
-            AppLogger.network.warning(
-                "[Booklore] Magic Shelf \(shelfId) all-ID lookup failed; trying paginated membership: \(error.localizedDescription)"
-            )
-        }
-
-        return try await fetchAllLegacyMagicShelfBookIds(shelfId: shelfId)
-    }
-
-    private func fetchAllLegacyMagicShelfBookIds(shelfId: Int) async throws -> [String] {
-        var page = 0
-        let pageSize = 500
-        var allIds: [String] = []
-        var seenIds = Set<String>()
-
-        while true {
-            let result = try await fetchLegacyMagicShelfBookIds(
-                shelfId: shelfId,
-                page: page,
-                size: pageSize
-            )
-            let newIds = result.ids.filter { seenIds.insert($0).inserted }
-            allIds.append(contentsOf: newIds)
-            if !result.hasNext { break }
-            if newIds.isEmpty {
-                throw ProviderError.serverError(
-                    "Magic Shelf \(shelfId) returned a repeated page before membership completed"
-                )
-            }
-            page += 1
-            if page > 1000 {
-                throw ProviderError.serverError("Magic Shelf \(shelfId) membership exceeded 1000 pages")
-            }
-        }
-
-        return allIds
-    }
-
-    private func fetchLegacyMagicShelfBookIds(
-        shelfId: Int,
-        page: Int,
-        size: Int
-    ) async throws -> (ids: [String], hasNext: Bool) {
-        struct AppBook: Decodable {
-            let id: FlexibleID
-        }
-        struct PageResponse: Decodable {
-            let content: [AppBook]
-            let page: Int?
-            let totalPages: Int?
-            let hasNext: Bool?
-        }
-
-        let request = try makeRequest(
-            path: "/api/v1/app/shelves/magic/\(shelfId)/books",
-            queryItems: [
-                URLQueryItem(name: "page", value: String(page)),
-                URLQueryItem(name: "size", value: String(size)),
-            ]
-        )
-        let (data, response) = try await performAuthorizedRequest(request)
-        guard response.statusCode == 200 else {
-            throw ProviderError.serverError(
-                "Magic Shelf \(shelfId) membership returned HTTP \(response.statusCode)"
-            )
-        }
-        let result = try JSONDecoder().decode(PageResponse.self, from: data)
-        let hasNext = result.hasNext ?? ((result.page ?? page) + 1 < (result.totalPages ?? 1))
-        return (result.content.map(\.id.stringValue), hasNext)
+        try await fetchFilteredBookIds(facet: "shelf:magic:\(shelfId)")
     }
 
     private func fetchShelfBookIds(shelfId: Int, expectedBookCount: Int?) async throws -> [String] {
@@ -245,7 +169,7 @@ extension BookloreProvider {
         }
 
         do {
-            let ids = try await fetchFilteredBookIds(filterName: "shelfId", filterId: shelfId)
+            let ids = try await fetchFilteredBookIds(facet: "shelf:\(shelfId)")
             membershipCandidates.append(ids)
             if accepts(ids) { return ids }
             AppLogger.network.warning(
@@ -261,22 +185,9 @@ extension BookloreProvider {
             let directIds = try await fetchLegacyShelfBookIds(shelfId: shelfId)
             membershipCandidates.append(directIds)
             if accepts(directIds) { return directIds }
-            AppLogger.network.warning(
-                "[Booklore] Shelf \(shelfId) direct membership returned \(directIds.count) books; expected \(expectedBookCount ?? 0), trying paginated app books"
-            )
         } catch {
             AppLogger.network.warning(
-                "[Booklore] Shelf \(shelfId) direct membership failed; trying paginated app books: \(error.localizedDescription)"
-            )
-        }
-
-        do {
-            let paginatedIds = try await fetchPaginatedShelfBookIds(shelfId: shelfId)
-            membershipCandidates.append(paginatedIds)
-            if accepts(paginatedIds) { return paginatedIds }
-        } catch {
-            AppLogger.network.warning(
-                "[Booklore] Shelf \(shelfId) paginated membership failed: \(error.localizedDescription)"
+                "[Booklore] Shelf \(shelfId) direct membership failed: \(error.localizedDescription)"
             )
         }
 
@@ -284,43 +195,6 @@ extension BookloreProvider {
         throw ProviderError.serverError(
             "Shelf \(shelfId) reports \(expectedBookCount.map(String.init) ?? "an unknown number of") books, but membership endpoints returned \(returnedCounts)"
         )
-    }
-
-    private func fetchPaginatedShelfBookIds(shelfId: Int) async throws -> [String] {
-        struct ShelfBookPage: Decodable {
-            let content: [ShelfBookEntry]
-            let hasNext: Bool?
-            struct ShelfBookEntry: Decodable { let id: FlexibleID }
-        }
-
-        var page = 0
-        let pageSize = 500
-        var ids: [String] = []
-
-        while true {
-            let request = try makeRequest(
-                path: "/api/v1/app/books",
-                queryItems: [
-                    URLQueryItem(name: "shelfId", value: String(shelfId)),
-                    URLQueryItem(name: "page", value: String(page)),
-                    URLQueryItem(name: "size", value: String(pageSize)),
-                ]
-            )
-            let (data, response) = try await performAuthorizedRequest(request)
-            guard response.statusCode == 200 else {
-                throw ProviderError.serverError(
-                    "Shelf \(shelfId) app membership returned HTTP \(response.statusCode) on page \(page)"
-                )
-            }
-            let result = try JSONDecoder().decode(ShelfBookPage.self, from: data)
-            ids.append(contentsOf: result.content.map { $0.id.stringValue })
-            if result.hasNext != true { break }
-            page += 1
-            if page > 1000 {
-                throw ProviderError.serverError("Shelf \(shelfId) membership exceeded 1000 pages")
-            }
-        }
-        return uniqueBookIds(ids)
     }
 
     private func fetchLegacyShelfBookIds(shelfId: Int) async throws -> [String] {

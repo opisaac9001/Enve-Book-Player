@@ -44,15 +44,15 @@ func shouldDeferCloudMerge(
 
 @MainActor
 final class CloudProgressService {
-    static let shared = CloudProgressService()
     private var pushSubscriptionRegistered = false
 
     private let cloudKit: CloudKitProgressSync
     private let matchingService = BookMatchingService.shared
     private let playbackState: any PlaybackControlling
-    private unowned let profileSession: ProfileSession?
+    private unowned let profileSession: ProfileSession
     private var operations: [UUID: Task<Void, Never>] = [:]
     private var isRetired = false
+    private var isActive: Bool { !isRetired && !profileSession.isRetired && !Task.isCancelled }
 
     private var cancellables = Set<AnyCancellable>()
     private var cloudSyncTask: Task<Void, Never>?
@@ -63,12 +63,12 @@ final class CloudProgressService {
     private let bookRepository: BookStoreRepository
 
     init(
-        libraryCache: LibraryBookCache = AppState.shared.libraryCache,
-        connectionStore: ProviderConnectionStore = AppState.shared.providerConnections,
-        bookRepository: BookStoreRepository = AppState.shared.bookStore,
-        playbackState: any PlaybackControlling = ActivePlayback.controller,
-        cloudKit: CloudKitProgressSync = .shared,
-        profileSession: ProfileSession? = nil
+        libraryCache: LibraryBookCache,
+        connectionStore: ProviderConnectionStore,
+        bookRepository: BookStoreRepository,
+        playbackState: any PlaybackControlling,
+        cloudKit: CloudKitProgressSync,
+        profileSession: ProfileSession
     ) {
         self.profileSession = profileSession
         self.playbackState = playbackState
@@ -81,7 +81,7 @@ final class CloudProgressService {
     }
 
     private func retainOperation(_ operation: @escaping @MainActor () async -> Void) {
-        guard !isRetired else { return }
+        guard isActive else { return }
         let id = UUID()
         operations[id] = Task {
             await operation()
@@ -101,7 +101,8 @@ final class CloudProgressService {
         retainOperation { [self] in
             AppLogger.sync.info("Checking CloudKit availability...")
             let available = await cloudKit.isAvailable()
-            (profileSession?.sync ?? SyncCoordinator.shared).updateCloudAvailability(available)
+            guard isActive else { return }
+            profileSession.sync.updateCloudAvailability(available)
             if !available {
                 AppLogger.sync.info("CloudKit not available - sync will be skipped")
                 return
@@ -147,7 +148,7 @@ final class CloudProgressService {
 
     @MainActor
     private func applyServerProgressUpdate(_ notification: Notification) async {
-        guard profileSession?.serverSyncEnabled ?? true else { return }
+        guard isActive, profileSession.serverSyncEnabled else { return }
         guard let info = notification.userInfo,
             let bookId = info["bookId"] as? String
         else { return }
@@ -175,7 +176,7 @@ final class CloudProgressService {
         } else {
             lookup = await self.bookRepository.book(byBookId: bookId)
         }
-        guard profileSession?.serverSyncEnabled ?? true else { return }
+        guard isActive, profileSession.serverSyncEnabled else { return }
         guard let current = lookup,
             providerId == nil || current.providerId == providerId
         else { return }
@@ -196,7 +197,7 @@ final class CloudProgressService {
                 return
             }
             let duration = current.duration ?? 0
-            (profileSession?.bookProgress ?? BookProgressStore.shared).saveProgress(
+            profileSession.bookProgress.saveProgress(
                 for: current,
                 progress: position,
                 duration: duration,
@@ -243,14 +244,15 @@ final class CloudProgressService {
                 book.lastUpdate = serverDate
             }
         }
-        (profileSession?.ebookLinks ?? EbookLinkStore.shared).saveLinks()
+        profileSession.ebookLinks.saveLinks()
         AppLogger.sync.debug(
             "serverProgressUpdated: applied progress=\(Int(serverProgress * 100))% bookDiagnosticID=\(diagnosticBookID)"
         )
     }
 
     func refreshFromCloud() async {
-        let coordinator = (profileSession?.sync ?? SyncCoordinator.shared)
+        guard isActive else { return }
+        let coordinator = profileSession.sync
         guard coordinator.syncEnabled else { return }
         guard !coordinator.isSyncing else { return }
 
@@ -280,14 +282,14 @@ final class CloudProgressService {
     }
 
     func refreshCurrentBookFromServer() async {
-        guard profileSession?.serverSyncEnabled ?? true else { return }
+        guard isActive, profileSession.serverSyncEnabled else { return }
         let playerVM = playbackState
         guard let book = await MainActor.run(body: { playerVM.currentBook }) else { return }
         let isCurrentlyPlaying = await MainActor.run { playerVM.isPlaying }
         guard !isCurrentlyPlaying else { return }
 
         guard !book.isReadAloudBook,
-            profileSession?.pendingSync.entries[book.stableId]?.downloadedBaseline == nil
+            profileSession.pendingSync.entries[book.stableId]?.downloadedBaseline == nil
         else { return }
 
         let isServerSource =
@@ -302,7 +304,7 @@ final class CloudProgressService {
         else { return }
 
         do {
-            let absService = (profileSession?.absService ?? AudiobookshelfService.shared)
+            let absService = profileSession.absService
             guard
                 let serverProgress = try await absService.getProgress(
                     libraryItemId: book.partKey ?? book.id,
@@ -310,14 +312,14 @@ final class CloudProgressService {
                 )
             else { return }
 
-            guard profileSession?.serverSyncEnabled ?? true,
+            guard isActive, profileSession.serverSyncEnabled,
                 !playerVM.isPlaying, playerVM.currentBook?.stableId == book.stableId,
-                profileSession?.pendingSync.entries[book.stableId]?.downloadedBaseline == nil
+                profileSession.pendingSync.entries[book.stableId]?.downloadedBaseline == nil
             else { return }
             let serverTime = serverProgress.currentTime ?? 0
             let serverDate = serverProgress.lastUpdate.flatMap { Date(timeIntervalSince1970: $0 / 1000) } ?? .distantPast
             let localTime = await MainActor.run { playerVM.progress }
-            let localProgressData = (profileSession?.bookProgress ?? BookProgressStore.shared).loadProgress(for: book)
+            let localProgressData = profileSession.bookProgress.loadProgress(for: book)
             let localDate = localProgressData.flatMap { Date(timeIntervalSince1970: $0.lastUpdated) } ?? .distantPast
             let duration = serverProgress.duration ?? book.duration ?? 0
 
@@ -331,13 +333,13 @@ final class CloudProgressService {
             switch direction {
             case .pull:
                 AppLogger.sync.info("Foreground: server is newer (\(Int(serverTime))s vs local \(Int(localTime))s)")
-                (profileSession?.bookProgress ?? BookProgressStore.shared).saveProgress(for: book, progress: serverTime, duration: duration)
+                profileSession.bookProgress.saveProgress(for: book, progress: serverTime, duration: duration)
                 playbackState.seek(to: serverTime)
             case .push:
                 AppLogger.sync.info("Foreground: local is newer (\(Int(localTime))s vs server \(Int(serverTime))s) - pushing")
                 let localDuration = localProgressData?.duration ?? duration
                 do {
-                    try await (profileSession?.absService ?? AudiobookshelfService.shared).updateProgress(
+                    try await profileSession.absService.updateProgress(
                         libraryItemId: book.partKey ?? book.id,
                         currentTime: localTime,
                         duration: localDuration,
@@ -366,6 +368,7 @@ final class CloudProgressService {
     }
 
     private func syncBooksFromCloud(_ books: [Book], reason: String) async {
+        guard isActive else { return }
         let previousTask = cloudSyncTask
         let task = Task { @MainActor [weak self] in
             await previousTask?.value
@@ -376,7 +379,8 @@ final class CloudProgressService {
     }
 
     private func performCloudSync(_ books: [Book], reason: String) async {
-        let coordinator = (profileSession?.sync ?? SyncCoordinator.shared)
+        guard isActive else { return }
+        let coordinator = profileSession.sync
         guard coordinator.syncEnabled else {
             AppLogger.sync.warning("Sync disabled, skipping iCloud \(reason) sync")
             return
@@ -394,6 +398,7 @@ final class CloudProgressService {
         AppLogger.sync.info("Starting iCloud \(reason) sync with \(candidates.count) books...")
 
         let cloudAvailable = await cloudKit.isAvailable()
+        guard isActive else { return }
         coordinator.updateCloudAvailability(cloudAvailable)
         guard cloudAvailable else {
             AppLogger.sync.info("CloudKit not available")
@@ -412,10 +417,10 @@ final class CloudProgressService {
 
     func getCloudProgress(for book: Book) async -> (position: TimeInterval, deviceName: String?)? {
         guard book.mediaType == .audiobook, CloudProgressEligibility.includes(book) else { return nil }
-        let coordinator = (profileSession?.sync ?? SyncCoordinator.shared)
+        let coordinator = profileSession.sync
         guard coordinator.syncEnabled, coordinator.isCloudKitAvailable else { return nil }
 
-        if let record = await matchingService.findCloudProgress(for: book) {
+        if let record = await matchingService.findCloudProgress(for: book, cloudKit: cloudKit), isActive {
             return (record.playbackPosition, record.deviceName)
         }
 
@@ -423,13 +428,15 @@ final class CloudProgressService {
     }
 
     private func handleCloudProgressUpdate(_ notification: Notification) async {
-        guard (profileSession?.sync ?? SyncCoordinator.shared).syncEnabled else { return }
+        guard isActive else { return }
+        guard profileSession.sync.syncEnabled else { return }
         guard let records = notification.userInfo?["records"] as? [PlaybackStateRecord] else { return }
         await mergeCloudRecords(records, books: libraryCache.books)
-        (profileSession?.sync ?? SyncCoordinator.shared).updateLastSync(date: Date())
+        profileSession.sync.updateLastSync(date: Date())
     }
 
     private func mergeCloudRecords(_ records: [PlaybackStateRecord], books: [Book]) async {
+        guard isActive else { return }
         let candidateStableIds = Set(
             books.lazy.filter(CloudProgressEligibility.includes).map(\.stableId)
         )
@@ -468,8 +475,9 @@ final class CloudProgressService {
         }
 
         for book in localBooks {
+            guard isActive else { return }
             let domain: ProgressSyncDomain = book.mediaType == .ebook || book.isReadAloudBook ? .ebook : .audiobook
-            if domain == .ebook, (profileSession?.sync ?? SyncCoordinator.shared).isEbookReaderOpen { continue }
+            if domain == .ebook, profileSession.sync.isEbookReaderOpen { continue }
             let localIdentity = CanonicalBookIdentity(from: book)
             let lookupKey = "\(domain.rawValue)|\(localIdentity.normalizedTitle)"
             let hashCandidates: [PlaybackStateRecord] = if let contentHash = localContentHashes[book.stableId] {
@@ -513,7 +521,7 @@ final class CloudProgressService {
                 continue
             }
 
-            let savedAudiobookProgress = (profileSession?.bookProgress ?? BookProgressStore.shared).loadProgress(for: book)
+            let savedAudiobookProgress = profileSession.bookProgress.loadProgress(for: book)
             let localPosition = record.domain == .ebook
                 ? book.canonicalEbookProgress
                 : savedAudiobookProgress?.progress ?? 0
@@ -538,7 +546,7 @@ final class CloudProgressService {
                 AppLogger.sync.debug(
                     "Pulling iCloud progress bookDiagnosticID=\(DiagnosticLogSanitizer.identifier(for: book.stableId))"
                 )
-                await (profileSession?.sync ?? SyncCoordinator.shared).applySnapshot(
+                await profileSession.sync.applySnapshot(
                     SyncSnapshot(
                         progress: record.normalizedProgress,
                         positionSeconds: record.playbackPosition,
@@ -570,7 +578,7 @@ final class CloudProgressService {
                 await pushLocalProgressToCloud(book: book, domain: record.domain)
             case .conflict:
                 if record.domain == .ebook {
-                    (profileSession?.ebookConflicts ?? EbookConflictStore.shared).add(
+                    profileSession.ebookConflicts.add(
                         EbookSyncConflict(
                             bookStableId: book.stableId,
                             bookTitle: book.title,
@@ -595,13 +603,14 @@ final class CloudProgressService {
     }
 
     private func pushLocalProgressToCloud(book: Book, domain: ProgressSyncDomain) async {
+        guard isActive else { return }
         let position: TimeInterval
         let progress: Double
         if domain == .ebook {
             position = 0
             progress = book.canonicalEbookProgress
         } else {
-            position = (profileSession?.bookProgress ?? BookProgressStore.shared).loadProgress(for: book)?.progress ?? 0
+            position = profileSession.bookProgress.loadProgress(for: book)?.progress ?? 0
             let duration = book.duration ?? 0
             progress = duration > 0 ? position / duration : 0
         }
@@ -616,10 +625,10 @@ final class CloudProgressService {
             sessionId: nil,
             isFinished: book.isFinished || progress >= Book.finishedProgressThreshold,
             timeListened: 0,
-            playbackRate: ActivePlayback.controller.snapshot.playbackSpeed
+            playbackRate: playbackState.snapshot.playbackSpeed
         )
 
-        await (profileSession?.sync ?? SyncCoordinator.shared).pushCloudProgress(update)
+        await profileSession.sync.pushCloudProgress(update)
     }
 }
 

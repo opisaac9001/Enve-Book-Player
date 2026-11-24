@@ -6,6 +6,47 @@ import Testing
 
 @MainActor
 struct BookStoreRepositoryContractTests {
+    @Test func rediscoverPagesPreserveProgressAndExcludeDeletedBooks() async throws {
+        let store = try makeStore()
+        let now = Date(timeIntervalSince1970: 1_800_000_000)
+        var books = (0..<23).map { index in
+            var book = makeBook(id: String(format: "book-%02d", index), source: .silo)
+            book.title = "Book \(index)"
+            book.mediaType = .ebook
+            book.addedAt = now.addingTimeInterval(-45 * 86400)
+            book.description = String(repeating: "Large metadata payload. ", count: 2000)
+            return book
+        }
+        books[0].isFinished = true
+        books[0].series = "Across Pages"
+        books[0].seriesSequence = "1"
+        books[22].series = "Across Pages"
+        books[22].seriesSequence = "2"
+        await store.upsertBooks(books)
+        await store.setHidden(true, stableId: books[0].stableId)
+        await store.setDeleted(true, stableId: books[1].stableId)
+
+        var candidates: [RediscoverPolicy.Candidate] = []
+        var cursor: String?
+        var pageCounts: [Int] = []
+        while true {
+            let page = await store.rediscoverCandidates(after: cursor, limit: 7)
+            guard let last = page.last else { break }
+            pageCounts.append(page.count)
+            candidates.append(contentsOf: page)
+            cursor = last.uniqueId
+        }
+
+        #expect(pageCounts == [7, 7, 7, 1])
+        #expect(Set(candidates.map(\.stableId)) == Set(books.filter { $0.id != books[1].id }.map(\.stableId)))
+        #expect(candidates.first { $0.stableId == books[0].stableId }?.completed == true)
+        let selections = RediscoverPolicy.selections(from: candidates, now: now, calendar: .current)
+        #expect(selections.first?.id == books[22].stableId)
+        #expect(selections.first?.reason == .nextInSeries)
+        let selected = await store.booksByStableIds(Set(selections.map(\.id)))
+        #expect(selected[books[22].stableId]?.description == books[22].description)
+    }
+
     @Test func queryAndWriteFacetsShareOneAuthoritativeStore() async throws {
         let store = try makeStore()
         let querying: any BookQuerying = store

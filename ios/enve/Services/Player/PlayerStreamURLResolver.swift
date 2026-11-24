@@ -3,10 +3,6 @@ import Logging
 
 @MainActor
 final class PlayerStreamURLResolver {
-    static let shared = PlayerStreamURLResolver(
-        providerConnections: AppState.shared.providerConnections
-    )
-
     private let plexService: PlexService
     private let audiobookshelfService: AudiobookshelfService
     private let providerConnections: any ProviderConnectionAccessing
@@ -22,9 +18,9 @@ final class PlayerStreamURLResolver {
         plexService: PlexService = PlexService(),
         audiobookshelfService: AudiobookshelfService = AudiobookshelfService(),
         providerConnections: any ProviderConnectionAccessing,
-        sessionService: PlayerSessionService = .shared,
-        progressService: PlayerProgressService = .shared,
-        profileSession: ProfileSession = .owner
+        sessionService: PlayerSessionService,
+        progressService: PlayerProgressService,
+        profileSession: ProfileSession
     ) {
         self.profileSession = profileSession
         self.plexService = plexService

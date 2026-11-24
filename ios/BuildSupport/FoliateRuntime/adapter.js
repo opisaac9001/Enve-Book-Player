@@ -679,6 +679,8 @@ const appearanceStyles = next => {
             font-size: ${Math.round(next.fontSize * 100)}% !important;
             line-height: ${next.lineHeight} !important;
             text-align: ${next.justified ? 'justify' : 'start'} !important;
+            hyphens: ${next.hyphenation ? 'auto' : 'none'} !important;
+            -webkit-hyphens: ${next.hyphenation ? 'auto' : 'none'} !important;
             letter-spacing: ${next.letterSpacing}em !important;
             word-spacing: ${next.wordSpacing}em !important;
             direction: ${next.direction === 'auto' ? 'inherit' : next.direction} !important;
@@ -688,6 +690,10 @@ const appearanceStyles = next => {
         }
         body {
             padding-inline: ${Math.max(0, next.pageMargins)}rem !important;
+        }
+        body :where(p, li, div, dd) {
+            hyphens: inherit !important;
+            -webkit-hyphens: inherit !important;
         }
         p {
             margin-block: ${Math.max(0, next.paragraphSpacing)}em !important;
@@ -1797,7 +1803,7 @@ const validatePreferences = value => {
     const keys = [
         'theme', 'fontFamily', 'customFontFamily', 'customFontCSS', 'columns',
         'fontSize', 'lineHeight', 'pageMargins', 'topMargins', 'bottomMargins',
-        'paragraphSpacing', 'paragraphIndent', 'scroll', 'publisherStyles', 'justified',
+        'paragraphSpacing', 'paragraphIndent', 'scroll', 'publisherStyles', 'justified', 'hyphenation',
         'wordSpacing', 'letterSpacing', 'bionic', 'direction', 'verticalWriting',
     ]
     if (!hasExactKeys(value, keys)) throw new TypeError('Preference schema is invalid')
@@ -1817,7 +1823,7 @@ const validatePreferences = value => {
         'fontSize', 'lineHeight', 'pageMargins', 'topMargins', 'bottomMargins',
         'paragraphSpacing', 'paragraphIndent', 'wordSpacing', 'letterSpacing',
     ]) boundedNumber(value[key], -1000, 1000)
-    for (const key of ['scroll', 'publisherStyles', 'justified', 'bionic']) {
+    for (const key of ['scroll', 'publisherStyles', 'justified', 'hyphenation', 'bionic']) {
         if (typeof value[key] !== 'boolean') throw new TypeError(`${key} must be a boolean`)
     }
     optionalString(value.customFontFamily)

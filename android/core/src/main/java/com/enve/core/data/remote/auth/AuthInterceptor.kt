@@ -12,7 +12,6 @@ import com.enve.core.data.local.PreferencesManager
 import com.enve.core.data.model.BookSource
 import kotlinx.coroutines.runBlocking
 import kotlinx.coroutines.sync.withLock
-import okhttp3.HttpUrl.Companion.toHttpUrlOrNull
 import okhttp3.Interceptor
 import okhttp3.Response
 import org.json.JSONObject
@@ -41,122 +40,82 @@ class AuthInterceptor @Inject constructor(
         val original = chain.request()
         val path = original.url.encodedPath
 
-        val originalHost = original.url.host
-        val originalPort = original.url.port
         val scopedConnectionId = ConnectionScope.getConnectionId()
-        val activeConnectionId = scopedConnectionId ?: preferencesManager.getActiveConnectionIdSync()
-        val connections = connectionRegistry.getConnectionsSync()
-
-        fun matchesHostPort(connServerUrl: String): Boolean {
-            val url = connServerUrl.toHttpUrlOrNull() ?: return false
-            return url.host.equals(originalHost, ignoreCase = true) && url.port == originalPort
+        val attempt = com.enve.core.data.remote.LoginAttemptScope.get()
+        val connections = connectionRegistry.getConnectionsSync().filter {
+            it.enabled || (it.id == scopedConnectionId && attempt != null && it.source == attempt.source &&
+                it.serverUrl.trimEnd('/') == attempt.serverUrl.trimEnd('/'))
         }
-
-        val pendingServerMatches = preferencesManager.getServerUrlSync()?.let(::matchesHostPort) == true
-
-        val stagedLoginHeaders = preferencesManager.getPendingLoginHeadersSync()
-        val hasStagedLoginContext = stagedLoginHeaders.isNotEmpty()
-        if (
-            path.endsWith("/auth/login") ||
-            path.endsWith("/auth/refresh") ||
-            path.endsWith("/public-settings") ||
-            path.endsWith("/api/v1/auth/login") ||
-            path.endsWith("/api/v1/auth/refresh") ||
-            path.endsWith("/login") ||
-            path.endsWith("/api/v2/token") ||
-            path.endsWith("/api/v2/token/app") ||
-            path.contains("AuthenticateByName") ||
-            path.contains("Account/login")
+        if (scopedConnectionId == null && attempt != null &&
+            !original.url.belongsTo(attempt.serverUrl, headerStrategy(attempt.source).credentialScope)
         ) {
-            val cookie = preferencesManager.getPendingLoginCookieSync()?.takeIf { it.isNotBlank() }
-            val scopedRegistered = scopedConnectionId
-                ?.let { id -> connections.find { it.id == id } }
-                ?.takeIf { matchesHostPort(it.serverUrl) }
-            val matched = scopedRegistered ?: connections.find { matchesHostPort(it.serverUrl) }
-            val matchedHeaders = matched?.let { conn ->
-                buildMap {
-                    putAll(conn.customHeaders)
-                    if (conn.serviceClientId.isNotBlank()) put("CF-Access-Client-Id", conn.serviceClientId)
-                    if (conn.serviceClientSecret.isNotBlank()) put("CF-Access-Client-Secret", conn.serviceClientSecret)
-                }
-            } ?: emptyMap()
-            if (matched == null && !pendingServerMatches) return chain.proceed(original)
-            val authHeaders = if (hasStagedLoginContext && pendingServerMatches) stagedLoginHeaders else matchedHeaders
-            val withHeaders = original.newBuilder().apply {
-                if (!cookie.isNullOrBlank()) header("Cookie", cookie)
-                authHeaders.forEach { (k, v) ->
-                    header(k, v)
-                }
-            }.build()
-            return chain.proceed(withHeaders)
-        }
-
-        val scopedRegistered = scopedConnectionId
-            ?.let { id -> connections.find { it.id == id } }
-            ?.takeIf { matchesHostPort(it.serverUrl) }
-
-        val activeConnection = activeConnectionId?.let { id -> connections.find { it.id == id } }
-        val activeRegistered = activeConnection?.takeIf { matchesHostPort(it.serverUrl) }
-        val activePending = if (activeConnection == null && activeConnectionId != null) {
-            preferencesManager.getServerUrlSync()
-                ?.takeIf { matchesHostPort(it) }
-                ?.let { activeConnectionId }
-        } else null
-
-        val matchingConnection = scopedRegistered
-            ?: activeRegistered
-            ?: if (activePending != null) null
-               else connections.find { conn -> matchesHostPort(conn.serverUrl) }
-
-        if (matchingConnection == null && activePending == null && !pendingServerMatches) {
             return chain.proceed(original)
         }
-
-        val source = matchingConnection?.source ?: preferencesManager.getActiveBookSourceSync()
-        val connectionId = matchingConnection?.id
-            ?: activePending
-            ?: scopedConnectionId
-            ?: preferencesManager.getActiveConnectionIdSync()
-
-        var token = connectionId?.let { vault.get(CredentialVault.accessTokenKey(it)) }
-            ?: preferencesManager.getAccessTokenSync()
-
-        val username = connectionId?.let { vault.get(CredentialVault.usernameKey(it)) }
-            ?: preferencesManager.getUsernameSync()
-            ?: ""
-        val authHeaderStrategy = authHeaderStrategies[source] ?: bearerAuthHeaderStrategy
-
-        val stagedHeaders = if (matchingConnection == null || hasStagedLoginContext) {
-            stagedLoginHeaders
+        val login = attempt?.takeIf { scopedConnectionId == null }
+        val matchingConnection = if (login != null) null else if (scopedConnectionId != null) {
+            connections.find {
+                it.id == scopedConnectionId && original.url.belongsTo(it.serverUrl, headerStrategy(it.source).credentialScope)
+            }
         } else {
-            emptyMap()
+            val matching = connections.filter { original.url.belongsTo(it.serverUrl, headerStrategy(it.source).credentialScope) }
+            matching.find { it.id == preferencesManager.getActiveConnectionIdSync() }
+                ?: matching.singleOrNull()
         }
-        val pendingLoginCookie = if (stagedHeaders.isNotEmpty() || matchingConnection == null) {
-            preferencesManager.getPendingLoginCookieSync()?.takeIf { it.isNotBlank() }
-        } else null
+        if (matchingConnection == null && login == null) return chain.proceed(original)
+
+        val connectionId = matchingConnection?.id
+        val source = matchingConnection?.source ?: requireNotNull(login).source
+        val serverUrl = matchingConnection?.serverUrl ?: requireNotNull(login).serverUrl
+        val authHeaderStrategy = headerStrategy(source)
+        val requestHeaders = attempt?.takeIf {
+            it.source == source && original.url.belongsTo(it.serverUrl, authHeaderStrategy.credentialScope)
+        }?.headers ?: buildMap {
+            val connection = requireNotNull(matchingConnection)
+            putAll(connection.customHeaders)
+            if (connection.serviceClientId.isNotBlank()) put("CF-Access-Client-Id", connection.serviceClientId)
+            if (connection.serviceClientSecret.isNotBlank()) put("CF-Access-Client-Secret", connection.serviceClientSecret)
+        }
+        val auth = RequestAuthContext(
+            connectionId,
+            serverUrl,
+            requestHeaders.keys + setOf("Authorization", "Cookie", "X-Plex-Token", "X-Emby-Token", "X-Profile-Id", "X-Profile-Token"),
+            authHeaderStrategy.credentialScope,
+        )
+        if (
+            path.endsWith("/auth/login") || path.endsWith("/auth/refresh") ||
+            path.endsWith("/public-settings") || path.endsWith("/login") ||
+            path.endsWith("/api/v2/token") || path.endsWith("/api/v2/token/app") ||
+            path.contains("AuthenticateByName") || path.contains("Account/login")
+        ) {
+            return chain.proceed(original.newBuilder().apply {
+                tag(RequestAuthContext::class.java, auth)
+                requestHeaders.forEach { (key, value) -> header(key, value) }
+            }.build())
+        }
+
+        var token = if (connectionId != null) vault.get(CredentialVault.accessTokenKey(connectionId))
+            else login?.accessToken
+        val username = if (connectionId != null) vault.get(CredentialVault.usernameKey(connectionId)).orEmpty()
+            else login?.username.orEmpty()
 
         val tokenRefreshStrategy = tokenRefreshStrategies[source]
-        if (tokenRefreshStrategy != null && token != null && isJwtExpiringSoon(token, bufferSeconds = 60)) {
+        if (connectionId != null && tokenRefreshStrategy != null && token != null && isJwtExpiringSoon(token, bufferSeconds = 60)) {
             val refreshed = runBlocking {
                 tokenRefreshCoordinator.mutex.withLock {
-                    val latest = connectionId?.let { vault.get(CredentialVault.accessTokenKey(it)) } ?: preferencesManager.getAccessTokenSync()
+                    val latest = vault.get(CredentialVault.accessTokenKey(connectionId))
                     if (latest != null && !isJwtExpiringSoon(latest, bufferSeconds = 60)) {
                         latest
                     } else {
-                        val connection = matchingConnection
-                            ?: connectionId?.let { id -> connections.find { it.id == id } }
+                        val connection = requireNotNull(matchingConnection)
                         tokenRefreshStrategy.refresh(
                             TokenRefreshContext(
                                 source = source,
-                                serverUrl = connection?.serverUrl ?: preferencesManager.getServerUrlSync().orEmpty(),
+                                serverUrl = connection.serverUrl,
                                 connectionId = connectionId,
                                 connection = connection,
-                                refreshToken = connectionId?.let { vault.get(CredentialVault.refreshTokenKey(it)) }
-                                    ?: preferencesManager.getRefreshTokenSync(),
-                                username = connectionId?.let { vault.get(CredentialVault.usernameKey(it)) }
-                                    ?: preferencesManager.getUsernameSync(),
-                                password = connectionId?.let { vault.get(CredentialVault.passwordKey(it)) }
-                                    ?: vault.get(CredentialVault.KEY_PASSWORD),
+                                refreshToken = vault.get(CredentialVault.refreshTokenKey(connectionId)),
+                                username = vault.get(CredentialVault.usernameKey(connectionId)),
+                                password = vault.get(CredentialVault.passwordKey(connectionId)),
                             ),
                         )
                     }
@@ -165,26 +124,16 @@ class AuthInterceptor @Inject constructor(
             if (refreshed != null) token = refreshed
         }
 
-        val requestHeaders = stagedHeaders.ifEmpty {
-            matchingConnection?.let { conn ->
-                buildMap {
-                    putAll(conn.customHeaders)
-                    if (conn.serviceClientId.isNotBlank()) put("CF-Access-Client-Id", conn.serviceClientId)
-                    if (conn.serviceClientSecret.isNotBlank()) put("CF-Access-Client-Secret", conn.serviceClientSecret)
-                }
-            } ?: emptyMap()
-        }
-
         if (authHeaderStrategy.requiresToken && (token.isNullOrEmpty() || token == "ChangeMe!")) {
-            if (pendingLoginCookie == null && requestHeaders.isEmpty()) return chain.proceed(original)
             val stagedRequest = original.newBuilder().apply {
-                if (pendingLoginCookie != null) header("Cookie", pendingLoginCookie)
+                tag(RequestAuthContext::class.java, auth)
                 requestHeaders.forEach { (k, v) -> header(k, v) }
             }.build()
             return chain.proceed(stagedRequest)
         }
 
         val builder = original.newBuilder()
+            .tag(RequestAuthContext::class.java, auth)
             .header("User-Agent", "Enve/1.0 (Android; SDK ${android.os.Build.VERSION.SDK_INT})")
 
         requestHeaders.forEach { (key, value) ->
@@ -200,10 +149,6 @@ class AuthInterceptor @Inject constructor(
             }
         }
 
-        if (pendingLoginCookie != null) {
-            builder.header("Cookie", pendingLoginCookie)
-        }
-
         val request = authHeaderStrategy.apply(
             AuthHeaderContext(
                 original = original,
@@ -215,6 +160,9 @@ class AuthInterceptor @Inject constructor(
 
         return chain.proceed(request)
     }
+
+    private fun headerStrategy(source: BookSource): AuthHeaderStrategy =
+        authHeaderStrategies[source] ?: bearerAuthHeaderStrategy
 
     private fun isJwtExpiringSoon(token: String, bufferSeconds: Long): Boolean {
         val exp = jwtExpCache[token] ?: run {

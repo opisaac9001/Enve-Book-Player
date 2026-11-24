@@ -656,11 +656,7 @@ final class UnifiedDownloadService: NSObject, ObservableObject {
         {
             return readaloud
         }
-        return ebookImporter.resolveExistingLocalEbookURL(
-            bookIdentifier: book.id,
-            ebookFileURL: book.ebookFileURL,
-            filePath: book.mediaType == .ebook ? book.filePath : nil
-        )
+        return ebookImporter.resolveExistingLocalEbookURL(for: book)
     }
 
     func prepareReaderAsset(
@@ -968,8 +964,11 @@ final class UnifiedDownloadService: NSObject, ObservableObject {
                     try LocalStorageManager.validateImportPath(directory, within: root)
                     if FileManager.default.fileExists(atPath: directory.path) { try FileManager.default.removeItem(at: directory) }
                 } else if book.source != .local {
-                    try ebookImporter.deleteRemoteEbookArtifacts(forBookId: book.id)
-                    ebookImporter.removeReadaloudCache(forBookId: book.id, stableId: book.stableId)
+                    try ebookImporter.deleteRemoteEbookArtifacts(for: book)
+                    if book.ebookFileURL != nil {
+                        try ebookImporter.deleteRecordedLegacyEbook(for: book, otherBooks: await bookQuerying.allBooks())
+                    }
+                    ebookImporter.removeReadaloudCache(forBookId: book.ebookStorageID, stableId: book.stableId)
                 } else { return }
                 await bookWriting.updateEbookFileURL(uniqueId: book.uniqueId, url: nil)
                 libraryCache.applyStored(uniqueId: book.uniqueId) { $0.ebookFileURL = nil }
@@ -1745,7 +1744,7 @@ final class UnifiedDownloadService: NSObject, ObservableObject {
         let offlineURL = try ebookImporter.persistRemoteEbookForOffline(
             from: downloadedURL,
             preferredFilename: downloadedURL.lastPathComponent,
-            bookIdentifier: book.id
+            bookIdentifier: book.ebookStorageID
         )
         try Task.checkCancellation()
 

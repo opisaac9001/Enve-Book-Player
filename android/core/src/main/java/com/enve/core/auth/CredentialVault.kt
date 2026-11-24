@@ -2,11 +2,13 @@
 package com.enve.core.auth
 
 import android.content.Context
+import android.content.SharedPreferences
 import androidx.security.crypto.EncryptedSharedPreferences
 import androidx.security.crypto.MasterKey
 import dagger.hilt.android.qualifiers.ApplicationContext
 import com.enve.core.data.local.DEFAULT_ADULT_PROFILE_ID
 import com.enve.core.data.local.FamilyProfile
+import java.security.GeneralSecurityException
 import javax.inject.Inject
 import javax.inject.Singleton
 
@@ -18,14 +20,19 @@ class CredentialVault private constructor(
     @Inject
     constructor(@ApplicationContext context: Context) : this(context, DEFAULT_ADULT_PROFILE_ID)
 
-    private val masterKey = MasterKey.Builder(context)
-        .setKeyScheme(MasterKey.KeyScheme.AES256_GCM)
-        .build()
+    private val fileName = fileName(profileId)
 
-    private val prefs = EncryptedSharedPreferences.create(
+    private val prefs: SharedPreferences = try {
+        open(context)
+    } catch (_: GeneralSecurityException) {
+        context.deleteSharedPreferences(fileName)
+        open(context)
+    }
+
+    private fun open(context: Context): SharedPreferences = EncryptedSharedPreferences.create(
         context,
-        if (profileId == DEFAULT_ADULT_PROFILE_ID) FILE_NAME else "$FILE_NAME.profile.$profileId",
-        masterKey,
+        fileName,
+        MasterKey.Builder(context).setKeyScheme(MasterKey.KeyScheme.AES256_GCM).build(),
         EncryptedSharedPreferences.PrefKeyEncryptionScheme.AES256_SIV,
         EncryptedSharedPreferences.PrefValueEncryptionScheme.AES256_GCM,
     )
@@ -37,7 +44,7 @@ class CredentialVault private constructor(
         } else {
             editor.putString(key, value)
         }
-        editor.commit()
+        check(editor.commit())
     }
 
     fun get(key: String): String? = prefs.getString(key, null)
@@ -57,6 +64,14 @@ class CredentialVault private constructor(
             require(FamilyProfile.validId(profileId))
             return CredentialVault(context, profileId)
         }
+
+        fun deleteForProfile(context: Context, profileId: String) {
+            require(FamilyProfile.validId(profileId) && profileId != DEFAULT_ADULT_PROFILE_ID)
+            context.deleteSharedPreferences(fileName(profileId))
+        }
+
+        private fun fileName(profileId: String): String =
+            if (profileId == DEFAULT_ADULT_PROFILE_ID) FILE_NAME else "$FILE_NAME.profile.$profileId"
 
         const val KEY_ACCESS_TOKEN = "grimmory_access_token"
         const val KEY_REFRESH_TOKEN = "grimmory_refresh_token"
@@ -78,6 +93,7 @@ class CredentialVault private constructor(
 
         fun mtlsCertKey(connectionId: String) = "mtls_cert_$connectionId"
         fun mtlsCertPasswordKey(connectionId: String) = "mtls_cert_pass_$connectionId"
+        fun customHeadersKey(connectionId: String) = "custom_headers_$connectionId"
         fun serviceClientIdKey(connectionId: String) = "svc_client_id_$connectionId"
         fun serviceClientSecretKey(connectionId: String) = "svc_client_secret_$connectionId"
     }

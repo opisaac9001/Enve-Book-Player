@@ -87,7 +87,7 @@ class ProfileStorageLocationsTest {
         SQLiteDatabase.openOrCreateDatabase(child.readerDatabaseFile, null).use { database ->
             database.execSQL("CREATE TABLE preserved_data (value TEXT NOT NULL)")
             database.execSQL("INSERT INTO preserved_data VALUES ('child data')")
-            database.version = 29
+            database.version = 31
         }
 
         try {
@@ -101,7 +101,7 @@ class ProfileStorageLocationsTest {
                 assertTrue(cursor.moveToFirst())
                 assertEquals("child data", cursor.getString(0))
             }
-            assertEquals(29, database.version)
+            assertEquals(31, database.version)
         }
         owner.bookCacheDao().upsert(listOf(book("Owner still usable", 0.8f)))
         assertEquals("Owner still usable", owner.bookCacheDao().getById("42")?.title)

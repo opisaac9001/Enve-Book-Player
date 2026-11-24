@@ -42,6 +42,89 @@ struct LibraryWorkIndexSnapshot: Sendable {
     let representativeCount: [String: Int]
 }
 
+enum CatalogLane: Hashable, Sendable {
+    case stored
+    case remote(providerId: UUID, libraryId: String)
+    case grimmorySearch(providerId: UUID)
+
+    var providerId: UUID? {
+        switch self {
+        case .stored: nil
+        case .remote(let providerId, _), .grimmorySearch(let providerId): providerId
+        }
+    }
+
+    fileprivate var order: String {
+        switch self {
+        case .stored: "0"
+        case .remote(let providerId, let libraryId): "1|\(providerId.uuidString)|\(libraryId)"
+        case .grimmorySearch(let providerId): "2|\(providerId.uuidString)"
+        }
+    }
+}
+
+enum CatalogLanePosition: Hashable, Sendable {
+    case start
+    case offset(Int)
+    case token(String)
+}
+
+struct RemoteCatalogCursor: Hashable, Sendable {
+    fileprivate(set) var lanes: [CatalogLane: CatalogLanePosition] = [:]
+    fileprivate(set) var seenTokens: [CatalogLane: Set<String>] = [:]
+    fileprivate(set) var offlineProviders: Set<UUID> = []
+}
+
+struct CatalogEntry: Sendable {
+    let book: Book
+    let isSummary: Bool
+}
+
+struct CatalogLaneIssue: Equatable, Sendable {
+    let providerId: UUID
+    let sourceName: String
+    /// Nil when the server was unreachable and its downloaded books were shown instead.
+    let message: String?
+}
+
+private extension RemoteCatalogSort {
+    var libraryDescriptor: LibrarySortDescriptor {
+        switch self {
+        case .title: LibrarySortDescriptor(field: .title, direction: .ascending)
+        case .recentlyAdded: LibrarySortDescriptor(field: .recent, direction: .descending)
+        }
+    }
+
+    var storeDescriptor: BookStoreSortDescriptor {
+        switch self {
+        case .title: BookStoreSortDescriptor(field: .title, direction: .ascending)
+        case .recentlyAdded: BookStoreSortDescriptor(field: .recent, direction: .descending)
+        }
+    }
+}
+
+struct RemoteCatalogResult {
+    let entries: [CatalogEntry]
+    let books: [Book]
+    let next: RemoteCatalogCursor?
+    let issues: [CatalogLaneIssue]
+    let reachedSource: Bool
+}
+
+struct RemoteCatalogScope: Equatable {
+    fileprivate struct Source: Equatable {
+        let id: UUID
+        let url: String
+        let username: String?
+        let userId: String?
+        let selectedLibraryIds: Set<String>?
+    }
+
+    fileprivate let sources: [Source]
+    fileprivate let libraryKeys: Set<String>
+    fileprivate let excludedLibraryKeys: Set<String>
+}
+
 struct BookSyncLibrarySnapshot: Sendable {
     let ebookCount: Int
     let ebooks: [Book]
@@ -119,10 +202,11 @@ final class LibraryEngine {
 
     func detailSnapshot(for seed: Book, current: Book?) async -> BookDetailSnapshot {
         let shown = current ?? seed
-        let fresh =
+        var fresh =
             await appState.bookStore.book(uniqueId: seed.uniqueId)
             ?? appState.bookInMemory(uniqueId: seed.uniqueId)
             ?? shown
+        fresh.language = fresh.language ?? shown.language ?? seed.language
 
         let counterpart: Book?
         switch fresh.mediaType {
@@ -187,22 +271,18 @@ final class LibraryEngine {
         }
 
         let normalized = min(max(rating, 1), 5)
-        try await provider.updatePersonalRating(for: book, rating: normalized)
-
-        if let updated = updateBook(
-            uniqueId: book.uniqueId,
-            {
-                $0.personalRating = Double(normalized)
-            }
-        ) {
-            notifyLibraryChanged()
-            return updated
-        }
+        let edits = profileSession?.bookEdits ?? .shared
+        guard edits.submit(.rating(normalized), for: book) != nil else { throw ProviderError.notImplemented }
 
         var updated = book
-        updated.personalRating = Double(normalized)
-        await appState.bookStore.upsertBooks([updated])
+        if let cached = updateBook(uniqueId: book.uniqueId, { $0.personalRating = Double(normalized) }) {
+            updated = cached
+        } else {
+            updated.personalRating = Double(normalized)
+            await appState.bookStore.upsertBooks([updated])
+        }
         notifyLibraryChanged()
+        await edits.flush()
         return updated
     }
 
@@ -636,6 +716,7 @@ final class LibraryEngine {
     }
 
     func offlineBookIDs(in books: [Book]) async -> Set<String> {
+        guard !books.isEmpty else { return [] }
         let availability = await (profileSession?.ebooks ?? LocalEbookImporter.shared).offlineAvailability()
         return Set(await availability.existingBooks(in: books).map(\.uniqueId))
     }
@@ -772,6 +853,490 @@ final class LibraryEngine {
         return remote.compactMap { book in
             guard !suppressed.contains(book.stableId) else { return nil }
             return stored[book.uniqueId] ?? book
+        }
+    }
+
+    static let remoteCatalogPageSize = 50
+    private static let remoteCatalogRounds = 3
+    @ObservationIgnored private var unreachableCatalogProviders = Set<UUID>()
+
+    func supportsRemoteCatalog(_ sourceFilter: LibrarySourceFilter) -> Bool {
+        switch sourceFilter {
+        case .connection(let providerId), .library(let providerId, _):
+            remoteCatalogProvider(providerId) != nil
+        case .all:
+            !remoteCatalogProviderIds.isEmpty
+        case .device:
+            false
+        }
+    }
+
+    /// Remote-catalog providers in scope whose cached rows must be limited to files on this device.
+    func unreachableCatalogProviderIds(for sourceFilter: LibrarySourceFilter) -> Set<UUID> {
+        let scoped: Set<UUID>
+        switch sourceFilter {
+        case .all:
+            scoped = Set(remoteCatalogProviderIds)
+        case .connection(let providerId), .library(let providerId, _):
+            scoped = remoteCatalogProvider(providerId) == nil ? [] : [providerId]
+        case .device:
+            scoped = []
+        }
+        guard !scoped.isEmpty else { return [] }
+        return NetworkPolicyService.shared.isConnected ? scoped.intersection(unreachableCatalogProviders) : scoped
+    }
+
+    func isOnDevice(_ book: Book) -> Bool {
+        (profileSession?.engine ?? EnveEngine.shared).downloads.isLibraryDownloaded(book)
+    }
+
+    func remoteCatalogFilterOptions(
+        sourceFilter: LibrarySourceFilter, mediaType: AppMediaType?, search: String
+    ) async -> (options: RemoteCatalogFilterOptions, issues: [CatalogLaneIssue]) {
+        let request = RemoteCatalogRequest(search: nil, mediaType: mediaType, sort: .title)
+        if !NetworkPolicyService.shared.isConnected {
+            let entries = await onDeviceCatalogEntries(providerIds: nil, sourceFilter: sourceFilter, request: request)
+            let local = LibraryAdvancedFilterPolicy.options(from: entries.map(\.book))
+            return (RemoteCatalogFilterOptions(
+                genres: local.genres.filter { search.isEmpty || $0.localizedStandardContains(search) },
+                languages: local.languages.filter { search.isEmpty || $0.localizedStandardContains(search) }
+            ), (sourceFilter.providerId.map { [$0] } ?? remoteCatalogProviderIds).map {
+                catalogIssue($0, message: "Offline. Filters show files on this device.")
+            })
+        }
+        let ids = sourceFilter.providerId.map { [$0] } ?? remoteCatalogProviderIds
+        var options = RemoteCatalogFilterOptions()
+        var issues: [CatalogLaneIssue] = []
+        await withTaskGroup(of: (RemoteCatalogFilterOptions, [CatalogLaneIssue]).self) { group in
+            for id in ids {
+                group.addTask {
+                    await self.remoteCatalogFilterOptions(providerId: id, sourceFilter: sourceFilter, request: request, search: search)
+                }
+            }
+            for await (values, failures) in group {
+                options.genres.append(contentsOf: values.genres)
+                options.languages.append(contentsOf: values.languages)
+                options.hasMore = options.hasMore || values.hasMore
+                issues.append(contentsOf: failures)
+            }
+        }
+        if sourceFilter == .all {
+            let rows = await appState.bookStore.catalogPage(
+                excludingProviderIds: Set(remoteCatalogProviderIds), mediaType: mediaType?.rawValue,
+                search: nil, sort: [RemoteCatalogSort.title.storeDescriptor], offset: 0, limit: 1200
+            )
+            let excluded = (profileSession?.preferences ?? LibraryDisplayPreferencesStore.shared).loadPreferences().excludedLibraryIds
+            let local = LibraryAdvancedFilterPolicy.options(from: rows.filter {
+                !excluded.contains("\($0.providerId.uuidString)_\($0.libraryId)")
+            })
+            options.genres.append(contentsOf: local.genres.filter { search.isEmpty || $0.localizedStandardContains(search) })
+            options.languages.append(contentsOf: local.languages.filter { search.isEmpty || $0.localizedStandardContains(search) })
+        }
+        options.genres = LibraryAdvancedFilterPolicy.uniqueSorted(options.genres)
+        options.languages = LibraryAdvancedFilterPolicy.uniqueSorted(options.languages)
+        return (options, issues)
+    }
+
+    private func remoteCatalogFilterOptions(
+        providerId: UUID, sourceFilter: LibrarySourceFilter, request: RemoteCatalogRequest, search: String
+    ) async -> (RemoteCatalogFilterOptions, [CatalogLaneIssue]) {
+        guard let provider = remoteCatalogProvider(providerId) else { return (.init(), []) }
+        var result = RemoteCatalogFilterOptions()
+        var failures: [CatalogLaneIssue] = []
+        do {
+            let scope: LibrarySourceFilter = sourceFilter == .all ? .connection(providerId) : sourceFilter
+            let libraries = try await remoteCatalogLibraryIds(scope, provider: provider)
+            for libraryId in libraries {
+                try Task.checkCancellation()
+                do {
+                    let page = try await provider.fetchRemoteCatalogFilterOptions(
+                        libraryId: libraryId, mediaType: request.mediaType, search: search
+                    )
+                    result.genres.append(contentsOf: page.genres)
+                    result.languages.append(contentsOf: page.languages)
+                    result.hasMore = result.hasMore || page.hasMore
+                } catch {
+                    if Self.isCancellation(error) { throw error }
+                    failures.append(catalogIssue(providerId, message: error.localizedDescription))
+                }
+            }
+        } catch {
+            if !Self.isCancellation(error) {
+                failures.append(catalogIssue(providerId, message: error.localizedDescription))
+            }
+        }
+        if !failures.isEmpty {
+            let local = await onDeviceCatalogEntries(providerIds: [providerId], sourceFilter: sourceFilter, request: request)
+            let values = LibraryAdvancedFilterPolicy.options(from: local.map(\.book))
+            result.genres.append(contentsOf: values.genres.filter { search.isEmpty || $0.localizedStandardContains(search) })
+            result.languages.append(contentsOf: values.languages.filter { search.isEmpty || $0.localizedStandardContains(search) })
+        }
+        return (result, failures)
+    }
+
+    // Each open lane advances once per round, so local rows and every server progress independently and one failure hides nothing else.
+    func remoteCatalogPage(
+        sourceFilter: LibrarySourceFilter,
+        request: RemoteCatalogRequest,
+        after cursor: RemoteCatalogCursor?,
+        onPartial: (@MainActor ([CatalogEntry]) async -> Void)? = nil
+    ) async -> RemoteCatalogResult {
+        if !NetworkPolicyService.shared.isConnected {
+            let entries = await onDeviceCatalogEntries(providerIds: nil, sourceFilter: sourceFilter, request: request)
+            let providerIds = sourceFilter.providerId.map { [$0] } ?? remoteCatalogProviderIds
+            return RemoteCatalogResult(
+                entries: entries, books: await presentableBooks(for: entries), next: nil,
+                issues: providerIds.map { catalogIssue($0, message: nil) }, reachedSource: false
+            )
+        }
+        var issues: [CatalogLaneIssue] = []
+        var state: RemoteCatalogCursor
+        var newlyOffline = Set<UUID>()
+        if let cursor {
+            state = cursor
+        } else {
+            let initial = await initialCatalogCursor(sourceFilter: sourceFilter, request: request)
+            state = initial.cursor
+            issues = initial.issues
+            newlyOffline = state.offlineProviders
+        }
+        let excluded = Set(remoteCatalogProviderIds)
+        var entries: [CatalogEntry] = []
+        var contributingLanes = Set<CatalogLane>()
+        var reachedSource = false
+
+        for _ in 0..<Self.remoteCatalogRounds where !state.lanes.isEmpty {
+            let outcomes = await fetchCatalogLanes(state.lanes, request: request, excluding: excluded, onPartial: onPartial)
+            guard !Task.isCancelled, profileSession?.isRetired != true else { break }
+            var open: [CatalogLane: CatalogLanePosition] = [:]
+            for (lane, outcome) in outcomes {
+                switch outcome {
+                case let .page(rows, next):
+                    reachedSource = true
+                    if !rows.isEmpty { contributingLanes.insert(lane) }
+                    entries.append(contentsOf: rows)
+                    if let providerId = lane.providerId { unreachableCatalogProviders.remove(providerId) }
+                    guard let next else { continue }
+                    if case .token(let token) = next, !state.seenTokens[lane, default: []].insert(token).inserted {
+                        if let providerId = lane.providerId {
+                            issues.append(catalogIssue(providerId, message: "The server repeated a page of results."))
+                        }
+                        continue
+                    }
+                    open[lane] = next
+                case let .failed(error):
+                    guard !Self.isCancellation(error), let providerId = lane.providerId else { continue }
+                    if RemoteCatalogConnectivity.isUnavailable(error) {
+                        unreachableCatalogProviders.insert(providerId)
+                        if state.offlineProviders.insert(providerId).inserted {
+                            newlyOffline.insert(providerId)
+                            issues.append(catalogIssue(providerId, message: nil))
+                        }
+                    } else {
+                        issues.append(catalogIssue(providerId, message: error.localizedDescription))
+                    }
+                }
+            }
+            let offline = state.offlineProviders
+            state.lanes = open.filter { lane, _ in lane.providerId.map { !offline.contains($0) } ?? true }
+            if !entries.isEmpty { break }
+        }
+
+        entries.append(contentsOf: await onDeviceCatalogEntries(
+            providerIds: newlyOffline, sourceFilter: sourceFilter, request: request
+        ))
+        var seen = Set<String>()
+        entries = entries.filter { seen.insert($0.book.uniqueId).inserted }
+        if contributingLanes.count + (newlyOffline.isEmpty ? 0 : 1) > 1 {
+            let order = applySort(entries.map(\.book), descriptors: [request.sort.libraryDescriptor]).map(\.uniqueId)
+            let rank = Dictionary(order.enumerated().map { ($1, $0) }, uniquingKeysWith: { first, _ in first })
+            entries.sort { rank[$0.book.uniqueId, default: 0] < rank[$1.book.uniqueId, default: 0] }
+        }
+        return RemoteCatalogResult(
+            entries: entries,
+            books: await presentableBooks(for: entries),
+            next: state.lanes.isEmpty ? nil : state,
+            issues: issues,
+            reachedSource: reachedSource
+        )
+    }
+
+    // Summaries take stored local state and user metadata; stored rows are re-read so downloads and progress stay current.
+    func presentableBooks(for entries: [CatalogEntry]) async -> [Book] {
+        guard !entries.isEmpty else { return [] }
+        let suppressed = (profileSession?.deletedBooks ?? DeletedBooksTombstoneStore.shared).allDeleted
+            .union((profileSession?.preferences ?? LibraryDisplayPreferencesStore.shared).loadPreferences().hiddenBookIds)
+        let overlaid = await overlayStoredRecords(onto: entries.filter(\.isSummary).map(\.book))
+        let summaries = Dictionary(overlaid.map { ($0.uniqueId, $0) }, uniquingKeysWith: { first, _ in first })
+        let storedIds = Set(entries.filter { !$0.isSummary }.map(\.book.uniqueId))
+        let stored = storedIds.isEmpty ? [:] : await appState.bookStore.booksByUniqueIds(storedIds)
+        return entries.compactMap { entry in
+            let book = entry.isSummary ? summaries[entry.book.uniqueId] : (stored[entry.book.uniqueId] ?? entry.book)
+            guard let book, !suppressed.contains(book.stableId) else { return nil }
+            return book
+        }
+    }
+
+    // Stored rows keep local progress, links, and resolved details; the fresh card supplies presentation metadata.
+    private func overlayStoredRecords(onto summaries: [Book]) async -> [Book] {
+        guard !summaries.isEmpty else { return [] }
+        let enriched = await (profileSession?.metadataManager ?? MetadataManager.shared).enrichBooksWithStoredMetadata(summaries)
+        let stored = await appState.bookStore.booksByUniqueIds(Set(summaries.map(\.uniqueId)))
+        let progress = profileSession?.bookProgress ?? BookProgressStore.shared
+        return enriched.map { summary in
+            guard var book = stored[summary.uniqueId] else {
+                var summary = summary
+                if summary.mediaType == .audiobook, let local = progress.loadProgress(for: summary), local.progress > 0 {
+                    summary.currentTime = local.progress
+                    summary.lastUpdate = Date(timeIntervalSince1970: local.lastUpdated)
+                }
+                return summary
+            }
+            book.title = summary.title
+            book.thumb = summary.thumb ?? book.thumb
+            book.description = summary.description ?? book.description
+            book.duration = book.duration ?? summary.duration
+            book.language = book.language ?? summary.language
+            return book
+        }
+    }
+
+    private enum CatalogLaneOutcome: Sendable {
+        case page([CatalogEntry], next: CatalogLanePosition?)
+        case failed(any Error)
+    }
+
+    private func initialCatalogCursor(
+        sourceFilter: LibrarySourceFilter,
+        request: RemoteCatalogRequest
+    ) async -> (cursor: RemoteCatalogCursor, issues: [CatalogLaneIssue]) {
+        var cursor = RemoteCatalogCursor()
+        var issues: [CatalogLaneIssue] = []
+        let providerIds: [UUID]
+        switch sourceFilter {
+        case .all:
+            cursor.lanes[.stored] = .offset(0)
+            providerIds = remoteCatalogProviderIds
+            if request.search != nil {
+                for providerId in grimmorySearchProviderIds {
+                    cursor.lanes[.grimmorySearch(providerId: providerId)] = .start
+                }
+            }
+        case .connection(let providerId), .library(let providerId, _):
+            providerIds = [providerId]
+        case .device:
+            providerIds = []
+        }
+        let isConnected = NetworkPolicyService.shared.isConnected
+        for providerId in providerIds {
+            guard let provider = remoteCatalogProvider(providerId) else { continue }
+            guard isConnected else {
+                unreachableCatalogProviders.insert(providerId)
+                cursor.offlineProviders.insert(providerId)
+                issues.append(catalogIssue(providerId, message: nil))
+                continue
+            }
+            do {
+                let scope: LibrarySourceFilter = sourceFilter == .all ? .connection(providerId) : sourceFilter
+                for libraryId in try await remoteCatalogLibraryIds(scope, provider: provider) {
+                    cursor.lanes[.remote(providerId: providerId, libraryId: libraryId)] = .start
+                }
+            } catch let error where RemoteCatalogConnectivity.isUnavailable(error) {
+                unreachableCatalogProviders.insert(providerId)
+                cursor.offlineProviders.insert(providerId)
+                issues.append(catalogIssue(providerId, message: nil))
+            } catch {
+                guard !Self.isCancellation(error) else { continue }
+                issues.append(catalogIssue(providerId, message: error.localizedDescription))
+            }
+        }
+        return (cursor, issues)
+    }
+
+    private func fetchCatalogLanes(
+        _ lanes: [CatalogLane: CatalogLanePosition],
+        request: RemoteCatalogRequest,
+        excluding excluded: Set<UUID>,
+        onPartial: (@MainActor ([CatalogEntry]) async -> Void)?
+    ) async -> [(CatalogLane, CatalogLaneOutcome)] {
+        let outcomes = await withTaskGroup(of: (CatalogLane, CatalogLaneOutcome).self) { group in
+            for (lane, position) in lanes {
+                group.addTask {
+                    (lane, await self.fetchCatalogLane(lane, at: position, request: request, excluding: excluded))
+                }
+            }
+            var outcomes: [(CatalogLane, CatalogLaneOutcome)] = []
+            var partial: [CatalogEntry] = []
+            for await outcome in group {
+                outcomes.append(outcome)
+                if case .page(let rows, _) = outcome.1, !rows.isEmpty, !Task.isCancelled {
+                    partial.append(contentsOf: rows)
+                    await onPartial?(partial)
+                }
+            }
+            return outcomes
+        }
+        return outcomes.sorted { $0.0.order < $1.0.order }
+    }
+
+    private func fetchCatalogLane(
+        _ lane: CatalogLane,
+        at position: CatalogLanePosition,
+        request: RemoteCatalogRequest,
+        excluding excluded: Set<UUID>
+    ) async -> CatalogLaneOutcome {
+        do {
+            switch lane {
+            case .stored:
+                let offset = if case .offset(let offset) = position { offset } else { 0 }
+                let rows = await appState.bookStore.catalogPage(
+                    excludingProviderIds: excluded,
+                    mediaType: request.mediaType?.rawValue,
+                    search: request.search,
+                    sort: [request.sort.storeDescriptor],
+                    offset: offset,
+                    limit: Self.remoteCatalogPageSize
+                )
+                try Task.checkCancellation()
+                return .page(
+                    rows.filter { request.matchesAdvancedFilters($0) }.map { CatalogEntry(book: $0, isSummary: false) },
+                    next: rows.count < Self.remoteCatalogPageSize ? nil : .offset(offset + rows.count)
+                )
+            case let .remote(providerId, libraryId):
+                guard let provider = remoteCatalogProvider(providerId) else { throw ProviderError.notImplemented }
+                let token: String? = if case .token(let token) = position { token } else { nil }
+                let page = try await provider.fetchRemoteCatalogPage(
+                    libraryId: libraryId,
+                    request: request,
+                    cursor: token,
+                    limit: Self.remoteCatalogPageSize
+                )
+                return .page(
+                    page.books.map { CatalogEntry(book: $0, isSummary: true) },
+                    next: page.nextCursor.map(CatalogLanePosition.token)
+                )
+            case .grimmorySearch(let providerId):
+                let rows = await grimmorySearchBooks(providerId: providerId, query: request.search ?? "")
+                try Task.checkCancellation()
+                return .page(
+                    rows.filter { (request.mediaType == nil || $0.mediaType == request.mediaType) && request.matchesAdvancedFilters($0) }
+                        .map { CatalogEntry(book: $0, isSummary: false) },
+                    next: nil
+                )
+            }
+        } catch {
+            return .failed(error)
+        }
+    }
+
+    // Mirrors the scoped Grimmory remote search in searchBooks; each remote-browsed library is searched once and failures are skipped.
+    private func grimmorySearchBooks(providerId: UUID, query: String) async -> [Book] {
+        guard let provider = appState.getProvider(providerId) as? BookloreProvider,
+            let connection = appState.providerConnections.connections.first(where: { $0.id == providerId })
+        else { return [] }
+        var books: [Book] = []
+        for libraryId in (profileSession?.remoteLibraryBrowse ?? RemoteLibraryBrowseStore.shared).libraryIds(providerId: providerId) {
+            if let selected = connection.selectedLibraryIds, !selected.contains(libraryId) { continue }
+            guard !Task.isCancelled else { return [] }
+            guard let remote = try? await provider.remoteSearchBooks(
+                libraryId: libraryId, query: query, limit: Self.remoteCatalogPageSize
+            ) else { continue }
+            books.append(contentsOf: await mergingStoredRecords(remote))
+        }
+        return books
+    }
+
+    // Every download row is narrowed by scope and query before matching, so no on-device match is cut off by a cap.
+    private func onDeviceCatalogEntries(
+        providerIds: Set<UUID>?,
+        sourceFilter: LibrarySourceFilter,
+        request: RemoteCatalogRequest
+    ) async -> [CatalogEntry] {
+        guard providerIds?.isEmpty != true else { return [] }
+        let ebooks = request.mediaType == .audiobook ? [] : await appState.bookStore.downloadedEbooks(limit: .max)
+        let audiobooks: [Book]
+        if request.mediaType == .ebook {
+            audiobooks = []
+        } else {
+            let storage = profileSession?.localStorage ?? LocalStorageManager.shared
+            audiobooks = await downloadedAudiobooks(storageKeys: Set(storage.downloadedAudiobookIds()))
+        }
+        let candidates = (ebooks + audiobooks).filter { providerIds?.contains($0.providerId) ?? true }
+        return request.onDeviceBooks(
+            from: candidates, providerId: sourceFilter.providerId, libraryId: sourceFilter.libraryId,
+            isOnDevice: { isOnDevice($0) }
+        ).map { CatalogEntry(book: $0, isSummary: false) }
+    }
+
+    private func catalogIssue(_ providerId: UUID, message: String?) -> CatalogLaneIssue {
+        let name = appState.providerConnections.connections.first { $0.id == providerId }?.name
+            ?? remoteCatalogProvider(providerId)?.connection.name
+            ?? "A server"
+        return CatalogLaneIssue(providerId: providerId, sourceName: name, message: message)
+    }
+
+    private nonisolated static func isCancellation(_ error: any Error) -> Bool {
+        error is CancellationError || (error as? URLError)?.code == .cancelled
+    }
+
+    func remoteCatalogScope(for sourceFilter: LibrarySourceFilter) -> RemoteCatalogScope {
+        let ids = sourceFilter.providerId.map { [$0] } ?? remoteCatalogProviderIds
+        let sources = ids.sorted { $0.uuidString < $1.uuidString }.compactMap { id -> RemoteCatalogScope.Source? in
+            guard let connection = remoteCatalogProvider(id)?.connection else { return nil }
+            return RemoteCatalogScope.Source(
+                id: id, url: connection.url, username: connection.username, userId: connection.userId,
+                selectedLibraryIds: connection.selectedLibraryIds
+            )
+        }
+        let providerIds = Set(sources.map(\.id))
+        return RemoteCatalogScope(
+            sources: sources,
+            libraryKeys: Set(catalog.libraries.filter { providerIds.contains($0.providerId) }.map {
+                "\($0.providerId.uuidString)_\($0.id)"
+            }),
+            excludedLibraryKeys: (profileSession?.preferences ?? LibraryDisplayPreferencesStore.shared)
+                .loadPreferences().excludedLibraryIds
+        )
+    }
+
+    private func remoteCatalogProvider(_ providerId: UUID) -> (any RemoteCatalogBrowsingProvider)? {
+        guard appState.providerConnections.connections.first(where: { $0.id == providerId })?.isArchived != true else { return nil }
+        return appState.getProvider(providerId) as? any RemoteCatalogBrowsingProvider
+    }
+
+    // Includes providers known only through catalog libraries, so a source is browsable before its connection list reloads.
+    private var remoteCatalogProviderIds: [UUID] {
+        var seen = Set<UUID>()
+        let candidates = appState.providerConnections.connections.map(\.id) + catalog.libraries.map(\.providerId)
+        return candidates.filter { seen.insert($0).inserted && remoteCatalogProvider($0) != nil }
+    }
+
+    private var grimmorySearchProviderIds: [UUID] {
+        appState.providerConnections.connections.compactMap { connection in
+            guard connection.isConnected, !connection.isArchived,
+                let provider = appState.getProvider(connection.id) as? BookloreProvider,
+                provider.supportsRemoteBrowsing
+            else { return nil }
+            return connection.id
+        }
+    }
+
+    private func remoteCatalogLibraryIds(
+        _ sourceFilter: LibrarySourceFilter,
+        provider: any RemoteCatalogBrowsingProvider
+    ) async throws -> [String] {
+        let providerId = provider.connection.id
+        let excluded = (profileSession?.preferences ?? LibraryDisplayPreferencesStore.shared).loadPreferences().excludedLibraryIds
+        let selected = provider.connection.selectedLibraryIds ?? []
+        let candidates: [String]
+        if let libraryId = sourceFilter.libraryId {
+            candidates = [libraryId]
+        } else {
+            let known = catalog.libraries.filter { $0.providerId == providerId }.map(\.id)
+            candidates = known.isEmpty ? try await provider.fetchLibraries().map(\.id) : known
+        }
+        return candidates.filter {
+            (selected.isEmpty || selected.contains($0)) && !excluded.contains("\(providerId.uuidString)_\($0)")
         }
     }
 
@@ -1321,11 +1886,22 @@ final class LibraryEngine {
         }
     }
 
-    func books(in collection: Collection) async -> [Book] {
+    func books(in collection: Collection) async throws -> [Book] {
         if let provider = bookOrbitProvider(for: collection), let remoteId = collection.remoteId {
             return (try? await provider.fetchCollectionBooks(collectionId: remoteId, page: 0, size: 100).books) ?? []
         }
-        return await mirroredCollectionBooks(collection)
+        let stored = await mirroredCollectionBooks(collection)
+        guard let providerId = collection.providerId,
+            let provider = appState.getProvider(providerId) as? BookloreProvider,
+            provider.supportsRemoteBrowsing
+        else { return stored }
+        let storedIds = Set(stored.map(\.id))
+        let missingIds = collection.books.filter { !storedIds.contains($0) }
+        guard !missingIds.isEmpty else { return stored }
+        let fetched = try await provider.fetchShelfBooks(ids: missingIds)
+        let visible = await mergingStoredRecords(fetched)
+        let byId = Dictionary(uniqueKeysWithValues: (stored + visible).map { ($0.id, $0) })
+        return collection.books.compactMap { byId[$0] }
     }
 
     private func mirroredCollectionBooks(_ collection: Collection, limit: Int? = nil) async -> [Book] {
@@ -1776,16 +2352,46 @@ final class LibraryEngine {
     }
 
     func authorAggregates(mediaScope: [String]) async -> [BrowseAuthorAggregate] {
-        var bucket: [String: (count: Int, thumb: String?, matchingNames: Set<String>)] = [:]
+        var aggregatesByMedia: [[BrowseAuthorAggregate]] = []
         for raw in mediaScope {
-            for aggregate in await appState.bookStore.browseAuthorAggregates(mediaType: raw) {
-                var entry = bucket[aggregate.name] ?? (0, nil, [])
-                entry.count += aggregate.bookCount
-                if entry.thumb == nil { entry.thumb = aggregate.representativeThumb }
-                entry.matchingNames.formUnion(aggregate.matchingNames)
-                bucket[aggregate.name] = entry
+            guard !Task.isCancelled else { return [] }
+            aggregatesByMedia.append(await appState.bookStore.browseAuthorAggregates(mediaType: raw))
+        }
+        let merge = Task.detached(priority: .userInitiated) { [aggregatesByMedia] in
+            Self.mergedAuthorAggregates(aggregatesByMedia)
+        }
+        return await withTaskCancellationHandler {
+            await merge.value
+        } onCancel: {
+            merge.cancel()
+        }
+    }
+
+    nonisolated static func mergedAuthorAggregates(_ aggregatesByMedia: [[BrowseAuthorAggregate]]) -> [BrowseAuthorAggregate] {
+        struct Acc {
+            var count = 0
+            var thumb: String?
+            var bookUniqueID: String
+            var matchingNames = Set<String>()
+        }
+
+        var bucket: [String: Acc] = [:]
+        for aggregates in aggregatesByMedia {
+            guard !Task.isCancelled else { return [] }
+            for aggregate in aggregates {
+                var acc = bucket[aggregate.name]
+                    ?? Acc(thumb: aggregate.representativeThumb, bookUniqueID: aggregate.representativeBookUniqueID)
+                acc.count += aggregate.bookCount
+                if acc.thumb == nil, let thumb = aggregate.representativeThumb {
+                    acc.thumb = thumb
+                    acc.bookUniqueID = aggregate.representativeBookUniqueID
+                }
+                acc.matchingNames.formUnion(aggregate.matchingNames)
+                bucket[aggregate.name] = acc
             }
         }
+        guard !Task.isCancelled else { return [] }
+
         return
             bucket
             .map {
@@ -1793,10 +2399,11 @@ final class LibraryEngine {
                     name: $0.key,
                     bookCount: $0.value.count,
                     representativeThumb: $0.value.thumb,
+                    representativeBookUniqueID: $0.value.bookUniqueID,
                     matchingNames: $0.value.matchingNames.sorted { $0.localizedStandardCompare($1) == .orderedAscending }
                 )
             }
-            .sorted { $0.name.localizedStandardCompare($1.name) == .orderedAscending }
+            .sorted(by: authorOrder)
     }
 
     func authorAggregates(from books: [Book]) -> [BrowseAuthorAggregate] {
@@ -1808,19 +2415,24 @@ final class LibraryEngine {
         struct Acc {
             var count = 0
             var thumb: String?
+            var bookUniqueID: String
             var matchingNames = Set<String>()
         }
 
         var bucket: [String: Acc] = [:]
         for (book, authors) in namesByBook where !authors.isEmpty {
             let rawLookupName = book.author?.trimmingCharacters(in: .whitespacesAndNewlines)
+            let thumb = book.thumb?.isEmpty == false ? book.thumb : nil
             for author in Set(authors) {
                 let displayName = NameNormalizer.canonicalName(for: author, using: canonicalMap)
-                var acc = bucket[displayName, default: Acc()]
+                var acc = bucket[displayName] ?? Acc(thumb: thumb, bookUniqueID: book.uniqueId)
                 acc.count += 1
                 if let rawLookupName, !rawLookupName.isEmpty { acc.matchingNames.insert(rawLookupName) }
                 acc.matchingNames.insert(author)
-                if acc.thumb == nil { acc.thumb = book.thumb }
+                if acc.thumb == nil, let thumb {
+                    acc.thumb = thumb
+                    acc.bookUniqueID = book.uniqueId
+                }
                 bucket[displayName] = acc
             }
         }
@@ -1832,10 +2444,19 @@ final class LibraryEngine {
                     name: $0.key,
                     bookCount: $0.value.count,
                     representativeThumb: $0.value.thumb,
+                    representativeBookUniqueID: $0.value.bookUniqueID,
                     matchingNames: $0.value.matchingNames.sorted { $0.localizedStandardCompare($1) == .orderedAscending }
                 )
             }
-            .sorted { $0.name.localizedStandardCompare($1.name) == .orderedAscending }
+            .sorted(by: Self.authorOrder)
+    }
+
+    private nonisolated static func authorOrder(_ lhs: BrowseAuthorAggregate, _ rhs: BrowseAuthorAggregate) -> Bool {
+        switch lhs.name.localizedStandardCompare(rhs.name) {
+        case .orderedAscending: true
+        case .orderedDescending: false
+        case .orderedSame: lhs.name < rhs.name
+        }
     }
 
     func narratorAggregates(mediaScope: [String]) async -> [BrowseNarratorAggregate] {
@@ -1930,16 +2551,15 @@ final class LibraryEngine {
     }
 
     func coverBook(forAuthor aggregate: BrowseAuthorAggregate, mediaScope: [String]) async -> Book? {
-        for raw in mediaScope {
-            if let first = await appState.bookStore.books(
-                byAuthorNames: aggregate.matchingNames,
-                mediaType: raw,
-                limit: 1
-            ).first {
-                return first
-            }
+        let id = aggregate.representativeBookUniqueID
+        let book: Book?
+        if let cached = appState.bookInMemory(uniqueId: id) {
+            book = cached
+        } else {
+            book = await appState.bookStore.book(uniqueId: id)
         }
-        return nil
+        guard let book, mediaScope.contains(book.mediaType.rawValue) else { return nil }
+        return book
     }
 
     func books(forAuthor aggregate: BrowseAuthorAggregate, mediaScope: [String]) async -> [Book] {

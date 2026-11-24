@@ -1,6 +1,7 @@
 package com.enve.core.data.local
 
 import android.content.Context
+import android.content.SharedPreferences
 import androidx.security.crypto.EncryptedSharedPreferences
 import androidx.security.crypto.MasterKey
 import dagger.hilt.android.qualifiers.ApplicationContext
@@ -9,6 +10,7 @@ import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.serialization.builtins.ListSerializer
 import kotlinx.serialization.json.Json
+import java.security.GeneralSecurityException
 import java.util.UUID
 import javax.inject.Inject
 import javax.inject.Singleton
@@ -21,13 +23,12 @@ sealed interface AdultPinResult {
 
 @Singleton
 class FamilyProfileStore @Inject constructor(@ApplicationContext context: Context) {
-    private val prefs = EncryptedSharedPreferences.create(
-        context,
-        "family_profiles.secure",
-        MasterKey.Builder(context).setKeyScheme(MasterKey.KeyScheme.AES256_GCM).build(),
-        EncryptedSharedPreferences.PrefKeyEncryptionScheme.AES256_SIV,
-        EncryptedSharedPreferences.PrefValueEncryptionScheme.AES256_GCM,
-    )
+    private val prefs: SharedPreferences = try {
+        open(context)
+    } catch (_: GeneralSecurityException) {
+        context.deleteSharedPreferences(FILE_NAME)
+        open(context)
+    }
     private val json = Json { ignoreUnknownKeys = true }
     private val serializer = ListSerializer(FamilyProfile.serializer())
     private val defaultProfile = FamilyProfile(DEFAULT_ADULT_PROFILE_ID, "Adult", FamilyProfileRole.ADULT)
@@ -139,6 +140,18 @@ class FamilyProfileStore @Inject constructor(@ApplicationContext context: Contex
 
     private fun validatedName(name: String): String = name.trim().also {
         require(it.isNotEmpty() && it.length <= 40)
+    }
+
+    private fun open(context: Context): SharedPreferences = EncryptedSharedPreferences.create(
+        context,
+        FILE_NAME,
+        MasterKey.Builder(context).setKeyScheme(MasterKey.KeyScheme.AES256_GCM).build(),
+        EncryptedSharedPreferences.PrefKeyEncryptionScheme.AES256_SIV,
+        EncryptedSharedPreferences.PrefValueEncryptionScheme.AES256_GCM,
+    )
+
+    private companion object {
+        const val FILE_NAME = "family_profiles.secure"
     }
 }
 

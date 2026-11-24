@@ -32,6 +32,7 @@ class ProfileRuntimeRegistry @Inject constructor(@ApplicationContext private val
                 component.history()
                 component.audioStorage()
                 component.comicStorage()
+                component.playerExtras()
                 components[profileId] = component
             }
         } catch (error: Throwable) {

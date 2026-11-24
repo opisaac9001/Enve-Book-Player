@@ -16,6 +16,7 @@ struct CollectionDetailScreen: View {
     @State private var loadingMore = false
     @State private var pendingRemoval: Book?
     @State private var errorMessage: String?
+    @State private var loadError: String?
 
     private var current: Collection {
         engine.library.currentCollection(for: collection)
@@ -46,6 +47,16 @@ struct CollectionDetailScreen: View {
                             Text("Fetching the shelf.")
                                 .font(.hearthBody)
                                 .foregroundStyle(hearth.textSecondary)
+                        }
+                        .padding(.horizontal, 24)
+                    } else if let loadError {
+                        VStack(alignment: .leading, spacing: 12) {
+                            Text(loadError)
+                                .font(.hearthBody)
+                                .foregroundStyle(hearth.statusError)
+                            QuietButton(title: "Try again", systemImage: "arrow.clockwise") {
+                                Task { await load(reset: true) }
+                            }
                         }
                         .padding(.horizontal, 24)
                     } else if filtered.isEmpty {
@@ -113,7 +124,7 @@ struct CollectionDetailScreen: View {
             Text("Remove \"\(pendingRemoval?.title ?? "this book")\" from \"\(current.name)\" on BookOrbit?")
         }
         .alert(
-            "BookOrbit collection",
+            "Collection",
             isPresented: Binding(
                 get: { errorMessage != nil },
                 set: { if !$0 { errorMessage = nil } }
@@ -148,16 +159,19 @@ struct CollectionDetailScreen: View {
                     .foregroundStyle(hearth.textSecondary)
                     .fixedSize(horizontal: false, vertical: true)
             }
-            Overline(books.count == 1 ? "1 book" : "\(books.count) books", color: hearth.textTertiary)
+            Overline(loadError == nil ? (books.count == 1 ? "1 book" : "\(books.count) books") : "Unable to load shelf", color: hearth.textTertiary)
         }
         .padding(.horizontal, 24)
     }
 
     private func load(reset: Bool) async {
         let shown = current
+        if reset {
+            loaded = false
+            loadError = nil
+        }
         if shown.remoteId != nil {
             if reset {
-                loaded = false
                 page = 0
             }
             do {
@@ -169,7 +183,8 @@ struct CollectionDetailScreen: View {
                 books = result.books
                 total = result.total
             } catch {
-                errorMessage = error.localizedDescription
+                guard !Task.isCancelled else { return }
+                loadError = error.localizedDescription
             }
             loaded = true
             return
@@ -179,7 +194,12 @@ struct CollectionDetailScreen: View {
             loaded = true
             return
         }
-        books = await engine.library.books(in: shown)
+        do {
+            books = try await engine.library.books(in: shown)
+        } catch {
+            guard !Task.isCancelled else { return }
+            loadError = error.localizedDescription
+        }
         loaded = true
     }
 

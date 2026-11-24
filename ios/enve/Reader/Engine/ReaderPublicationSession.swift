@@ -224,7 +224,7 @@ final class ReaderPublicationSession {
 
     private func existingLocalAssetURL() -> URL? {
         if book.epub3Features?.hasMediaOverlay == true,
-            let cached = profileSession.ebooks.cachedReadaloudEpub(forBookId: book.id)
+            let cached = profileSession.ebooks.cachedReadaloudEpub(forBookId: book.ebookStorageID)
         {
             return cached
         }
@@ -234,10 +234,6 @@ final class ReaderPublicationSession {
         {
             return narrated
         }
-        return profileSession.ebooks.resolveExistingLocalEbookURL(
-            bookIdentifier: book.id,
-            ebookFileURL: book.ebookFileURL,
-            filePath: book.filePath
-        )
+        return profileSession.ebooks.resolveExistingLocalEbookURL(for: book)
     }
 }

@@ -4,6 +4,8 @@ import android.content.Context
 import android.content.Intent
 import android.os.SystemClock
 import androidx.room.withTransaction
+import com.enve.app.data.offline.offlineDownloadKey
+import com.enve.core.auth.CredentialVault
 import com.enve.core.data.local.LinkedBookPair
 import com.enve.core.data.local.BookExtras
 import com.enve.core.data.local.decodeChapters
@@ -14,6 +16,7 @@ import com.enve.core.data.local.DEFAULT_ADULT_PROFILE_ID
 import com.enve.core.data.local.FamilyProfile
 import com.enve.core.data.local.FamilyProfileRole
 import com.enve.core.data.local.FamilyProfileStore
+import com.enve.core.data.local.ProfileStorageLocations
 import com.enve.core.data.local.toBook
 import com.enve.core.data.local.toCachedBook
 import com.enve.core.data.model.AppMediaType
@@ -38,6 +41,7 @@ import kotlinx.coroutines.launch
 import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
 import kotlinx.coroutines.withContext
+import java.io.File
 import javax.inject.Inject
 import javax.inject.Singleton
 
@@ -63,7 +67,9 @@ class ProfileSwitchCoordinator @Inject constructor(
     private val mutableState = MutableStateFlow(
         ProfilesUiState(
             enabled = configuration.getBoolean("enabled", false),
-            activeProfileId = configuration.getString("selected", DEFAULT_ADULT_PROFILE_ID),
+            activeProfileId = configuration.getString("selected", null)
+                ?.takeIf { selected -> catalog.profiles.value.any { it.id == selected } }
+                ?: DEFAULT_ADULT_PROFILE_ID,
             profiles = catalog.profiles.value,
         ),
     )
@@ -80,6 +86,7 @@ class ProfileSwitchCoordinator @Inject constructor(
 
     suspend fun initialize() = operation {
         if (mutableRuntime.value != null) return@operation
+        removeOrphanedProfileStorage()
         refreshServerSyncSettings()
         val selected = if (state.value.enabled) state.value.activeProfileId ?: DEFAULT_ADULT_PROFILE_ID
             else DEFAULT_ADULT_PROFILE_ID
@@ -89,6 +96,23 @@ class ProfileSwitchCoordinator @Inject constructor(
         } else {
             activate(profile)
         }
+    }
+
+    private suspend fun removeOrphanedProfileStorage() = withContext(Dispatchers.IO) {
+        val known = catalog.profiles.value.map { it.id }
+        val databases = checkNotNull(context.getDatabasePath("reader.db").parentFile)
+        listOf(context.filesDir, context.cacheDir, databases)
+            .flatMap { File(it, "profiles").list().orEmpty().asList() }
+            .distinct()
+            .filter { FamilyProfile.validId(it) && it != DEFAULT_ADULT_PROFILE_ID && it !in known }
+            .forEach { orphan ->
+                val locations = ProfileStorageLocations.forProfile(context, orphan)
+                locations.filesDirectory.deleteRecursively()
+                locations.cacheDirectory.deleteRecursively()
+                locations.readerDatabaseFile.parentFile?.deleteRecursively()
+                PERSONAL_PREFERENCES.forEach { name -> context.deleteSharedPreferences("${name}_profile_$orphan") }
+                CredentialVault.deleteForProfile(context, orphan)
+            }
     }
 
     override suspend fun setupOwner(name: String, pin: String?, confirmation: String?, serverSyncEnabled: Boolean?) = operation {
@@ -141,7 +165,7 @@ class ProfileSwitchCoordinator @Inject constructor(
     private fun refreshServerSyncSettings() {
         val settings = catalog.profiles.value.associate { profile ->
             profile.id to com.enve.core.data.local.ProfileServerSyncStore(
-                context, com.enve.core.data.local.ProfileStorageLocations.forProfile(context, profile.id),
+                context, ProfileStorageLocations.forProfile(context, profile.id),
             ).isEnabled
         }
         mutableState.update { it.copy(serverSyncEnabled = settings) }
@@ -174,8 +198,8 @@ class ProfileSwitchCoordinator @Inject constructor(
         component.storyAlignJobScheduler().pauseAllAndAwait()
         requireParent(pin)
         catalog.remove(profileId)
-        component.audioStorage().listManifests().forEach { component.audioStorage().removeDownload(it.bookId) }
-        component.comicStorage().listManifests().forEach { component.comicStorage().removeDownload(it.id) }
+        component.audioStorage().listManifests().forEach { component.audioStorage().removeDownload(it.downloadKey) }
+        component.comicStorage().listManifests().forEach { component.comicStorage().removeDownload(it.offlineDownloadKey) }
         component.resources().vault.clearAll()
         val locations = component.resources().locations
         runtimes.close(profileId)
@@ -244,10 +268,15 @@ class ProfileSwitchCoordinator @Inject constructor(
                 "This completed download is no longer available."
             }
             requireParent(null)
-            val sourceBookId = bookKey.substringAfter(':')
+            val sourceKey = bookKey.substringAfter(':')
+            val sourceAudio = source.audioStorage().getManifest(sourceKey)
+            val sourceBookId = when (format) {
+                ProfileDownloadFormat.AUDIOBOOK -> sourceAudio?.bookId
+                ProfileDownloadFormat.EBOOK -> source.comicStorage().getManifest(sourceKey)?.id
+            } ?: sourceKey
             val existingId = when (format) {
-                ProfileDownloadFormat.AUDIOBOOK -> target.audioStorage().importedBookId(sourceProfileId, sourceBookId)
-                ProfileDownloadFormat.EBOOK -> target.comicStorage().importedBookId(sourceProfileId, sourceBookId)
+                ProfileDownloadFormat.AUDIOBOOK -> target.audioStorage().importedBookId(source.audioStorage(), sourceKey)
+                ProfileDownloadFormat.EBOOK -> target.comicStorage().importedBookId(source.comicStorage(), sourceKey)
             }
             var imported: Book? = null
             var committed = false
@@ -255,7 +284,7 @@ class ProfileSwitchCoordinator @Inject constructor(
                 val book = withContext(Dispatchers.IO) {
                     when (format) {
                         ProfileDownloadFormat.AUDIOBOOK -> {
-                            val manifest = target.audioStorage().importCompletedDownload(source.audioStorage(), sourceBookId) {
+                            val manifest = target.audioStorage().importCompletedDownload(source.audioStorage(), sourceKey) {
                                 requireParent(null)
                             }
                             Book(
@@ -270,18 +299,17 @@ class ProfileSwitchCoordinator @Inject constructor(
                                 isDownloaded = true,
                             )
                         }
-                        ProfileDownloadFormat.EBOOK -> target.comicStorage().importCompletedDownload(source.comicStorage(), sourceBookId) {
+                        ProfileDownloadFormat.EBOOK -> target.comicStorage().importCompletedDownload(source.comicStorage(), sourceKey) {
                             requireParent(null)
                         }
                     }.also { imported = it }
                 }
-                val counterpart = importedCounterpart(source, target, sourceProfileId, sourceBookId, book)
+                val counterpart = importedCounterpart(source, target, sourceKey, book)
                 val chapters = if (format == ProfileDownloadFormat.AUDIOBOOK) {
-                    val sourceType = source.audioStorage().getManifest(sourceBookId)?.source
                     val sourceBook = source.bookCacheDao().getAudiobooksByIds(listOf(sourceBookId))
                         .map { it.toBook() }
                         .singleOrNull {
-                            it.id == sourceBookId && it.mediaType == AppMediaType.AUDIOBOOK && it.source.name == sourceType
+                            it.offlineDownloadKey == sourceKey && it.mediaType == AppMediaType.AUDIOBOOK
                         }
                     sourceBook?.let {
                         source.database().bookExtrasDao().get(it.uniqueKey)?.decodeChapters()
@@ -327,8 +355,8 @@ class ProfileSwitchCoordinator @Inject constructor(
                     imported?.let { book ->
                         withContext(NonCancellable + Dispatchers.IO) {
                             when (format) {
-                                ProfileDownloadFormat.AUDIOBOOK -> target.audioStorage().removeDownload(book.id)
-                                ProfileDownloadFormat.EBOOK -> target.comicStorage().removeDownload(book.id)
+                                ProfileDownloadFormat.AUDIOBOOK -> target.audioStorage().removeDownload(book.offlineDownloadKey)
+                                ProfileDownloadFormat.EBOOK -> target.comicStorage().removeDownload(book.offlineDownloadKey)
                             }
                         }
                     }
@@ -400,6 +428,7 @@ class ProfileSwitchCoordinator @Inject constructor(
             mutableState.update { it.copy(activeProfileId = destination.id, locked = false, switching = false) }
             resumeDownloads(component)
             component.resources().scope.launch { component.pendingProgressReplay().replay() }
+            component.pendingBookMutationScheduler().start()
             component.hardcoverSync().start()
         } catch (error: Throwable) {
             mutableState.update { it.copy(switching = false, locked = true) }
@@ -427,13 +456,12 @@ class ProfileSwitchCoordinator @Inject constructor(
     private suspend fun importedCounterpart(
         source: ProfileRuntimeComponent,
         target: ProfileRuntimeComponent,
-        sourceProfileId: String,
-        sourceBookId: String,
+        sourceKey: String,
         imported: Book,
     ): Book? {
         val sourceBook = source.bookCacheDao().getBooksForLinking(20_000)
             .map { it.toBook() }
-            .filter { it.id == sourceBookId && it.mediaType == imported.mediaType }
+            .filter { it.offlineDownloadKey == sourceKey && it.mediaType == imported.mediaType }
             .singleOrNull() ?: return null
         val counterpart = when (imported.mediaType) {
             AppMediaType.EBOOK -> source.bookLinks().linkedAudiobook(sourceBook)
@@ -441,8 +469,8 @@ class ProfileSwitchCoordinator @Inject constructor(
             else -> null
         } ?: return null
         val destinationId = when (counterpart.mediaType) {
-            AppMediaType.AUDIOBOOK -> target.audioStorage().importedBookId(sourceProfileId, counterpart.id)
-            AppMediaType.EBOOK -> target.comicStorage().importedBookId(sourceProfileId, counterpart.id)
+            AppMediaType.AUDIOBOOK -> target.audioStorage().importedBookId(source.audioStorage(), counterpart.offlineDownloadKey)
+            AppMediaType.EBOOK -> target.comicStorage().importedBookId(source.comicStorage(), counterpart.offlineDownloadKey)
             else -> null
         } ?: return null
         return target.bookCacheDao().getByCacheKey(counterpart.copy(id = destinationId, source = BookSource.LOCAL, connectionId = null).uniqueKey)
@@ -450,11 +478,11 @@ class ProfileSwitchCoordinator @Inject constructor(
     }
 
     private fun candidates(profileId: String, source: ProfileRuntimeComponent): List<ProfileDownloadCandidate> {
-        val audio = source.audioStorage().listManifests().filter { source.audioStorage().isDownloaded(it.bookId) }.map {
-            ProfileDownloadCandidate(profileId, "AUDIOBOOK:${it.bookId}", it.title, it.author, ProfileDownloadFormat.AUDIOBOOK)
+        val audio = source.audioStorage().listManifests().filter { source.audioStorage().isDownloaded(it.downloadKey) }.map {
+            ProfileDownloadCandidate(profileId, "AUDIOBOOK:${it.downloadKey}", it.title, it.author, ProfileDownloadFormat.AUDIOBOOK)
         }
-        val ebooks = source.comicStorage().listManifests().filter { source.comicStorage().isDownloaded(it.id) }.map {
-            ProfileDownloadCandidate(profileId, "EBOOK:${it.id}", it.title, it.author, ProfileDownloadFormat.EBOOK)
+        val ebooks = source.comicStorage().listManifests().filter { source.comicStorage().isDownloaded(it.offlineDownloadKey) }.map {
+            ProfileDownloadCandidate(profileId, "EBOOK:${it.offlineDownloadKey}", it.title, it.author, ProfileDownloadFormat.EBOOK)
         }
         return (audio + ebooks).sortedBy { it.title.lowercase() }
     }

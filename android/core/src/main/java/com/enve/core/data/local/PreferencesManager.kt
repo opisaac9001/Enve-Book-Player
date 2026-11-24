@@ -1,6 +1,7 @@
 // AGENT-LOCKED
 package com.enve.core.data.local
 
+import com.enve.core.data.remote.LoginAttemptScope
 import com.enve.core.auth.CredentialVault
 import com.enve.core.reader.ReadAloudHighlightStyle
 import android.content.Context
@@ -45,6 +46,7 @@ class PreferencesManager(
 
     init {
         scope.launch {
+            clearPendingLoginContext()
             val initial = dataStore.data.first()
             cachedServerUrl = initial[Keys.SERVER_URL]
             cachedUsername = initial[Keys.USERNAME]
@@ -161,8 +163,13 @@ class PreferencesManager(
     }
 
     suspend fun saveAuth(accessToken: String, refreshToken: String?) {
+        LoginAttemptScope.get()?.let { attempt ->
+            attempt.accessToken = accessToken
+            attempt.refreshToken = refreshToken
+        }
         vault.put(CredentialVault.KEY_ACCESS_TOKEN, accessToken)
         if (refreshToken != null) vault.put(CredentialVault.KEY_REFRESH_TOKEN, refreshToken)
+        else vault.remove(CredentialVault.KEY_REFRESH_TOKEN)
         dataStore.edit { it[Keys.IS_CONNECTED] = true }
     }
 
@@ -273,85 +280,7 @@ class PreferencesManager(
         dataStore.edit { it[Keys.ACTIVE_CONNECTION_ID] = "" }
     }
 
-    @Volatile private var cachedPendingLoginCookie: String? = null
-    @Volatile private var pendingLoginCookieLoaded: Boolean = false
-    @Volatile private var cachedPendingLoginHeaders: Map<String, String> = emptyMap()
-    @Volatile private var pendingLoginHeadersLoaded: Boolean = false
-
-    private fun sanitizePendingHeaders(headers: Map<String, String>): Map<String, String> {
-        return headers
-            .asSequence()
-            .map { (key, value) -> key.trim() to value }
-            .filter { (key) -> key.isNotBlank() }
-            .associate { it }
-    }
-
-    private fun encodePendingHeaders(headers: Map<String, String>): String =
-        JSONObject(sanitizePendingHeaders(headers)).toString()
-
-    private fun decodePendingHeaders(raw: String): Map<String, String> {
-        if (raw.isBlank()) return emptyMap()
-        return runCatching {
-            val obj = JSONObject(raw)
-            val keys = obj.keys()
-            buildMap<String, String> {
-                while (keys.hasNext()) {
-                    val key = keys.next()
-                    val value = obj.optString(key, "")
-                    if (key.isNotBlank()) put(key, value)
-                }
-            }
-        }.getOrDefault(emptyMap())
-    }
-
-    fun stagePendingLoginCookie(cookie: String?) {
-        cachedPendingLoginCookie = cookie?.takeIf { it.isNotBlank() }
-        pendingLoginCookieLoaded = true
-    }
-
-    suspend fun setPendingLoginCookie(cookie: String?) {
-        stagePendingLoginCookie(cookie)
-        dataStore.edit {
-            if (cookie.isNullOrBlank()) it.remove(Keys.PENDING_LOGIN_COOKIE)
-            else it[Keys.PENDING_LOGIN_COOKIE] = cookie
-        }
-    }
-
-    fun getPendingLoginCookieSync(): String? {
-        if (pendingLoginCookieLoaded) return cachedPendingLoginCookie
-        val raw = runBlocking { dataStore.data.first()[Keys.PENDING_LOGIN_COOKIE] }
-        cachedPendingLoginCookie = raw
-        pendingLoginCookieLoaded = true
-        return raw
-    }
-
-    fun stagePendingLoginHeaders(headers: Map<String, String>) {
-        cachedPendingLoginHeaders = sanitizePendingHeaders(headers)
-        pendingLoginHeadersLoaded = true
-    }
-
-    suspend fun setPendingLoginHeaders(headers: Map<String, String>) {
-        stagePendingLoginHeaders(headers)
-        val sanitized = sanitizePendingHeaders(headers)
-        if (sanitized.isEmpty()) {
-            dataStore.edit { it.remove(Keys.PENDING_LOGIN_HEADERS) }
-        } else {
-            dataStore.edit { it[Keys.PENDING_LOGIN_HEADERS] = encodePendingHeaders(sanitized) }
-        }
-    }
-
-    fun getPendingLoginHeadersSync(): Map<String, String> {
-        if (pendingLoginHeadersLoaded) return cachedPendingLoginHeaders
-        val raw = runBlocking { dataStore.data.first()[Keys.PENDING_LOGIN_HEADERS] }.orEmpty()
-        val parsed = decodePendingHeaders(raw)
-        cachedPendingLoginHeaders = parsed
-        pendingLoginHeadersLoaded = true
-        return parsed
-    }
-
     suspend fun clearPendingLoginContext() {
-        stagePendingLoginCookie(null)
-        stagePendingLoginHeaders(emptyMap())
         dataStore.edit {
             it.remove(Keys.PENDING_LOGIN_COOKIE)
             it.remove(Keys.PENDING_LOGIN_HEADERS)

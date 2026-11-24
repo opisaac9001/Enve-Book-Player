@@ -36,7 +36,7 @@ class KOReaderHubXPointerConverterTest {
     private val astralChapter = """
         <?xml version="1.0" encoding="UTF-8"?>
         <html xmlns="http://www.w3.org/1999/xhtml"><head><title>Three</title></head><body>
-        <p>a😀b<em>x</em>😀tail</p>
+        <p>a${"\uD834\uDD1E"}b<em>x</em>${"\uD834\uDD1E"}tail</p>
         </body></html>
     """.trimIndent()
 

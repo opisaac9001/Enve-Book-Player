@@ -8,6 +8,7 @@ import com.enve.app.data.offline.ComicOfflineStorage
 import com.enve.app.data.offline.OfflineAudioManifest
 import com.enve.app.data.offline.OfflineAudioStorage
 import com.enve.app.data.offline.OfflineAudioTrackManifest
+import com.enve.app.data.offline.offlineDownloadKey
 import com.enve.core.data.local.BookExtras
 import com.enve.core.data.local.ProfileStorageLocations
 import com.enve.core.data.local.encodeChaptersJson
@@ -177,6 +178,7 @@ class CompletedFileImporter(
                 source = BookSource.LOCAL.name,
                 downloadedAtEpochMs = now,
                 tracks = tracks,
+                downloadKey = offlineDownloadKey(BookSource.LOCAL, null, id),
             ),
         )
         val book = Book(
@@ -196,9 +198,12 @@ class CompletedFileImporter(
         return book to chapters
     }
 
-    private suspend fun record(book: Book, chapters: List<Chapter>): Book {
+    private suspend fun record(book: Book, chapters: List<Chapter>): Book =
         database.withTransaction {
-            database.bookCacheDao().insertIfAbsent(book.toCachedBook())
+            val cache = database.bookCacheDao()
+            if (cache.insertIfAbsent(book.toCachedBook()) == -1L) {
+                cache.reconcileDownloadedStatus(book.uniqueKey, book.source.name, downloaded = true)
+            }
             if (chapters.isNotEmpty()) {
                 database.bookExtrasDao().upsert(
                     BookExtras(
@@ -208,9 +213,8 @@ class CompletedFileImporter(
                     ),
                 )
             }
+            checkNotNull(cache.getByCacheKey(book.uniqueKey)).toBook()
         }
-        return database.bookCacheDao().getByCacheKey(book.uniqueKey)?.toBook() ?: book
-    }
 
     private suspend fun copy(source: ImportFile, destination: File, onBytesCopied: (Long) -> Unit) {
         var total = 0L

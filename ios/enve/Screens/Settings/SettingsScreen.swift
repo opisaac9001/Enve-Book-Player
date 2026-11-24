@@ -367,6 +367,7 @@ struct SettingsScreen: View {
         case .vocabulary: VocabularyHubScreen()
         case .dictionaries: DictionariesScreen()
         case .obsidian: ObsidianScreen()
+        case .readwise: ReadwiseScreen()
         case .dragAndDrop: DragAndDropScreen()
         case .hiddenBooks: HiddenBooksScreen(profileSession: session)
         case .recentlyDeleted: RecentlyDeletedScreen()
@@ -606,6 +607,9 @@ struct SettingsScreen: View {
                     settingsNav(ObsidianScreen()) {
                         SettingsLinkRow(title: "Obsidian", subtitle: "Notes as Markdown, into your vault", systemImage: "doc.text.fill")
                     }
+                }
+                settingsNav(ReadwiseScreen()) {
+                    SettingsLinkRow(title: "Readwise", subtitle: "Send a book's highlights when you choose", systemImage: "highlighter")
                 }
                 settingsNav(DragAndDropScreen()) {
                     SettingsLinkRow(title: "Drag & drop", subtitle: "Files dropped in from a computer", systemImage: "arrow.down.doc.fill")
@@ -901,7 +905,7 @@ struct SettingsScreen: View {
 
 private enum SettingsSearchDestination: String {
     case sources, opds, video, libraryDisplay, metadataMatching, pendingMatches, collections, duplicates
-    case bookSync, storyAlign, koReader, hardcover, vocabulary, dictionaries, obsidian, dragAndDrop
+    case bookSync, storyAlign, koReader, hardcover, vocabulary, dictionaries, obsidian, readwise, dragAndDrop
     case hiddenBooks, recentlyDeleted, rejectedContent, home, comicReader, restReminder, playback, appearance, accessibility
     case playbackHistory, downloads, narratorModels, storage, dataManagement, sync, achievements, statsImport, advanced, metadataKeys
     case podcastTransfer, podcastRoutines, externalServices, orphanedBooks, news, tipJar, reportIssue, tour
@@ -940,6 +944,7 @@ private struct SettingsSearchItem: Identifiable {
         item(.vocabulary, "Vocabulary", "Saved words and flashcards", "character.book.closed.fill", "words study"),
         item(.dictionaries, "Dictionaries", "Offline StarDict lookups", "character.book.closed", "definition language"),
         item(.obsidian, "Obsidian", "Export notes as Markdown", "doc.text.fill", "vault highlights annotations"),
+        item(.readwise, "Readwise", "Send a book's highlights when you choose", "highlighter", "highlights notes annotations export reader token"),
         item(.dragAndDrop, "Drag & drop", "Files dropped in from a computer", "arrow.down.doc.fill", "import files"),
         item(.hiddenBooks, "Hidden books", "Manage books hidden from the library", "eye.slash", "visibility"),
         item(.recentlyDeleted, "Recently deleted", "Recover removed books", "trash", "restore"),

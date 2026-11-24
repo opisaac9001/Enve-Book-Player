@@ -62,6 +62,26 @@ struct OfflineAvailabilityTests {
         await fixture.close()
     }
 
+    @Test func keysetPagingCrossesPageBoundaryWithinTiedLastUpdate() async throws {
+        let fixture = try OfflineAvailabilityFixture()
+        let session = fixture.session
+        let tied = Date(timeIntervalSinceReferenceDate: 800_000_000)
+        let cached = try session.ebooks.cacheRemoteEbook(data: Data([1]), preferredFilename: "cached.cbz", bookIdentifier: "cache")
+        let saved = session.ebooks.serverEbooksRoot.appendingPathComponent("tied-issue.cbz")
+        try Data([2]).write(to: saved)
+        var offline = fixture.book(id: "a-saved", url: saved)
+        offline.lastUpdate = tied
+        let cachedBooks = (0..<205).map { index in
+            var book = fixture.book(id: "cached-\(index)", url: cached)
+            book.lastUpdate = tied
+            return book
+        }
+        await session.bookStore.upsertBooks(cachedBooks + [offline])
+
+        #expect(await session.bookStore.downloadedEbooks(limit: 5).map(\.uniqueId) == [offline.uniqueId])
+        await fixture.close()
+    }
+
     @Test func importedOriginalIsAvailableUntilItsFileDisappearsAndCannotBeRemovedAsADownload() async throws {
         let fixture = try OfflineAvailabilityFixture()
         let session = fixture.session
@@ -87,8 +107,9 @@ struct OfflineAvailabilityTests {
         let temp = fixture.root.appendingPathComponent("narrated.epub")
         let bytes = Data(repeating: 4, count: 2048)
         try bytes.write(to: temp)
-        let url = try session.ebooks.cacheReadaloudEpub(tempURL: temp, bookId: "narrated")
-        let book = fixture.book(id: "narrated", source: .storyteller, url: url)
+        var book = fixture.book(id: "narrated", source: .storyteller, url: temp)
+        let url = try session.ebooks.cacheReadaloudEpub(tempURL: temp, bookId: book.ebookStorageID)
+        book.ebookFileURL = url
         await session.bookStore.upsertBooks([book])
         #expect(session.engine.downloads.isDownloaded(book))
         #expect(await session.bookStore.downloadedEbooks(limit: 1).map(\.uniqueId) == [book.uniqueId])

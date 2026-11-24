@@ -342,6 +342,64 @@ class ReaderDatabaseMigrationTest {
         assertNull(textColumn(db, "comicSeriesId", "conn-1:28:34:55"))
     }
 
+    @Test
+    fun migration_29_to_30_preserves_remote_annotations_without_guessing_owners() {
+        val db = helper.writableDatabase
+        db.execSQL(
+            """
+            CREATE TABLE reader_annotations (
+                id TEXT NOT NULL PRIMARY KEY, bookId TEXT NOT NULL, note TEXT NOT NULL,
+                providerSource TEXT NOT NULL, syncDirty INTEGER NOT NULL
+            )
+            """.trimIndent(),
+        )
+        insert(db, "grimmory-a:7", "7", "GRIMMORY", 0.1f)
+        insert(db, "abs-a:42", "42", "AUDIOBOOKSHELF", 0.2f)
+        insert(db, "abs-b:42", "42", "AUDIOBOOKSHELF", 0.3f)
+        db.execSQL(
+            "INSERT INTO book_cache (cacheKey, id, connectionId, source, title, readProgress) VALUES ('LOCAL:local-file', 'local-file', NULL, 'LOCAL', 'Local', 0)",
+        )
+        annotate(db, "unique", "7", "grimmory")
+        annotate(db, "legacy-local-tag", "7", "local")
+        annotate(db, "ambiguous", "42", "audiobookshelf")
+        annotate(db, "uncached", "99", "komga")
+        annotate(db, "local-book", "local-file", "local")
+        annotate(db, "wrong-source", "7", "komga")
+
+        MIGRATION_29_30.migrate(db)
+
+        assertEquals(null to true, owner(db, "unique"))
+        assertEquals(null to true, owner(db, "legacy-local-tag"))
+        assertEquals(null to true, owner(db, "ambiguous"))
+        assertEquals(null to true, owner(db, "uncached"))
+        assertEquals(null to false, owner(db, "local-book"))
+        assertEquals(null to true, owner(db, "wrong-source"))
+        db.query("SELECT COUNT(*), SUM(syncDirty) FROM reader_annotations").use {
+            it.moveToFirst()
+            assertEquals(6, it.getInt(0))
+            assertEquals(6, it.getInt(1))
+        }
+        db.query("SELECT note FROM reader_annotations WHERE id = 'ambiguous'").use {
+            it.moveToFirst()
+            assertEquals("note ambiguous", it.getString(0))
+        }
+        assertTrue(indexNames(db, "reader_annotations").contains("index_reader_annotations_connectionId"))
+        assertEquals(4, count(db))
+    }
+
+    private fun annotate(db: SupportSQLiteDatabase, id: String, bookId: String, providerSource: String) {
+        db.execSQL(
+            "INSERT INTO reader_annotations (id, bookId, note, providerSource, syncDirty) VALUES (?, ?, ?, ?, 1)",
+            arrayOf<Any>(id, bookId, "note $id", providerSource),
+        )
+    }
+
+    private fun owner(db: SupportSQLiteDatabase, id: String): Pair<String?, Boolean> =
+        db.query("SELECT connectionId, connectionUnresolved FROM reader_annotations WHERE id = ?", arrayOf(id)).use {
+            it.moveToFirst()
+            (if (it.isNull(0)) null else it.getString(0)) to (it.getInt(1) == 1)
+        }
+
     private fun indexNames(db: SupportSQLiteDatabase, table: String): Set<String> =
         db.query("PRAGMA index_list(`$table`)").use { cursor ->
             val nameIndex = cursor.getColumnIndexOrThrow("name")

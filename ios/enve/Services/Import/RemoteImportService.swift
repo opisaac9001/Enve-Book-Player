@@ -16,7 +16,6 @@ final class RemoteImportService: NSObject, ObservableObject {
         case splitSelectedBooks
     }
 
-    @Published private(set) var currentBatch: ImportBatch?
     @Published private(set) var isImporting: Bool = false
     @Published private(set) var lastError: String?
     @Published private(set) var webDAVServers: [WebDAVServerConfig] = []
@@ -295,12 +294,8 @@ final class RemoteImportService: NSObject, ObservableObject {
         lastError = nil
 
         var importedBooks: [LocalBookFile] = []
-        let batch = ImportBatch(sourceType: .files)
 
-        defer {
-            isImporting = false
-            currentBatch = nil
-        }
+        defer { isImporting = false }
 
         var directoryURLs: [URL] = []
         var fileURLs: [URL] = []
@@ -373,8 +368,8 @@ final class RemoteImportService: NSObject, ObservableObject {
                             try checkActive()
                             let dest = stagingFolder.appendingPathComponent(fileURL.lastPathComponent)
                             let secured = fileURL.startAccessingSecurityScopedResource()
+                            defer { if secured { fileURL.stopAccessingSecurityScopedResource() } }
                             try fileManager.copyItem(at: fileURL, to: dest)
-                            if secured { fileURL.stopAccessingSecurityScopedResource() }
                         }
                         let sourceInfo = SourceInfo(type: .files, remotePath: audioGroup[0].deletingLastPathComponent().path)
                         if let book = try await importStagedFolder(stagingFolder, sourceInfo: sourceInfo) {
@@ -416,8 +411,58 @@ final class RemoteImportService: NSObject, ObservableObject {
             }
         }
 
-        _ = batch
         return importedBooks
+    }
+
+    struct ArchiveImportOutcome {
+        let archive: URL
+        let result: Result<[LocalBookFile], any Error>
+
+        var isCommitted: Bool {
+            if case .success = result { return true }
+            return false
+        }
+    }
+
+    /// An archive is committed only when it imported at least one book without error; callers may delete only committed sources.
+    func importArchives(
+        _ archives: [URL],
+        onOutcome: (ArchiveImportOutcome) -> Void = { _ in }
+    ) async throws -> [ArchiveImportOutcome] {
+        isImporting = true
+        lastError = nil
+        defer { isImporting = false }
+
+        var outcomes: [ArchiveImportOutcome] = []
+        for archive in archives {
+            try checkActive()
+            let secured = archive.startAccessingSecurityScopedResource()
+            defer { if secured { archive.stopAccessingSecurityScopedResource() } }
+            do {
+                let books = try await importZipFile(from: archive, sourceType: .files)
+                guard !books.isEmpty else { throw ImportError.noAudioFileFound }
+                let outcome = ArchiveImportOutcome(archive: archive, result: .success(books))
+                outcomes.append(outcome)
+                onOutcome(outcome)
+            } catch {
+                let outcome = ArchiveImportOutcome(archive: archive, result: .failure(error))
+                outcomes.append(outcome)
+                onOutcome(outcome)
+                if error is CancellationError { throw error }
+                try checkActive()
+                AppLogger.network.error(
+                    "ZIP import failed \(DiagnosticLogSanitizer.fileDescriptor(for: archive)): \(error.localizedDescription)"
+                )
+            }
+        }
+
+        let failedCount = outcomes.filter { !$0.isCommitted }.count
+        if failedCount > 0 {
+            lastError = failedCount == 1
+                ? "A ZIP file couldn't be imported. It was kept in Files. Import it again after correcting the problem."
+                : "\(failedCount) ZIP files couldn't be imported. They were kept in Files. Import them again after correcting the problem."
+        }
+        return outcomes
     }
 
     private func splitSelectedAudioGroups(_ files: [URL]) -> [[URL]] {

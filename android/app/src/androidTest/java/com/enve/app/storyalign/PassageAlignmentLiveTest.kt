@@ -46,6 +46,7 @@ import kotlinx.coroutines.runBlocking
 import kotlinx.coroutines.withContext
 import kotlinx.coroutines.withTimeout
 import okhttp3.OkHttpClient
+import org.readium.r2.navigator.epub.EpubNavigatorFragment
 import org.junit.Assert.assertTrue
 import org.junit.Assume.assumeTrue
 import org.junit.Test
@@ -78,25 +79,59 @@ class PassageAlignmentLiveTest {
                 component.audioPlayback().play(audio.toURI().toString(), audiobook.id, audiobook.title, null, null,
                     startPositionMs = 45_000, mediaId = AutoMediaBrowserHelper.mediaIdForCacheKey(audiobook.uniqueKey))
             }
-            withTimeout(20_000) { component.audioPlayback().state.first { it.isReady && it.isPlaying } }
+            fun isLinkedAudiobook(state: PlaybackState) =
+                state.mediaId?.let(AutoMediaBrowserHelper::cacheKeyFrom) == audiobook.uniqueKey
+
+            withTimeout(20_000) {
+                component.audioPlayback().state.first { isLinkedAudiobook(it) && it.isReady && it.isPlaying && it.currentPositionMs >= 45_000 }
+            }
             withContext(Dispatchers.Main) { component.audioPlayback().togglePlayPause() }
+            val pausedAt = withTimeout(5_000) {
+                component.audioPlayback().state.first { isLinkedAudiobook(it) && it.isReady && !it.isPlaying }
+            }.currentPositionMs
             val intent = EbookReaderActivity.createIntent(context, ebook.id, BookSource.LOCAL, title = ebook.title,
                 author = "Fixture", bookFormat = "EPUB", epubLocator = null, epubProgress = 0f, readerEngine = ReaderEngineKind.READIUM)
             ActivityScenario.launch<EbookReaderActivity>(intent).use { scenario ->
                 lateinit var model: ReaderViewModel
                 scenario.onActivity { activity -> model = ViewModelProvider(activity)[ReaderViewModel::class.java] }
-                fun awaitReader(description: String, condition: (ReaderUiState) -> Boolean) {
-                    try { compose.waitUntil(30_000) { condition(model.state.value) } }
-                    catch (error: androidx.compose.ui.test.ComposeTimeoutException) {
-                        val state = model.state.value
-                        throw AssertionError("$description: progress=${state.progressPct}, following=${state.liveReadAlongFollowing}, status=${state.liveReadAlongStatus}", error)
+                lateinit var nav: EpubNavigatorFragment
+                suspend fun awaitReader(description: String, condition: (ReaderUiState) -> Boolean) {
+                    val ready = kotlinx.coroutines.withTimeoutOrNull(30_000) {
+                        while (!condition(model.state.value)) delay(50)
+                        true
                     }
+                    if (ready == true) return
+                    val state = model.state.value
+                    val audio = component.audioPlayback().state.value
+                    val visibleHref = nav.currentLocator.value.href
+                    throw AssertionError(
+                        "$description: progress=${state.progressPct}, page=${state.currentPage}, section=${state.currentSection}, " +
+                            "following=${state.liveReadAlongFollowing}, status=${state.liveReadAlongStatus}, " +
+                            "linkedAudio=${isLinkedAudiobook(audio)}, playing=${audio.isPlaying}, " +
+                            "audioMs=${audio.currentPositionMs}, pausedAtMs=$pausedAt, resource=$visibleHref",
+                    )
                 }
-                awaitReader("Live link available") { it.liveReadAlongAvailable }
+                compose.waitUntil(30_000) { model.state.value.liveReadAlongAvailable }
+                scenario.onActivity { activity ->
+                    nav = activity.supportFragmentManager.findFragmentByTag("epub_nav") as EpubNavigatorFragment
+                }
+                awaitReader("Reader opens the fixture") { state ->
+                    var uncovered = false
+                    scenario.onActivity { activity ->
+                        uncovered = activity.findViewById<android.view.View>(com.enve.app.R.id.loading_container).visibility == android.view.View.GONE
+                    }
+                    state.isReady && state.totalPages > 1 && uncovered
+                }
                 withContext(Dispatchers.Main) { if (!model.state.value.showChrome) model.toggleChrome() }
                 compose.onNodeWithContentDescription("Read Aloud").performClick()
-                awaitReader("Narrated passage found") { it.liveReadAlongStatus == "Following audiobook" }
+                awaitReader("Following starts") { it.liveReadAlongStatus == "Following audiobook" }
+                val followed = component.audioPlayback().state.value
+                assertTrue("Following must preserve the paused linked audio at $pausedAt ms; actual ${followed.currentPositionMs} ms",
+                    isLinkedAudiobook(followed) && !followed.isPlaying && kotlin.math.abs(followed.currentPositionMs - pausedAt) <= 1_000)
                 awaitReader("Reader reaches later passage") { it.progressPct > 0 }
+                val narratedHref = nav.currentLocator.value.href.toString()
+                assertTrue("Expected a later spine document, reached $narratedHref",
+                    Regex("chapter-[1-9][0-9]*\\.xhtml").matches(narratedHref))
                 assertTrue(model.state.value.liveReadAlongActive)
                 compose.waitForIdle()
                 val screenshots = File(context.getExternalFilesDir(null), "parity-verification").apply { mkdirs() }
@@ -111,6 +146,7 @@ class PassageAlignmentLiveTest {
                 withContext(Dispatchers.Main) { if (!model.state.value.showChrome) model.toggleChrome() }
                 compose.onNodeWithText("Return to audiobook").performClick()
                 awaitReader("Return reaches narrated passage") { it.liveReadAlongFollowing && it.progressPct > 0 }
+                org.junit.Assert.assertEquals(narratedHref, nav.currentLocator.value.href.toString())
                 withContext(Dispatchers.Main) { if (!model.state.value.showChrome) model.toggleChrome() }
                 compose.onNodeWithContentDescription("Play audiobook").performClick()
                 awaitReader("Audiobook plays") { it.liveReadAlongPlaying }

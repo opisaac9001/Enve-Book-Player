@@ -157,7 +157,7 @@ enum StorytellerReadaloudE2E {
 
     private static func runDownload(book: Book, engine: EnveEngine, report: inout Report) async {
         await engine.downloads.removeDownload(for: book)
-        LocalEbookImporter.shared.removeReadaloudCache(forBookId: book.id, stableId: book.stableId)
+        LocalEbookImporter.shared.removeReadaloudCache(forBookId: book.ebookStorageID, stableId: book.stableId)
 
         await engine.downloads.download(book)
 

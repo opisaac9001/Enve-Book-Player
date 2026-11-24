@@ -230,13 +230,28 @@ final class FileSharingImportCoordinator {
                     AppLogger.network.info("No pending items to ingest")
                 }
 
-                let pendingZIPs = collectPendingZIPFiles()
+                let defaults = profileSession?.defaults ?? UserDefaults.standard
+                let attemptsKey = "fileSharing.archiveAttempts"
+                let archives = collectPendingZIPFiles()
+                let paths = Set(archives.map { $0.standardizedFileURL.path })
+                var attempts = (defaults.dictionary(forKey: attemptsKey) as? [String: String] ?? [:])
+                    .filter { paths.contains($0.key) }
+                let pendingZIPs = archives.filter {
+                    guard let fingerprint = Self.archiveFingerprint($0) else { return true }
+                    return attempts[$0.standardizedFileURL.path] != fingerprint
+                }
                 if !pendingZIPs.isEmpty {
-                    AppLogger.network.info("Found \(pendingZIPs.count) ZIP file(s) to extract...")
-                    let extracted = try await (profileSession?.remoteImport ?? RemoteImportService.shared).importFromFilesApp(urls: pendingZIPs)
-                    AppLogger.network.info("Extracted \(extracted.count) book(s) from ZIP file(s)")
-                    for zipURL in pendingZIPs {
-                        try? FileManager.default.removeItem(at: zipURL)
+                    let importer = profileSession?.remoteImport ?? RemoteImportService.shared
+                    _ = try await importer.importArchives(pendingZIPs) { outcome in
+                        let path = outcome.archive.standardizedFileURL.path
+                        if let fingerprint = Self.archiveFingerprint(outcome.archive) {
+                            attempts[path] = fingerprint
+                            defaults.set(attempts, forKey: attemptsKey)
+                        }
+                        if outcome.isCommitted { try? FileManager.default.removeItem(at: outcome.archive) }
+                    }
+                    if let error = importer.lastError {
+                        (profileSession?.appState ?? .shared).presentation.presentError(title: "Import needs attention", message: error)
                     }
                 }
 
@@ -408,6 +423,12 @@ final class FileSharingImportCoordinator {
         )
 
         (profileSession?.localLibrary ?? LocalLibraryStorageStore.shared).saveLibrary(library)
+    }
+
+    private static func archiveFingerprint(_ url: URL) -> String? {
+        guard let values = try? url.resourceValues(forKeys: [.fileSizeKey, .contentModificationDateKey]),
+            let size = values.fileSize, let modified = values.contentModificationDate else { return nil }
+        return "\(size)|\(modified.timeIntervalSince1970)"
     }
 
     private func collectPendingZIPFiles() -> [URL] {

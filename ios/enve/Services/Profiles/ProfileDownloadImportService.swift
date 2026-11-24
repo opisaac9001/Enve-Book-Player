@@ -154,9 +154,7 @@ final class ProfileDownloadImportService {
             try LocalStorageManager.validateImportPath(finalRoot, within: destinationBoundary)
             let identity = sourceIdentity(for: book)
             if let existing = try existingImport(identity: identity, root: finalRoot, isEbook: true) { return existing }
-            guard let file = sourceEbooks.resolveExistingLocalEbookURL(
-                bookIdentifier: book.id, ebookFileURL: book.ebookFileURL, filePath: book.filePath
-            ) ?? sourceEbooks.resolveEbookForOverlay(book: book) else { throw ProfileDownloadImportError.missingMedia }
+            guard let file = sourceEbooks.resolveExistingLocalEbookURL(for: book) ?? sourceEbooks.resolveEbookForOverlay(book: book) else { throw ProfileDownloadImportError.missingMedia }
             let roots = [sourceEbooks.localEbooksRoot, sourceEbooks.serverEbooksRoot, sourceEbooks.remoteReaderCacheRoot, sourceEbooks.readaloudCacheRoot]
             guard let root = roots.first(where: { file.standardizedFileURL.path.hasPrefix($0.standardizedFileURL.path + "/") }),
                 EbookFormat.from(fileExtension: file.pathExtension.lowercased()) != nil

@@ -99,6 +99,10 @@ data class LibraryConnectionOption(val id: String, val name: String)
 data class AudiobookshelfHistoryCandidate(val book: Book, val accountName: String)
 
 interface LibraryFacade {
+    val catalogLocalBooks: Flow<List<Book>> get() = allBooks
+    suspend fun remoteCatalogPage(request: RemoteLibraryRequest, cursors: Map<String, String>? = null): RemoteLibraryPage = RemoteLibraryPage()
+    suspend fun remoteCatalogFilterOptions(request: RemoteLibraryRequest, search: String): RemoteLibraryFilterOptions = RemoteLibraryFilterOptions()
+
     val locallyMatchedMetadataKeys: Flow<Set<String>>
 
     val historySessions: Flow<List<HistorySession>>
@@ -181,10 +185,9 @@ interface LibraryFacade {
 
     suspend fun setFinished(book: Book, finished: Boolean): Boolean
     fun supportsPersonalRating(book: Book): Boolean
-    suspend fun setPersonalRating(book: Book, rating: Int): Boolean
     suspend fun setHidden(bookId: String, hidden: Boolean)
 
-    fun downloadState(bookId: String): Flow<LibraryDownloadState>
+    fun downloadState(book: Book): Flow<LibraryDownloadState>
     suspend fun download(book: Book)
     suspend fun removeDownload(book: Book)
     suspend fun resetProgress(book: Book)

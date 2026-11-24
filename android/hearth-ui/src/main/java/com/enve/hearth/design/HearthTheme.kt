@@ -1,6 +1,7 @@
 package com.enve.hearth.design
 
 import androidx.compose.foundation.isSystemInDarkTheme
+import androidx.compose.material3.ColorScheme
 import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.LocalRippleConfiguration
 import androidx.compose.material3.MaterialTheme
@@ -14,6 +15,7 @@ import androidx.compose.runtime.compositionLocalOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.staticCompositionLocalOf
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.compositeOver
 import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.unit.Density
 import androidx.compose.ui.unit.dp
@@ -63,7 +65,6 @@ object Hearth {
     }
 }
 
-@OptIn(ExperimentalMaterial3Api::class)
 @Composable
 fun HearthTheme(
     mode: HearthThemeMode = HearthThemeMode.SYSTEM,
@@ -88,50 +89,70 @@ fun HearthTheme(
         else -> HearthPalette.ink(accent, paletteStyle)
     }
 
-    val material = if (palette.isInk) {
-        darkColorScheme(
-            primary = palette.ember,
-            onPrimary = palette.readableOnEmber,
-            background = palette.bg,
-            onBackground = palette.text,
-            surface = palette.bgElevated,
-            onSurface = palette.text,
-            surfaceVariant = palette.bgElevated,
-            onSurfaceVariant = palette.textSecondary,
-            outline = palette.hairline,
-            error = palette.statusError,
-        )
-    } else {
-        lightColorScheme(
-            primary = palette.ember,
-            onPrimary = palette.readableOnEmber,
-            background = palette.bg,
-            onBackground = palette.text,
-            surface = palette.bgElevated,
-            onSurface = palette.text,
-            surfaceVariant = palette.bgElevated,
-            onSurfaceVariant = palette.textSecondary,
-            outline = palette.hairline,
-            error = palette.statusError,
-        )
-    }
-
-    val ripple: RippleConfiguration? = if (eink.active) null else RippleConfiguration()
-
     HearthUiTextScale(uiTextScale) {
         CompositionLocalProvider(
             LocalHearth provides palette,
             LocalHearthEink provides eink,
             LocalHearthReducedMotion provides reduceMotion,
-            LocalRippleConfiguration provides ripple,
         ) {
-            MaterialTheme(
-                colorScheme = material,
-                typography = hearthMaterialTypography(),
-                content = content,
-            )
+            HearthMaterialTheme(content)
         }
     }
+}
+
+@OptIn(ExperimentalMaterial3Api::class)
+@Composable
+fun HearthMaterialTheme(content: @Composable () -> Unit) {
+    val palette = Hearth.palette
+    val ripple: RippleConfiguration? = if (Hearth.eink.active) null else RippleConfiguration()
+    CompositionLocalProvider(LocalRippleConfiguration provides ripple) {
+        MaterialTheme(
+            colorScheme = remember(palette) { palette.materialColorScheme() },
+            typography = hearthMaterialTypography(),
+            content = content,
+        )
+    }
+}
+
+private fun HearthPalette.materialColorScheme(): ColorScheme {
+    val emberContainer = emberSoft.compositeOver(bg)
+    return (if (isInk) darkColorScheme() else lightColorScheme()).copy(
+        primary = ember,
+        onPrimary = readableOnEmber,
+        primaryContainer = emberContainer,
+        onPrimaryContainer = text,
+        inversePrimary = bg,
+        secondary = ember,
+        onSecondary = readableOnEmber,
+        secondaryContainer = emberContainer,
+        onSecondaryContainer = text,
+        tertiary = ember,
+        onTertiary = readableOnEmber,
+        tertiaryContainer = emberContainer,
+        onTertiaryContainer = text,
+        background = bg,
+        onBackground = text,
+        surface = bgElevated,
+        onSurface = text,
+        surfaceVariant = bgElevated,
+        onSurfaceVariant = textSecondary,
+        surfaceTint = ember,
+        inverseSurface = text,
+        inverseOnSurface = bg,
+        error = statusError,
+        onError = bg,
+        errorContainer = bgElevated,
+        onErrorContainer = statusError,
+        outline = hairline,
+        outlineVariant = hairline,
+        surfaceBright = bgElevated,
+        surfaceDim = bgSunken,
+        surfaceContainerLowest = bgSunken,
+        surfaceContainerLow = bg,
+        surfaceContainer = bgElevated,
+        surfaceContainerHigh = bgElevated,
+        surfaceContainerHighest = bgElevated,
+    )
 }
 
 @Composable

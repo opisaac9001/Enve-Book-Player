@@ -6,6 +6,7 @@ import com.enve.core.data.model.Book
 import com.enve.core.data.model.ReaderAnnotation
 import com.enve.core.data.model.ReaderAnnotationDao
 import com.enve.core.data.provider.ProviderAdapter
+import java.util.UUID
 import javax.inject.Inject
 import javax.inject.Singleton
 
@@ -28,7 +29,7 @@ internal suspend fun syncBookOrbitReaderArtifacts(
     adapter: ProviderAdapter,
     dao: ReaderAnnotationDao,
 ): BookOrbitReaderArtifactSyncResult {
-    val dirty = dao.getDirtyForBookAndProvider(book.id, BOOKORBIT_PROVIDER_SOURCE)
+    val dirty = dao.getDirtyForBookAndProvider(book.id, book.connectionId, BOOKORBIT_PROVIDER_SOURCE)
     var pushed = 0
     if (dirty.isNotEmpty()) {
         val result = adapter.pushAnnotations(book, dirty).getOrThrow()
@@ -44,18 +45,24 @@ internal suspend fun syncBookOrbitReaderArtifacts(
     }
 
     val remote = adapter.fetchAnnotations(book).getOrThrow()
+        .map { it.copy(connectionId = book.connectionId, connectionUnresolved = false) }
     val reconciled = remote.mapNotNull { record ->
-        val existing = record.serverId?.let { dao.getByServerId(it, BOOKORBIT_PROVIDER_SOURCE) }
+        val serverId = record.serverId
+        val existing = serverId?.let {
+            dao.getByServerIdForBook(it, BOOKORBIT_PROVIDER_SOURCE, book.id, book.connectionId)
+        }
+        val sameId = dao.getById(record.id)
         when {
-            existing == null -> record
-            existing.syncDirty -> null
-            else -> record.copy(id = existing.id)
+            existing != null && existing.syncDirty -> null
+            existing != null -> record.copy(id = existing.id)
+            sameId != null -> record.copy(id = UUID.randomUUID().toString())
+            else -> record
         }
     }
     if (reconciled.isNotEmpty()) dao.upsertAll(reconciled)
     val serverIds = remote.mapNotNull(ReaderAnnotation::serverId).distinct()
     if (serverIds.isNotEmpty()) {
-        dao.purgeCleanProviderRowsMissing(book.id, BOOKORBIT_PROVIDER_SOURCE, serverIds)
+        dao.purgeCleanProviderRowsMissing(book.id, book.connectionId, BOOKORBIT_PROVIDER_SOURCE, serverIds)
     }
     return BookOrbitReaderArtifactSyncResult(pulled = reconciled.size, pushed = pushed)
 }

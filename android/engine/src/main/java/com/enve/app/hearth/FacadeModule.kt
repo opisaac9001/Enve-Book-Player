@@ -30,6 +30,9 @@ import javax.inject.Singleton
 @InstallIn(SingletonComponent::class)
 abstract class FacadeModule {
     @Binds @Singleton
+    abstract fun bindReadwiseFacade(impl: com.enve.app.data.readwise.ReadwiseExportService): com.enve.engine.readwise.ReadwiseFacade
+
+    @Binds @Singleton
     abstract fun bindListeningPositionFacade(impl: ListeningPositionFacadeImpl): com.enve.engine.listeningposition.ListeningPositionFacade
 
     @Binds @Singleton
@@ -43,6 +46,9 @@ abstract class FacadeModule {
 
     @Binds @Singleton
     abstract fun bindLibraryFacade(impl: LibraryFacadeImpl): LibraryFacade
+
+    @Binds @Singleton
+    abstract fun bindPendingBookMutationsFacade(impl: PendingBookMutationsFacadeImpl): com.enve.engine.library.PendingBookMutationsFacade
 
     @Binds
     abstract fun bindDiscoverFacade(impl: DiscoverFacadeImpl): DiscoverFacade
@@ -88,4 +94,10 @@ abstract class FacadeModule {
 
     @Binds @Singleton
     abstract fun bindPodcastsFacade(impl: PodcastsFacadeImpl): PodcastsFacade
+
+    @Binds @Singleton
+    abstract fun bindSettingsBackupFacade(impl: com.enve.app.data.backup.SettingsBackupFacadeImpl): com.enve.engine.backup.SettingsBackupFacade
+
+    @Binds @Singleton
+    abstract fun bindPlayerExtrasFacade(impl: PlayerExtrasFacadeImpl): com.enve.engine.playback.PlayerExtrasFacade
 }

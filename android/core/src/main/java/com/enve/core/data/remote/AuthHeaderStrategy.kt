@@ -13,8 +13,14 @@ data class AuthHeaderContext(
     val username: String,
 )
 
+enum class AuthCredentialScope {
+    SERVER_PATH,
+    ORIGIN,
+}
+
 interface AuthHeaderStrategy {
     val requiresToken: Boolean get() = true
+    val credentialScope: AuthCredentialScope get() = AuthCredentialScope.SERVER_PATH
 
     fun apply(context: AuthHeaderContext): Request
 }

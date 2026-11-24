@@ -2,6 +2,8 @@ package com.enve.hearth.detail
 
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
+import com.enve.core.data.local.PendingBookMutation
+import com.enve.core.data.local.PendingBookMutationKind
 import com.enve.core.data.model.AnnotationStyle
 import com.enve.core.data.model.AppMediaType
 import com.enve.core.data.model.Book
@@ -11,7 +13,9 @@ import com.enve.core.data.model.ReaderAnnotation
 import com.enve.engine.annotations.AnnotationsFacade
 import com.enve.engine.bookorbit.BookOrbitFacade
 import com.enve.engine.bookorbit.BookOrbitRelated
+import com.enve.engine.library.BookEditOutcome
 import com.enve.engine.library.LibraryFacade
+import com.enve.engine.library.PendingBookMutationsFacade
 import com.enve.engine.library.SavedBookList
 import com.enve.engine.library.SavedBooksFacade
 import com.enve.engine.servertools.ServerToolsFacade
@@ -30,6 +34,7 @@ import kotlinx.coroutines.Job
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.SharingStarted
 import kotlinx.coroutines.flow.StateFlow
+import kotlinx.coroutines.flow.combine
 import kotlinx.coroutines.flow.filterNotNull
 import kotlinx.coroutines.flow.stateIn
 import kotlinx.coroutines.launch
@@ -43,6 +48,7 @@ class HearthDetailViewModel @Inject constructor(
     private val bookOrbit: BookOrbitFacade,
     private val serverTools: ServerToolsFacade,
     private val markUnreadAction: MarkUnreadAction,
+    private val bookEdits: PendingBookMutationsFacade,
     preferences: PreferencesFacade,
 ) : ViewModel() {
     val readingEnabled: StateFlow<Boolean> =
@@ -81,6 +87,13 @@ class HearthDetailViewModel @Inject constructor(
     val personalRatingSupported: StateFlow<Boolean> = _personalRatingSupported
     private val _personalRatingUpdating = MutableStateFlow(false)
     val personalRatingUpdating: StateFlow<Boolean> = _personalRatingUpdating
+    private val _readStatusOptions = MutableStateFlow<List<String>>(emptyList())
+    val readStatusOptions: StateFlow<List<String>> = _readStatusOptions
+    private val _readStatusUpdating = MutableStateFlow(false)
+    val readStatusUpdating: StateFlow<Boolean> = _readStatusUpdating
+    val pendingEdits: StateFlow<List<PendingBookMutation>> = combine(_book, bookEdits.pending) { current, pending ->
+        if (current == null) emptyList() else pending.filter { it.targets(current) }
+    }.stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000), emptyList())
     private val _metadataQuery = MutableStateFlow("")
     val metadataQuery: StateFlow<String> = _metadataQuery
     private val _metadataMatches = MutableStateFlow<List<LibraryMetadataMatch>>(emptyList())
@@ -150,6 +163,8 @@ class HearthDetailViewModel @Inject constructor(
         _metadataEditSupported.value = false
         _personalRatingSupported.value = library.supportsPersonalRating(initial)
         _personalRatingUpdating.value = false
+        _readStatusOptions.value = bookEdits.readStatusOptions(initial)
+        _readStatusUpdating.value = false
         _metadataQuery.value = ""
         _metadataMatches.value = emptyList()
         _metadataSearching.value = false
@@ -175,11 +190,11 @@ class HearthDetailViewModel @Inject constructor(
         refreshLinkedEditions(initial)
         downloadJob?.cancel()
         downloadJob = viewModelScope.launch {
-            library.downloadState(initial.id).collect { _downloadState.value = it }
+            library.downloadState(initial).collect { _downloadState.value = it }
         }
         annotationsJob?.cancel()
         annotationsJob = viewModelScope.launch {
-            annotationsFacade.annotationsForBook(initial.id).collect { _annotations.value = it }
+            annotationsFacade.annotationsForBook(initial).collect { _annotations.value = it }
         }
         if (tagsJob == null) {
             tagsJob = viewModelScope.launch {
@@ -330,21 +345,73 @@ class HearthDetailViewModel @Inject constructor(
 
     fun setPersonalRating(rating: Int) {
         val current = _book.value ?: return
-        if (!_personalRatingSupported.value || _personalRatingUpdating.value) return
+        if (!_personalRatingSupported.value) return
         val normalized = rating.coerceIn(1, 5)
         val previous = current.personalRating
         _book.value = current.copy(personalRating = normalized.toFloat())
         _personalRatingUpdating.value = true
         viewModelScope.launch {
-            val success = library.setPersonalRating(current, normalized)
-            if (!success && loadedKey == current.uniqueKey) {
-                _book.value = _book.value?.copy(personalRating = previous)
-                _notice.value = "Couldn't save the rating to ${current.source.displayName}."
-            } else if (success && loadedKey == current.uniqueKey) {
-                _notice.value = "Rating saved to ${current.source.displayName}."
+            try {
+                val outcome = bookEdits.setPersonalRating(current, normalized)
+                if (loadedKey == current.uniqueKey) {
+                    if (outcome == BookEditOutcome.NOT_SAVED) _book.value = _book.value?.copy(personalRating = previous)
+                    _notice.value = bookEditNotice("Rating", current.source.displayName, outcome)
+                }
+            } finally {
+                _personalRatingUpdating.value = false
             }
-            _personalRatingUpdating.value = false
         }
+    }
+
+    fun setReadStatus(status: String) {
+        val current = _book.value ?: return
+        if (status !in _readStatusOptions.value) return
+        val previous = current
+        _book.value = current.copy(serverReadStatus = status, isFinished = status in FINISHED_READ_STATUSES)
+        _readStatusUpdating.value = true
+        viewModelScope.launch {
+            try {
+                val outcome = bookEdits.setReadStatus(current, status)
+                if (loadedKey == current.uniqueKey) {
+                    if (outcome == BookEditOutcome.NOT_SAVED) {
+                        _book.value = _book.value?.copy(
+                            serverReadStatus = previous.serverReadStatus,
+                            isFinished = previous.isFinished,
+                        )
+                    }
+                    _notice.value = bookEditNotice("Reading status", current.source.displayName, outcome)
+                }
+            } finally {
+                _readStatusUpdating.value = false
+            }
+        }
+    }
+
+    fun retryEdit(kind: PendingBookMutationKind) {
+        val current = _book.value ?: return
+        val mutation = pendingEdits.value.firstOrNull { it.kind == kind } ?: return
+        viewModelScope.launch {
+            val outcome = bookEdits.retry(mutation)
+            if (loadedKey == current.uniqueKey) {
+                _notice.value = bookEditNotice(kind.subject(), current.source.displayName, outcome)
+            }
+        }
+    }
+
+    fun discardEdit(kind: PendingBookMutationKind) {
+        val current = _book.value ?: return
+        val mutation = pendingEdits.value.firstOrNull { it.kind == kind } ?: return
+        viewModelScope.launch {
+            bookEdits.discard(mutation)
+            if (loadedKey == current.uniqueKey) {
+                _notice.value = "Unsynced change discarded. ${current.source.displayName}'s value returns on the next refresh."
+            }
+        }
+    }
+
+    private fun PendingBookMutationKind.subject(): String = when (this) {
+        PendingBookMutationKind.RATING -> "Rating"
+        PendingBookMutationKind.READ_STATUS -> "Reading status"
     }
 
     fun dismissNotice() {
@@ -653,7 +720,7 @@ class HearthDetailViewModel @Inject constructor(
                 _counterpartDownloadState.value = LibraryDownloadState()
                 if (counterpart != null) {
                     counterpartDownloadJob = viewModelScope.launch {
-                        library.downloadState(counterpart.id).collect { _counterpartDownloadState.value = it }
+                        library.downloadState(counterpart).collect { _counterpartDownloadState.value = it }
                     }
                 }
             }

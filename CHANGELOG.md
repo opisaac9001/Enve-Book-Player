@@ -1,5 +1,12 @@
 # Changelog
 
+## Unreleased
+
+- iOS loads Silo libraries a page at a time and checks recent additions on refresh.
+- BookOrbit adds queued offline edits, smart library filters and Book Drop on both platforms.
+- Android build 58 reduces memory use during large library refreshes and fixes OPDS opening, narration interruptions and E-ink navigation.
+- iOS recovers expired Plex connections and checks server progress before resuming playback.
+
 ## iOS 1.2.7 / Android 1.2 build 57 — 2026-11-13
 
 - Updated Silo to the new native API, including profiles, downloads, progress and annotations.

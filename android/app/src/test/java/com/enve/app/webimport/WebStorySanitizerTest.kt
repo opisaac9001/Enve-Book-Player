@@ -74,7 +74,7 @@ class WebStorySanitizerTest {
         val xhtml = sanitized()
         listOf('\u0007', '\u000C', '\u0000', '\uD800').forEach { assertFalse(xhtml.contains(it)) }
         assertTrue(xhtml.contains("Bell form lone nul end"))
-        assertTrue(xhtml.contains("😀"))
+        assertTrue(xhtml.contains("\uD83D\uDE00"))
         val root = parseXml("<div xmlns=\"http://www.w3.org/1999/xhtml\">$xhtml</div>").documentElement
         assertTrue(root.textContent.contains("friends ]]>"))
     }

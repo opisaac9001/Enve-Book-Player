@@ -13,15 +13,21 @@ import com.enve.engine.opds.OpdsCatalogPage
 import com.enve.engine.opds.OpdsCatalogResult
 import com.enve.engine.opds.OpdsBrowseEntry
 import com.enve.engine.opds.OpdsSearchState
+import com.enve.engine.opds.OpdsShelfState
 import com.enve.engine.opds.OpdsSignInResult
+import com.enve.engine.library.LibraryDownloadStatus
 import com.enve.engine.library.LibraryFacade
 import dagger.hilt.android.lifecycle.HiltViewModel
+import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
+import kotlinx.coroutines.flow.first
+import kotlinx.coroutines.flow.onEach
 import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.withTimeoutOrNull
 import javax.inject.Inject
 
 data class OpdsBookSheetState(
@@ -29,6 +35,39 @@ data class OpdsBookSheetState(
     val options: List<OpdsAcquisitionOption> = emptyList(),
     val isLoading: Boolean = true,
 )
+
+const val OPDS_BULK_LIMIT = 100
+
+enum class OpdsBulkStatus { WAITING, DOWNLOADING, COMPLETED, FAILED, SKIPPED }
+
+data class OpdsBulkItem(
+    val book: Book,
+    val options: List<OpdsAcquisitionOption> = emptyList(),
+    val chosenHref: String? = null,
+    val status: OpdsBulkStatus = OpdsBulkStatus.WAITING,
+    val progress: Float = 0f,
+    val message: String? = null,
+) {
+    val needsChoice: Boolean get() = status == OpdsBulkStatus.WAITING && chosenHref == null && options.size > 1
+}
+
+enum class OpdsBulkPhase { RESOLVING, REVIEW, IMPORTING, FINISHED }
+
+data class OpdsBulkImportState(
+    val phase: OpdsBulkPhase,
+    val items: List<OpdsBulkItem>,
+    val resolved: Int = 0,
+    val wasCancelled: Boolean = false,
+) {
+    val ready: List<OpdsBulkItem> get() = items.filter { it.status == OpdsBulkStatus.WAITING && it.chosenHref != null }
+    val ambiguous: List<OpdsBulkItem> get() = items.filter(OpdsBulkItem::needsChoice)
+    val completedCount: Int get() = items.count { it.status == OpdsBulkStatus.COMPLETED }
+    val failedCount: Int get() = items.count { it.status == OpdsBulkStatus.FAILED }
+    val skippedCount: Int get() = items.count { it.status == OpdsBulkStatus.SKIPPED }
+    val finishedCount: Int get() = items.count { it.status != OpdsBulkStatus.WAITING && it.status != OpdsBulkStatus.DOWNLOADING }
+    val formatChoices: List<String>
+        get() = ambiguous.flatMap { item -> item.options.mapNotNull(OpdsAcquisitionOption::formatLabel) }.distinct()
+}
 
 data class OpdsCatalogUiState(
     val connectionId: String = "",
@@ -44,8 +83,16 @@ data class OpdsCatalogUiState(
     val query: String = "",
     val sheet: OpdsBookSheetState? = null,
     val externalUrl: String? = null,
+    val isSelecting: Boolean = false,
+    val selection: Set<String> = emptySet(),
+    val bulk: OpdsBulkImportState? = null,
 ) {
     val canGoBack: Boolean get() = page != null
+    val selectableBooks: List<Book>
+        get() = page?.let { page ->
+            (listOfNotNull(page.singlePublication) + page.books + page.shelves.flatMap(OpdsShelfState::books)).distinctBy(Book::id)
+        }.orEmpty()
+    val selectedBooks: List<Book> get() = selectableBooks.filter { it.id in selection }
 }
 
 @HiltViewModel
@@ -60,6 +107,8 @@ class HearthOpdsCatalogViewModel @Inject constructor(
     private val history = ArrayDeque<String>()
 
     private var navigationJob: Job? = null
+
+    private var bulkJob: Job? = null
 
     init {
         viewModelScope.launch {
@@ -172,6 +221,155 @@ class HearthOpdsCatalogViewModel @Inject constructor(
         }
     }
 
+    fun setSelecting(selecting: Boolean) = _state.update { it.copy(isSelecting = selecting, selection = emptySet()) }
+
+    fun toggleSelection(book: Book) = _state.update {
+        when {
+            book.id in it.selection -> it.copy(selection = it.selection - book.id)
+            it.selection.size >= OPDS_BULK_LIMIT -> it.copy(notice = "You can import up to $OPDS_BULK_LIMIT books at a time")
+            else -> it.copy(selection = it.selection + book.id)
+        }
+    }
+
+    fun selectAllOnPage() = _state.update { state ->
+        state.copy(selection = state.selectableBooks.take(OPDS_BULK_LIMIT).mapTo(mutableSetOf(), Book::id))
+    }
+
+    fun clearSelection() = _state.update { it.copy(selection = emptySet()) }
+
+    fun reviewSelection() {
+        val current = _state.value
+        val books = current.selectedBooks
+        if (books.isEmpty() || current.bulk != null) return
+        _state.update {
+            it.copy(bulk = OpdsBulkImportState(OpdsBulkPhase.RESOLVING, books.map { book -> OpdsBulkItem(book) }))
+        }
+        bulkJob = viewModelScope.launch {
+            books.forEachIndexed { index, book ->
+                val item = try {
+                    opdsBulkItem(book, facade.acquisitions(current.connectionId, book.id))
+                } catch (e: CancellationException) {
+                    throw e
+                } catch (e: Exception) {
+                    OpdsBulkItem(book, status = OpdsBulkStatus.FAILED, message = "Couldn't read this book's downloads")
+                }
+                updateBulk { bulk -> bulk.copy(items = bulk.items.replace(item), resolved = index + 1) }
+            }
+            updateBulk { it.copy(phase = OpdsBulkPhase.REVIEW) }
+        }
+    }
+
+    fun chooseBulkAcquisition(bookId: String, href: String) = updateBulk { bulk ->
+        bulk.copy(items = bulk.items.map {
+            if (it.book.id == bookId && it.status == OpdsBulkStatus.WAITING && it.options.any { option -> option.href == href }) {
+                it.copy(chosenHref = href)
+            } else it
+        })
+    }
+
+    fun chooseBulkFormat(formatLabel: String) = updateBulk { bulk ->
+        bulk.copy(
+            items = bulk.items.map { item ->
+                if (!item.needsChoice) return@map item
+                item.options.firstOrNull { it.formatLabel == formatLabel }?.let { item.copy(chosenHref = it.href) } ?: item
+            },
+        )
+    }
+
+    fun skipBulkItem(bookId: String) = updateBulk { bulk ->
+        bulk.copy(
+            items = bulk.items.map {
+                if (it.book.id == bookId && it.status == OpdsBulkStatus.WAITING) it.copy(status = OpdsBulkStatus.SKIPPED, message = "Skipped") else it
+            },
+        )
+    }
+
+    fun startBulkImport() {
+        val current = _state.value
+        val bulk = current.bulk?.takeIf { it.phase == OpdsBulkPhase.REVIEW && it.ready.isNotEmpty() } ?: return
+        updateBulk {
+            it.copy(
+                phase = OpdsBulkPhase.IMPORTING,
+                items = it.items.map { item ->
+                    if (item.needsChoice) item.copy(status = OpdsBulkStatus.SKIPPED, message = "No file type chosen") else item
+                },
+            )
+        }
+        bulkJob = viewModelScope.launch {
+            for (item in bulk.ready) {
+                updateBulk { it.copy(items = it.items.replace(item.copy(status = OpdsBulkStatus.DOWNLOADING))) }
+                val result = try {
+                    downloadBulkItem(current.connectionId, item)
+                } catch (e: CancellationException) {
+                    throw e
+                } catch (e: Exception) {
+                    item.copy(status = OpdsBulkStatus.FAILED, message = "The download failed")
+                }
+                updateBulk { it.copy(items = it.items.replace(result)) }
+            }
+            updateBulk { it.copy(phase = OpdsBulkPhase.FINISHED) }
+            _state.update { it.copy(isSelecting = false, selection = emptySet()) }
+        }
+    }
+
+    fun cancelBulk() {
+        bulkJob?.cancel()
+        bulkJob = null
+        updateBulk { bulk ->
+            bulk.copy(
+                phase = OpdsBulkPhase.FINISHED,
+                wasCancelled = true,
+                items = bulk.items.map {
+                    when (it.status) {
+                        OpdsBulkStatus.DOWNLOADING ->
+                            it.copy(status = OpdsBulkStatus.FAILED, message = "Stopped. A download already queued may still finish in Downloads.")
+                        OpdsBulkStatus.WAITING -> it.copy(status = OpdsBulkStatus.SKIPPED, message = "Not started")
+                        else -> it
+                    }
+                },
+            )
+        }
+    }
+
+    fun dismissBulk() {
+        if (_state.value.bulk?.phase.let { it == OpdsBulkPhase.RESOLVING || it == OpdsBulkPhase.IMPORTING }) return
+        _state.update { it.copy(bulk = null) }
+    }
+
+    private suspend fun downloadBulkItem(connectionId: String, item: OpdsBulkItem): OpdsBulkItem {
+        val href = checkNotNull(item.chosenHref)
+        val book = facade.selectAcquisition(connectionId, item.book.id, href)
+            ?: return item.copy(status = OpdsBulkStatus.FAILED, message = "This catalog's download link couldn't be used")
+        if (library.downloadState(book).first().status == LibraryDownloadStatus.COMPLETED) {
+            return item.copy(status = OpdsBulkStatus.COMPLETED, progress = 1f, message = "Already downloaded")
+        }
+        library.download(book)
+        val started = withTimeoutOrNull(DOWNLOAD_START_TIMEOUT_MS) {
+            library.downloadState(book).first { it.isActive || it.status == LibraryDownloadStatus.COMPLETED }
+        }
+        val outcome = if (started == null) {
+            library.downloadState(book).first()
+        } else {
+            library.downloadState(book)
+                .onEach { state ->
+                    if (state.isActive) {
+                        updateBulk { it.copy(items = it.items.replace(item.copy(status = OpdsBulkStatus.DOWNLOADING, progress = state.progress))) }
+                    }
+                }
+                .first { !it.isActive }
+        }
+        return when (outcome.status) {
+            LibraryDownloadStatus.COMPLETED -> item.copy(status = OpdsBulkStatus.COMPLETED, progress = 1f, message = null)
+            LibraryDownloadStatus.CANCELLED -> item.copy(status = OpdsBulkStatus.FAILED, message = "The download was cancelled")
+            LibraryDownloadStatus.FAILED -> item.copy(status = OpdsBulkStatus.FAILED, message = outcome.errorMessage ?: "The download failed")
+            else -> item.copy(status = OpdsBulkStatus.FAILED, message = "The download didn't start")
+        }
+    }
+
+    private fun updateBulk(transform: (OpdsBulkImportState) -> OpdsBulkImportState) = _state.update { state ->
+        state.bulk?.let { state.copy(bulk = transform(it)) } ?: state
+    }
+
     fun consumeExternalUrl() = _state.update { it.copy(externalUrl = null) }
 
     fun dismissNotice() = _state.update { it.copy(notice = null) }
@@ -225,6 +423,7 @@ class HearthOpdsCatalogViewModel @Inject constructor(
             is OpdsCatalogResult.Loaded -> current.copy(
                 isLoading = false,
                 page = result.page,
+                selection = emptySet(),
                 challenge = null,
                 signInMethod = null,
                 error = null,
@@ -243,3 +442,25 @@ class HearthOpdsCatalogViewModel @Inject constructor(
         }
     }
 }
+
+private const val DOWNLOAD_START_TIMEOUT_MS = 15_000L
+
+internal fun opdsBulkItem(book: Book, options: List<OpdsAcquisitionOption>): OpdsBulkItem {
+    val downloadable = options.filter { it.isActionable && it.action == OpdsAcquisitionAction.OPEN }.distinctBy(OpdsAcquisitionOption::href)
+    return when (downloadable.size) {
+        0 -> OpdsBulkItem(
+            book,
+            options,
+            status = OpdsBulkStatus.SKIPPED,
+            message = when {
+                options.any { it.isActionable && it.action in setOf(OpdsAcquisitionAction.BORROW, OpdsAcquisitionAction.BUY, OpdsAcquisitionAction.SUBSCRIBE) } ->
+                    "Needs borrowing or purchase. Open the book on its own to continue."
+                else -> options.firstNotNullOfOrNull(OpdsAcquisitionOption::unsupportedReason) ?: "No downloadable file"
+            },
+        )
+        1 -> OpdsBulkItem(book, downloadable, chosenHref = downloadable.single().href)
+        else -> OpdsBulkItem(book, downloadable)
+    }
+}
+
+private fun List<OpdsBulkItem>.replace(item: OpdsBulkItem) = map { if (it.book.id == item.book.id) item else it }

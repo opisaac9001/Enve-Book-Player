@@ -10,6 +10,7 @@ import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.ExperimentalLayoutApi
+import androidx.compose.foundation.layout.FlowRow
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxWidth
@@ -26,6 +27,7 @@ import androidx.compose.material.icons.outlined.Star
 import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.Icon
 import androidx.compose.material3.Text
+import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.setValue
@@ -34,6 +36,7 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.StrokeCap
 import androidx.compose.ui.graphics.drawscope.Stroke
+import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.semantics.Role
 import androidx.compose.ui.semantics.contentDescription
 import androidx.compose.ui.semantics.semantics
@@ -47,6 +50,7 @@ import com.enve.core.data.model.BookSource
 import com.enve.engine.library.LibraryDownloadState
 import com.enve.engine.library.LibraryDownloadStatus
 import com.enve.hearth.design.Hearth
+import com.enve.hearth.design.HearthChip
 import com.enve.hearth.design.HearthText
 import com.enve.hearth.design.Overline
 import kotlin.math.roundToInt
@@ -56,7 +60,10 @@ internal fun PersonalRatingSection(
     rating: Int?,
     sourceName: String,
     updating: Boolean,
+    sync: BookEditSyncStatus?,
     onRate: (Int) -> Unit,
+    onRetry: () -> Unit,
+    onDiscard: () -> Unit,
 ) {
     val palette = Hearth.palette
     Column(
@@ -77,8 +84,9 @@ internal fun PersonalRatingSection(
                     Modifier
                         .size(48.dp)
                         .clip(CircleShape)
-                        .clickable(enabled = !updating, role = Role.Button) { onRate(value) }
-                        .semantics { contentDescription = "$value star${if (value == 1) "" else "s"}" },
+                        .clickable(role = Role.Button) { onRate(value) }
+                        .semantics { contentDescription = "$value star${if (value == 1) "" else "s"}" }
+                        .testTag("detail-rating-$value"),
                     contentAlignment = Alignment.Center,
                 ) {
                     Icon(
@@ -97,12 +105,99 @@ internal fun PersonalRatingSection(
                 )
             }
         }
+        if (sync == null) {
+            Text(
+                if (rating == null) "Choose 1-5 stars. This saves to $sourceName."
+                else "$rating of 5 · Saved with $sourceName",
+                style = HearthText.Caption,
+                color = palette.textSecondary,
+            )
+        } else {
+            BookEditSyncRow("$rating of 5", sync, "detail-rating", onRetry, onDiscard)
+        }
+    }
+}
+
+@OptIn(ExperimentalLayoutApi::class)
+@Composable
+internal fun ReadingStatusSection(
+    options: List<String>,
+    current: String?,
+    sourceName: String,
+    updating: Boolean,
+    sync: BookEditSyncStatus?,
+    onSelect: (String) -> Unit,
+    onRetry: () -> Unit,
+    onDiscard: () -> Unit,
+) {
+    val palette = Hearth.palette
+    Column(
+        Modifier
+            .fillMaxWidth()
+            .padding(horizontal = Hearth.Spacing.XL)
+            .padding(top = Hearth.Spacing.L)
+            .clip(RoundedCornerShape(Hearth.Radius.Card))
+            .background(palette.bgElevated)
+            .border(1.dp, palette.hairline, RoundedCornerShape(Hearth.Radius.Card))
+            .padding(Hearth.Spacing.L),
+        verticalArrangement = Arrangement.spacedBy(Hearth.Spacing.S),
+    ) {
+        Row(verticalAlignment = Alignment.CenterVertically) {
+            Overline("Reading status", modifier = Modifier.weight(1f))
+            if (updating) {
+                CircularProgressIndicator(modifier = Modifier.size(18.dp), strokeWidth = 2.dp, color = palette.ember)
+            }
+        }
+        FlowRow(
+            horizontalArrangement = Arrangement.spacedBy(Hearth.Spacing.S),
+            verticalArrangement = Arrangement.spacedBy(Hearth.Spacing.S),
+        ) {
+            options.forEach { option ->
+                HearthChip(
+                    label = readStatusLabel(option),
+                    selected = option == current,
+                    onClick = { if (option != current) onSelect(option) },
+                    modifier = Modifier.testTag("detail-read-status-$option"),
+                )
+            }
+        }
+        if (sync == null) {
+            Text("Saved with $sourceName", style = HearthText.Caption, color = palette.textSecondary)
+        } else {
+            BookEditSyncRow(current?.let(::readStatusLabel).orEmpty(), sync, "detail-read-status", onRetry, onDiscard)
+        }
+    }
+}
+
+@Composable
+private fun BookEditSyncRow(
+    value: String,
+    sync: BookEditSyncStatus,
+    tag: String,
+    onRetry: () -> Unit,
+    onDiscard: () -> Unit,
+) {
+    val palette = Hearth.palette
+    Column(Modifier.fillMaxWidth().testTag("$tag-sync")) {
         Text(
-            if (rating == null) "Choose 1-5 stars. This saves to $sourceName."
-            else "$rating of 5 · Saved with $sourceName",
+            listOf(value, sync.message).filter(String::isNotBlank).joinToString(" · "),
             style = HearthText.Caption,
-            color = palette.textSecondary,
+            color = if (sync.isError) palette.statusError else palette.statusWarn,
         )
+        if (sync.canRetry || sync.canDiscard) {
+            Row {
+                if (sync.canRetry) {
+                    TextButton(onClick = onRetry, modifier = Modifier.testTag("$tag-retry")) {
+                        Text("Retry", style = HearthText.Label, color = palette.ember)
+                    }
+                }
+                if (sync.canDiscard) {
+                    TextButton(onClick = onDiscard, modifier = Modifier.testTag("$tag-discard")) {
+                        Text("Discard", style = HearthText.Label, color = palette.textSecondary)
+                    }
+                }
+            }
+        }
     }
 }
 

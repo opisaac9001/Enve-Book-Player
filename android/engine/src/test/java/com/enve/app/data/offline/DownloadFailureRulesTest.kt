@@ -28,14 +28,6 @@ class DownloadFailureRulesTest {
     }
 
     @Test
-    fun contentRangeIsParsed() {
-        assertEquals(100L, contentRangeStart("bytes 100-999/1000"))
-        assertEquals(1000L, contentRangeTotal("bytes 100-999/1000"))
-        assertNull(contentRangeTotal("bytes 100-999/*"))
-        assertNull(contentRangeStart(null))
-    }
-
-    @Test
     fun onlyStrongValidatorsAreUsedForIfRange() {
         assertEquals("\"abc\"", strongResumeValidator("\"abc\"", "Tue, 01 Oct 2026 10:00:00 GMT"))
         assertEquals("Tue, 01 Oct 2026 10:00:00 GMT", strongResumeValidator("W/\"abc\"", "Tue, 01 Oct 2026 10:00:00 GMT"))

@@ -21,6 +21,7 @@ import androidx.test.ext.junit.runners.AndroidJUnit4
 import androidx.test.platform.app.InstrumentationRegistry
 import com.enve.app.MainActivity
 import com.enve.app.data.offline.ComicDownloadStatus
+import com.enve.app.data.offline.offlineDownloadKey
 import com.enve.app.profiles.ProfileSwitchCoordinator
 import com.enve.core.data.model.AppMediaType
 import com.enve.core.data.model.Book
@@ -57,6 +58,7 @@ class DownloadPillHubNavigationTest {
         val connectionId = "download-pill-$suffix"
         val bookId = "pill-issue-$suffix"
         val title = "Pill fixture $suffix"
+        val downloadKey = offlineDownloadKey(BookSource.KOMGA, connectionId, bookId)
         val server = StalledFileServer(bookId)
         ActivityScenario.launch(MainActivity::class.java).use { scenario ->
             lateinit var coordinator: ProfileSwitchCoordinator
@@ -76,7 +78,7 @@ class DownloadPillHubNavigationTest {
                     ))
                     assertTrue(withContext(Dispatchers.IO) { server.transferStarted.await(20, TimeUnit.SECONDS) })
                     withTimeout(10_000) {
-                        downloads.progressByBookId.first { it[bookId]?.status == ComicDownloadStatus.DOWNLOADING }
+                        downloads.progressByDownloadKey.first { it[downloadKey]?.status == ComicDownloadStatus.DOWNLOADING }
                     }
                 }
 
@@ -104,15 +106,15 @@ class DownloadPillHubNavigationTest {
                 compose.onNodeWithText("ACTIVE DOWNLOADS").assertIsDisplayed()
                 assertTrue(server.fileRequests.single().endsWith("/api/v1/books/$bookId/file"))
             } finally {
-                downloads.cancelDownload(bookId)
+                downloads.cancelDownload(downloadKey)
                 server.close()
                 runBlocking {
                     withTimeoutOrNull(10_000) {
-                        downloads.progressByBookId.first {
-                            it[bookId]?.status != ComicDownloadStatus.DOWNLOADING && it[bookId]?.status != ComicDownloadStatus.QUEUED
+                        downloads.progressByDownloadKey.first {
+                            it[downloadKey]?.status != ComicDownloadStatus.DOWNLOADING && it[downloadKey]?.status != ComicDownloadStatus.QUEUED
                         }
                     }
-                    downloads.removeDownload(bookId)
+                    downloads.removeDownload(downloadKey)
                     component.connections().remove(connectionId)
                 }
             }

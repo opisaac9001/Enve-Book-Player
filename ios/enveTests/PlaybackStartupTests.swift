@@ -70,9 +70,168 @@ private final class StartupProviderStub: PlexProvider, @unchecked Sendable {
 
 }
 
+private final class TrackSwitchProviderStub: PlexProvider, @unchecked Sendable {
+    let sessions: [[AudioTrackInfo]]
+    let reopenGate: StartupGate?
+    private(set) var events: [String] = []
+
+    init(sessions: [[AudioTrackInfo]], reopenGate: StartupGate? = nil) {
+        self.sessions = sessions
+        self.reopenGate = reopenGate
+        super.init(connection: ServerConnection(name: "Fixture", url: "https://fixture.invalid", type: .plex))
+    }
+
+    var openCount: Int { events.filter { $0.hasPrefix("open") }.count }
+
+    override func startPlaybackSession(for book: Book) async throws -> PlaybackSessionInfo {
+        let number = openCount + 1
+        events.append("open session-\(number)")
+        if number == 2 { await reopenGate?.wait() }
+        return PlaybackSessionInfo(
+            sessionId: "session-\(number)",
+            audioTracks: sessions[min(number, sessions.count) - 1],
+            chapters: [],
+            serverCurrentTime: nil
+        )
+    }
+
+    override func reportPlayback(_ event: ServerPlaybackEvent, book: Book, sessionId: String, position: TimeInterval) async {
+        if case .stopped = event { events.append("close \(sessionId)") }
+    }
+}
+
+private final class ResumeProgressProviderStub: PlexProvider, @unchecked Sendable {
+    let tracks: [AudioTrackInfo]
+    var remotePosition: TimeInterval = 65
+    var remoteDate = Date().addingTimeInterval(60)
+    var progressGate: StartupGate?
+    var failsProgress = false
+    var progressRequests = 0
+    var resumedPositions: [TimeInterval] = []
+    var started = false
+
+    init(tracks: [AudioTrackInfo]) {
+        self.tracks = tracks
+        super.init(connection: ServerConnection(name: "Resume fixture", url: "https://fixture.invalid", type: .plex))
+    }
+
+    override func startPlaybackSession(for book: Book) async throws -> PlaybackSessionInfo {
+        PlaybackSessionInfo(sessionId: "resume-\(book.id)", audioTracks: tracks, chapters: [])
+    }
+
+    override func fetchAudiobookProgress(for book: Book) async throws -> (positionSeconds: TimeInterval, percentage: Double, trackIndex: Int?, updatedAt: Date?, isFinished: Bool)? {
+        progressRequests += 1
+        await progressGate?.wait()
+        if failsProgress { throw URLError(.notConnectedToInternet) }
+        return (remotePosition, remotePosition / 90, nil, remoteDate, false)
+    }
+
+    override func reportPlayback(_ event: ServerPlaybackEvent, book: Book, sessionId: String, position: TimeInterval) async {
+        if case .started = event { started = true }
+        if case .resumed = event { resumedPositions.append(position) }
+    }
+
+    override func updatePlaybackProgress(book: Book, sessionId: String?, currentTime: TimeInterval, isFinished: Bool, timeListened: TimeInterval) async throws {}
+}
+
 @MainActor
 @Suite(.serialized)
 struct PlaybackStartupTests {
+    @Test(arguments: [false, true])
+    func failedSecondFileKeepsTheRealPositionAndTrack(relative: Bool) async throws {
+        try await withFixture(startupTimeout: 30) { fixture in
+            let first = fixture.root.appendingPathComponent("part-1.wav")
+            try PlaybackTestAudioFixture.wave(seconds: 45).write(to: first)
+            let missing = fixture.root.appendingPathComponent("part-2.wav")
+            let provider = TrackSwitchProviderStub(sessions: [
+                twoTracks(first.absoluteString, missing.absoluteString, secondDuration: relative ? 0 : 45)
+            ])
+            let book = makeBook("failed-second")
+            let manager = fixture.manager
+            manager.playBook(book, provider: provider, startPosition: 40)
+            try await waitUntil { manager.isPlaying && manager.livePosition != nil }
+
+            if relative { manager.skipForward(seconds: 30) } else { manager.seek(to: 60) }
+            #expect(manager.currentTime > 45)
+            try await waitUntil { manager.playbackError != nil }
+
+            let live = try #require(manager.livePosition)
+            #expect(live >= 39 && live < 45)
+            #expect(abs(manager.currentTime - live) < 1.5)
+            #expect(!manager.isPlaying)
+            #expect(provider.openCount == 1)
+            #expect(try #require(fixture.session.bookProgress.loadProgress(for: book)).progress < 45)
+
+            manager.seek(to: 10)
+            try await waitUntil { manager.livePosition.map { abs($0 - 10) < 1 } == true }
+        }
+    }
+
+    @Test(arguments: [false, true])
+    func remoteTrackFailureReopensTheSessionOnceAfterClosingTheOldOne(naturalTransition: Bool) async throws {
+        try await withFixture(startupTimeout: 30) { fixture in
+            let first = fixture.root.appendingPathComponent("part-1.wav")
+            let second = fixture.root.appendingPathComponent("part-2.wav")
+            try PlaybackTestAudioFixture.wave(seconds: 45).write(to: first)
+            try PlaybackTestAudioFixture.wave(seconds: 45).write(to: second)
+            let provider = TrackSwitchProviderStub(sessions: [
+                twoTracks(first.absoluteString, "https://fixture.invalid/part-2.wav"),
+                twoTracks(first.absoluteString, second.absoluteString)
+            ])
+            let manager = fixture.manager
+            manager.playBook(makeBook("remote-retry"), provider: provider, startPosition: naturalTransition ? 44 : 40)
+            try await waitUntil { manager.isPlaying && manager.livePosition != nil }
+
+            let target = naturalTransition ? 45.0 : 60.0
+            if !naturalTransition { manager.seek(to: target) }
+            try await waitUntil {
+                manager.playbackError != nil || (provider.openCount == 2 && manager.livePosition.map { $0 >= target - 0.5 } == true)
+            }
+
+            #expect(manager.playbackError == nil)
+            #expect(manager.isPlaying)
+            #expect(provider.events == ["open session-1", "close session-1", "open session-2"])
+            #expect(try #require(manager.livePosition) < target + 3)
+        }
+    }
+
+    @Test func pauseDuringSessionRefreshDiscardsTheLateSession() async throws {
+        try await withFixture(startupTimeout: 30) { fixture in
+            let first = fixture.root.appendingPathComponent("part-1.wav")
+            let second = fixture.root.appendingPathComponent("part-2.wav")
+            try PlaybackTestAudioFixture.wave(seconds: 45).write(to: first)
+            try PlaybackTestAudioFixture.wave(seconds: 45).write(to: second)
+            let gate = StartupGate()
+            let provider = TrackSwitchProviderStub(sessions: [
+                twoTracks(first.absoluteString, "https://fixture.invalid/part-2.wav"),
+                twoTracks(first.absoluteString, second.absoluteString)
+            ], reopenGate: gate)
+            let book = makeBook("refresh-cancel")
+            let manager = fixture.manager
+            manager.playBook(book, provider: provider, startPosition: 40)
+            try await waitUntil { manager.isPlaying && manager.livePosition != nil }
+
+            manager.seek(to: 60)
+            try await waitUntil { gate.entered }
+            #expect(provider.events == ["open session-1", "close session-1", "open session-2"])
+            manager.pause()
+            #expect(manager.currentTime < 45)
+            gate.release()
+            try await waitUntil { provider.events.last == "close session-2" }
+
+            #expect(manager.playbackError == nil)
+            #expect(!manager.isPlaying)
+            let live = try #require(manager.livePosition)
+            #expect(live >= 39 && live < 45)
+            #expect(try #require(fixture.session.bookProgress.loadProgress(for: book)).progress < 45)
+
+            manager.play()
+            try await waitUntil { manager.isPlaying && manager.livePosition != nil }
+            #expect(provider.openCount == 3)
+            #expect(try #require(manager.livePosition) < 46)
+        }
+    }
+
     @Test(arguments: [0.0, 3.0])
     func explicitStartNearTheBeginningWinsOverTheServerSession(_ position: TimeInterval) async throws {
         try await withFixture(startupTimeout: 30) { fixture in
@@ -199,6 +358,30 @@ struct PlaybackStartupTests {
         }
     }
 
+    @Test func changingPlaybackBooksRefreshesBookmarksWithoutReopeningThePlayer() async throws {
+        try await withFixture(startupTimeout: 30) { fixture in
+            let session = fixture.session
+            let first = Book(id: "bookmarked", title: "Bookmarked", duration: 20)
+            let second = Book(id: "unmarked", title: "Unmarked", duration: 20)
+            for book in [first, second] {
+                let directory = session.localStorage.bookAudioDirectory(for: book.downloadKey)
+                try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+                try PlaybackTestAudioFixture.wave(seconds: 20).write(to: directory.appendingPathComponent("chapter_0.wav"))
+            }
+            let bookmark = Bookmark(bookId: first.stableId, position: 10, title: "Saved moment")
+            session.readerArtifacts.saveBookmarks(bookId: first.stableId, bookmarks: [bookmark])
+            let player = session.playback.player
+            let manager = session.playback.manager
+
+            manager.playLocalBook(first)
+            try await waitUntil { player.bookmarks == [bookmark] }
+            manager.playLocalBook(second)
+            try await waitUntil { player.bookmarks.isEmpty && manager.currentBook?.stableId == second.stableId }
+            manager.playLocalBook(first)
+            try await waitUntil { player.bookmarks == [bookmark] }
+        }
+    }
+
     @Test func deadlineReturnsBeforeUncooperativeOperationCompletes() async throws {
         let gate = StartupGate()
         do {
@@ -321,11 +504,97 @@ struct PlaybackStartupTests {
         }
     }
 
+    @Test(arguments: ["resume", "play", "same-book"], [0.0, 15.0, 65.0])
+    func pausedPlexPlaybackReadsOtherClientsPositionBeforeReportingResume(entry: String, remote: TimeInterval) async throws {
+        try await withPausedPlex { fixture, provider, book in
+            provider.remotePosition = remote
+            switch entry {
+            case "resume": fixture.manager.resume()
+            case "play": fixture.manager.play()
+            default: fixture.manager.playBook(book, provider: provider)
+            }
+            try await waitUntil {
+                !provider.resumedPositions.isEmpty && fixture.manager.livePosition.map { abs($0 - remote) < 2 } == true
+            }
+            #expect(provider.progressRequests == 1)
+            #expect(abs(try #require(provider.resumedPositions.last) - remote) < 1)
+            #expect(fixture.manager.isPlaying)
+        }
+    }
+
+    @Test(arguments: [false, true])
+    func explicitPausedSeekWinsOverPlexProgress(reopen: Bool) async throws {
+        try await withPausedPlex { fixture, provider, book in
+            if reopen {
+                fixture.manager.playBook(book, provider: provider, startPosition: 5)
+            } else {
+                fixture.manager.seek(to: 5)
+                fixture.manager.resume()
+            }
+            try await waitUntil { fixture.manager.isPlaying && !provider.resumedPositions.isEmpty }
+            #expect(provider.progressRequests == 0)
+            #expect(abs(try #require(provider.resumedPositions.last) - 5) < 1)
+        }
+    }
+
+    @Test(arguments: ["older-server", "offline", "sync-disabled"])
+    func pausedLocalPositionSurvivesUnavailableOrOlderPlexProgress(reason: String) async throws {
+        try await withPausedPlex { fixture, provider, _ in
+            switch reason {
+            case "older-server": provider.remoteDate = Date().addingTimeInterval(-600)
+            case "offline": provider.failsProgress = true
+            default: fixture.session.defaults.set(false, forKey: "profileServerSyncEnabled")
+            }
+            fixture.manager.resume()
+            try await waitUntil { fixture.manager.isPlaying && !fixture.manager.isLoading }
+            #expect(provider.progressRequests == (reason == "sync-disabled" ? 0 : 1))
+            #expect(try #require(fixture.manager.livePosition) < 43)
+            #expect(try #require(fixture.manager.livePosition) >= 39)
+        }
+    }
+
+    @Test(arguments: [false, true])
+    func pauseOrSeekCancelsPendingPlexResume(seek: Bool) async throws {
+        try await withPausedPlex { fixture, provider, _ in
+            let gate = StartupGate()
+            provider.progressGate = gate
+            fixture.manager.resume()
+            try await waitUntil { gate.entered }
+            if seek { fixture.manager.seek(to: 7) } else { fixture.manager.pause() }
+            gate.release()
+            try await Task.sleep(for: .milliseconds(100))
+            #expect(!fixture.manager.isPlaying)
+            #expect(!fixture.manager.isLoading)
+            #expect(provider.resumedPositions.isEmpty)
+            #expect(abs(try #require(fixture.manager.livePosition) - (seek ? 7 : 40)) < 2)
+        }
+    }
+
+    private func withPausedPlex(
+        operation: (StartupFixture, ResumeProgressProviderStub, Book) async throws -> Void
+    ) async throws {
+        try await withFixture(startupTimeout: 30, progressTimeout: 1) { fixture in
+            fixture.session.defaults.set(true, forKey: "profileServerSyncEnabled")
+            let first = fixture.root.appendingPathComponent("resume-first.wav")
+            let second = fixture.root.appendingPathComponent("resume-second.wav")
+            try PlaybackTestAudioFixture.wave(seconds: 45).write(to: first)
+            try PlaybackTestAudioFixture.wave(seconds: 45).write(to: second)
+            let provider = ResumeProgressProviderStub(tracks: twoTracks(first.absoluteString, second.absoluteString))
+            let book = makeBook("plex-handoff")
+            fixture.session.providerConnections[book.providerId] = provider
+            fixture.manager.playBook(book, provider: provider, startPosition: 40)
+            try await waitUntil { provider.started && fixture.manager.livePosition != nil }
+            fixture.manager.pause()
+            try await operation(fixture, provider, book)
+        }
+    }
+
     private func withFixture(
         startupTimeout: TimeInterval = 0.1,
+        progressTimeout: TimeInterval = 0.02,
         operation: (StartupFixture) async throws -> Void
     ) async throws {
-        let fixture = try StartupFixture(startupTimeout: startupTimeout)
+        let fixture = try StartupFixture(startupTimeout: startupTimeout, progressTimeout: progressTimeout)
         do {
             try await operation(fixture)
             await fixture.close()
@@ -333,6 +602,13 @@ struct PlaybackStartupTests {
             await fixture.close()
             throw error
         }
+    }
+
+    private func twoTracks(_ first: String, _ second: String, secondDuration: TimeInterval = 45) -> [AudioTrackInfo] {
+        [
+            AudioTrackInfo(index: 0, startOffset: 0, duration: 45, contentUrl: first, mimeType: "audio/wav"),
+            AudioTrackInfo(index: 1, startOffset: 45, duration: secondDuration, contentUrl: second, mimeType: "audio/wav"),
+        ]
     }
 
     private func makeBook(_ id: String) -> Book {
@@ -358,7 +634,7 @@ private final class StartupFixture {
         appState: session.appState, playback: manager, profileSession: session
     )
 
-    init(startupTimeout: TimeInterval = 0.1) throws {
+    init(startupTimeout: TimeInterval = 0.1, progressTimeout: TimeInterval = 0.02) throws {
         let id = UUID().uuidString
         let storage = ProfileStorageLocations(profileID: id,
             documentsDirectory: root.appendingPathComponent("Documents"),
@@ -366,7 +642,7 @@ private final class StartupFixture {
             cachesDirectory: root.appendingPathComponent("Caches"))
         session = try ProfileSession(profile: FamilyProfile(id: id, name: "Startup fixture", role: .child),
             storage: storage, defaults: UserDefaults(suiteName: suite))
-        manager = PlaybackManager(profileSession: session, startupTimeout: startupTimeout, progressTimeout: 0.02)
+        manager = PlaybackManager(profileSession: session, startupTimeout: startupTimeout, progressTimeout: progressTimeout)
     }
 
     func close() async {

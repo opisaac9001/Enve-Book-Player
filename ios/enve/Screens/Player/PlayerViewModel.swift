@@ -49,15 +49,7 @@ extension AppState: PlayerLibraryCaching {}
 
 @Observable
 public class PlayerViewModel {
-    public static let shared: PlayerViewModel = {
-        let appState = AppState.shared
-        return PlayerViewModel(
-            providerConnections: appState.providerConnections,
-            bookQuerying: appState.bookStore,
-            readerArtifacts: appState.bookStore,
-            libraryCache: appState
-        )
-    }()
+    public static var shared: PlayerViewModel { ProfileSession.owner.playback.player }
 
     var currentBook: Book? {
         playbackSnapshot.currentBook ?? restoredBook
@@ -131,6 +123,7 @@ public class PlayerViewModel {
     @ObservationIgnored private let bookmarkService: PlayerBookmarkService
     @ObservationIgnored private lazy var sleepTimerService: PlayerSleepTimerService = {
         PlayerSleepTimerService(
+            fadeDuration: { [weak self] in self?.sleepTimerFadeDuration },
             onTimerFinished: { [weak self] _ in
                 self?.sleepTimerChapterTargetPosition = nil
                 self?.cancelChapterSleepTimerTask()
@@ -152,7 +145,6 @@ public class PlayerViewModel {
     @ObservationIgnored private var cancellables = Set<AnyCancellable>()
 
     @ObservationIgnored private var sleepTimerChapterTargetPosition: TimeInterval?
-    @ObservationIgnored private var sleepTimerChapterFadeOut: Bool = false
     @ObservationIgnored private var chapterSleepTimerTask: Task<Void, Never>?
     @ObservationIgnored private var lifecycleObservers: [AnyCancellable] = []
 
@@ -179,17 +171,17 @@ public class PlayerViewModel {
     @ObservationIgnored private var historyFailedBookId: String?
 
     init(
-        playbackComposition: PlaybackComposition = ActivePlayback.composition,
-        storageService: StorageService = StorageService(),
+        playbackComposition: PlaybackComposition,
+        storageService: StorageService,
         providerConnections: any ProviderConnectionAccessing,
         bookQuerying: any BookQuerying,
         readerArtifacts: any ReaderArtifactRepository,
         libraryCache: any PlayerLibraryCaching,
-        streamResolver: PlayerStreamURLResolver = .shared,
-        progressService: PlayerProgressService = .shared,
-        sessionService: PlayerSessionService = .shared,
-        chapterService: PlayerChapterService = .shared,
-        profileSession: ProfileSession = .owner
+        streamResolver: PlayerStreamURLResolver,
+        progressService: PlayerProgressService,
+        sessionService: PlayerSessionService,
+        chapterService: PlayerChapterService,
+        profileSession: ProfileSession
     ) {
         self.profileSession = profileSession
         self.audiobookshelfService = profileSession.absService
@@ -253,8 +245,8 @@ public class PlayerViewModel {
                 guard let self else { return }
                 let previousBookId = self.playbackSnapshot.currentBook?.stableId
                 self.playbackSnapshot = snapshot
-                if let startedBookId = snapshot.currentBook?.stableId, startedBookId != previousBookId {
-                    self.handlePlaybackBookChange()
+                if let book = snapshot.currentBook, book.stableId != previousBookId {
+                    self.handlePlaybackBookChange(book: book)
                 }
                 self.isPlayingSubject.send(snapshot.isPlaying)
                 self.progressSubject.send(snapshot.position)
@@ -498,7 +490,8 @@ public class PlayerViewModel {
         restoredDuration = 0
     }
 
-    private func handlePlaybackBookChange() {
+    private func handlePlaybackBookChange(book: Book) {
+        bookmarks = mergedBookmarks(for: book)
         currentBookWasRestored = false
         restoredBook = nil
         restoredProgress = 0
@@ -907,24 +900,24 @@ public class PlayerViewModel {
         NotificationCenter.default.post(name: NSNotification.Name("SeekToEbookBookmark"), object: bookmark)
     }
 
-    func setSleepTimerToEndOfChapter(fadeOut: Bool = true) {
+    func setSleepTimerToEndOfChapter() {
         guard let chapter = resolveCurrentChapterForSleepTimer() else {
             AppLogger.player.warning(
                 "[SleepTimer] End-of-chapter requested but no current chapter resolved (hasCurrentChapter=\(self.currentChapter != nil), bookChapters=\(self.currentBook?.chapters?.count ?? 0))"
             )
             return
         }
-        startChapterSleepTimer(targetPosition: chapter.end, fadeOut: fadeOut, label: "current")
+        startChapterSleepTimer(targetPosition: chapter.end, label: "current")
     }
 
-    func setSleepTimerToEndOfNextChapter(fadeOut: Bool = true) {
+    func setSleepTimerToEndOfNextChapter() {
         guard let next = resolveNextChapterForSleepTimer() else {
             AppLogger.player.warning(
                 "[SleepTimer] End-of-next-chapter requested but no next chapter resolved (vmChapters=\(self.chapters.count), bookChapters=\(self.currentBook?.chapters?.count ?? 0), progress=\(self.progress))"
             )
             return
         }
-        startChapterSleepTimer(targetPosition: next.end, fadeOut: fadeOut, label: "next")
+        startChapterSleepTimer(targetPosition: next.end, label: "next")
     }
 
     private func resolveCurrentChapterForSleepTimer() -> Chapter? {
@@ -954,11 +947,10 @@ public class PlayerViewModel {
         return currentBook?.chapters ?? []
     }
 
-    private func startChapterSleepTimer(targetPosition: TimeInterval, fadeOut: Bool, label: String) {
+    private func startChapterSleepTimer(targetPosition: TimeInterval, label: String) {
         sleepTimerService.stopTimer()
         cancelChapterSleepTimerTask()
         sleepTimerChapterTargetPosition = targetPosition
-        sleepTimerChapterFadeOut = fadeOut
         resetSleepTimerFade()
         isFadingOut = false
         let wallClockSeconds = chapterTimerRemainingWallClockSeconds(target: targetPosition)
@@ -994,18 +986,15 @@ public class PlayerViewModel {
         sleepTimerRemainingSeconds = remaining
         sleepTimer = Date().addingTimeInterval(remaining)
 
-        if sleepTimerChapterFadeOut {
-            let fadeWindow = AppConstants.SleepTimer.fadeWindowSeconds
-            if remaining <= fadeWindow {
-                if !isFadingOut {
-                    isFadingOut = true
-                    AppLogger.player.info("[SleepTimer] Entering fade window (\(Int(fadeWindow))s)")
-                }
-                applySleepTimerFade(remainingSeconds: remaining)
-            } else if isFadingOut {
-                isFadingOut = false
-                resetSleepTimerFade()
+        if let fadeWindow = sleepTimerFadeDuration, remaining <= fadeWindow {
+            if !isFadingOut {
+                isFadingOut = true
+                AppLogger.player.info("[SleepTimer] Entering fade window (\(Int(fadeWindow))s)")
             }
+            applySleepTimerFade(remainingSeconds: remaining)
+        } else if isFadingOut {
+            isFadingOut = false
+            resetSleepTimerFade()
         }
     }
 
@@ -1023,10 +1012,10 @@ public class PlayerViewModel {
         chapterSleepTimerTask = nil
     }
 
-    func startSleepTimer(minutes: Int, fadeOut: Bool = true) {
+    func startSleepTimer(minutes: Int) {
         sleepTimerChapterTargetPosition = nil
         cancelChapterSleepTimerTask()
-        sleepTimerService.startTimer(minutes: minutes, fadeOut: fadeOut)
+        sleepTimerService.startTimer(minutes: minutes)
 
         var state =
             profileSession.playerState.loadSleepTimer()
@@ -1067,8 +1056,13 @@ public class PlayerViewModel {
         sleepTimerService.snooze()
     }
 
+    private var sleepTimerFadeDuration: TimeInterval? {
+        guard preferences.sleepTimerFadeOutEnabled, preferences.sleepTimerFadeOutDuration > 0 else { return nil }
+        return preferences.sleepTimerFadeOutDuration
+    }
+
     private func applySleepTimerFade(remainingSeconds: TimeInterval) {
-        let fadeWindow = AppConstants.SleepTimer.fadeWindowSeconds
+        guard let fadeWindow = sleepTimerFadeDuration else { return }
         let clampedRemaining = max(0, min(fadeWindow, remainingSeconds))
         let normalized = clampedRemaining / fadeWindow
         let minScale = AppConstants.SleepTimer.fadeMinScale

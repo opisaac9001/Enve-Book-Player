@@ -3,6 +3,7 @@ import SwiftUI
 struct WorkHubScreen: View {
     let workKey: String
     var seed: Book?
+    var onClose: (() -> Void)? = nil
 
     @Environment(EnveEngine.self) private var engine
     @Environment(\.profileSession) private var capturedSession
@@ -40,7 +41,7 @@ struct WorkHubScreen: View {
         }
         .scrollIndicators(.hidden)
         .background(HearthBackground())
-        .hearthBackBar()
+        .hearthBackBar(onBack: onClose)
         .toolbarBackground(.hidden, for: .navigationBar)
         .task(id: workKey) { await load() }
         .confirmationDialog(

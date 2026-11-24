@@ -92,8 +92,9 @@ struct ProviderEbookAPIContractTests {
         #expect(mediaType == .audiobook)
     }
 
-    @Test func grimmoryProgressPayloadUsesNativeAppContract() throws {
+    @Test func grimmoryProgressPayloadUsesBookAndFileIdentity() throws {
         let request = BookloreProgressClient.EbookProgressRequest(
+            bookId: 42,
             fileProgress: .init(
                 bookFileId: 107,
                 positionData: "epubcfi(/6/4!/4/2:3)",
@@ -107,7 +108,8 @@ struct ProviderEbookAPIContractTests {
             JSONSerialization.jsonObject(with: JSONEncoder().encode(request))
                 as? [String: Any]
         )
-        #expect(Set(root.keys) == ["fileProgress"])
+        #expect(Set(root.keys) == ["bookId", "fileProgress"])
+        #expect(root["bookId"] as? Int == 42)
 
         let fileProgress = try #require(
             root["fileProgress"] as? [String: Any]

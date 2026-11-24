@@ -40,6 +40,45 @@ enum MediaBrowserClient {
         return header
     }
 
+    static func validateUser(
+        connection: ServerConnection,
+        send: (URLRequest) async throws -> (Data, URLResponse)
+    ) async throws -> String? {
+        struct User: Decodable {
+            let Id: String
+            let Name: String?
+        }
+
+        guard let base = URL(string: normalizeServerURL(connection.url)),
+            let token = connection.token, !token.isEmpty else { throw ProviderError.unauthorized }
+        let selectedID = connection.userId.flatMap { $0.isEmpty ? nil : $0 }
+        let userURL = base.appendingPathComponent("Users").appendingPathComponent(selectedID ?? "Me")
+        var request = URLRequest(url: userURL)
+        for (name, value) in connection.customHeaders ?? [:] {
+            request.setValue(value, forHTTPHeaderField: name)
+        }
+        request.setValue(nil, forHTTPHeaderField: "X-Emby-Token")
+        let auth = authorizationHeader(token: token)
+        if connection.type == .jellyfin {
+            request.setValue(auth, forHTTPHeaderField: "Authorization")
+        }
+        request.setValue(auth, forHTTPHeaderField: "X-Emby-Authorization")
+        request.setValue("application/json", forHTTPHeaderField: "Accept")
+
+        let (data, response) = try await send(request)
+        guard let http = response as? HTTPURLResponse else { throw ProviderError.invalidResponse }
+        if http.statusCode == 401 { throw ProviderError.unauthorized }
+        guard http.statusCode == 200 else { return nil }
+        let user = try JSONDecoder().decode(User.self, from: data)
+        guard !user.Id.isEmpty else { return nil }
+        if let selectedID {
+            guard user.Id.caseInsensitiveCompare(selectedID) == .orderedSame else { return nil }
+        } else if let name = connection.username, !name.isEmpty {
+            guard user.Name?.caseInsensitiveCompare(name) == .orderedSame else { return nil }
+        }
+        return user.Id
+    }
+
     // Jellyfin and Emby share the Sessions/Playing playstate API; a nil event is a periodic progress ping.
     static func playstateRequest(
         baseURL: String,

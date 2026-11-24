@@ -46,6 +46,8 @@ Pods/
 *~
 
 # Local environment and signing material
+CLAUDE.local.md
+.internal/
 .env
 .env.*
 !.env.example

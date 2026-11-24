@@ -195,6 +195,7 @@ final class BookOrbitSyncStrategy: ProviderSyncStrategy {
         let uniqueIds = Set(records.map { "\(providerId)_\($0.bookId)" })
         let booksById = await books.booksByAnyIds(uniqueIds)
         let pendingIds = pendingBookIds(providerId: providerId)
+        let pendingRatingIds = pendingEditBookIds(.rating, providerId: providerId)
         var updates:
             [(
                 progress: UserMediaProgress,
@@ -217,7 +218,7 @@ final class BookOrbitSyncStrategy: ProviderSyncStrategy {
                 continue
             }
             if isActivelyReading(book) { return (false, 0) }
-            if book.personalRating != record.rating,
+            if !pendingRatingIds.contains(record.bookId), book.personalRating != record.rating,
                 let updated = libraryCache.mutateBook(uniqueId: book.uniqueId, { $0.personalRating = record.rating })
             {
                 ratingSnapshots.append(updated)
@@ -412,7 +413,13 @@ final class BookOrbitSyncStrategy: ProviderSyncStrategy {
                 .filter { $0.source == .bookOrbit }
                 .map(\.stableId)
         )
-        return ([], stableIds)
+        let editedStatusIds = pendingEditBookIds(.readStatus, providerId: providerId)
+        return (Set(editedStatusIds.map { "\(providerId)_\($0)" }), stableIds)
+    }
+
+    /// Queued rating and status edits overlay the server snapshot until the server acknowledges them.
+    private func pendingEditBookIds(_ kind: PendingBookEditKind, providerId: UUID) -> Set<String> {
+        (providerConnections.provider(for: providerId) as? BookOrbitProvider)?.pendingEditBookIds(kind) ?? []
     }
 
     private func isActivelyReading(_ book: Book) -> Bool {

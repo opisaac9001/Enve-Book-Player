@@ -174,7 +174,7 @@ class EbookTTSServiceTest {
     @Test
     fun longParagraphsKeepAllTextAndNeverSplitASurrogatePair() = runBlocking {
         val playback = Playback(this, maxInputLength = 12)
-        val text = "abcdefghijk🙂and a long paragraph with every word retained."
+        val text = "abcdefghijk\uD83D\uDE42and a long paragraph with every word retained."
         playback.start(text)
         yield()
         repeat(30) {

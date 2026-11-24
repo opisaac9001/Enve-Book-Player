@@ -36,11 +36,13 @@
 	<key>NSBonjourServices</key>
 	<array>
 		<string>_enveread._tcp</string>
+		<string>_googlecast._tcp</string>
+		<string>_CC1AD845._googlecast._tcp</string>
 	</array>
 	<key>NSCameraUsageDescription</key>
 	<string>Enve uses the camera to scan a listening-position code someone shows you. Nothing is recorded or uploaded.</string>
 	<key>NSLocalNetworkUsageDescription</key>
-	<string>Enve uses the local network to mirror books to the Read together app on your Apple TV.</string>
+	<string>Enve uses the local network to find Cast devices when you tap the Cast button, and to mirror books to the Read together app on your Apple TV.</string>
 	<key>NSPhotoLibraryAddUsageDescription</key>
 	<string>Enve saves images that you explicitly choose from a book to your Photos library.</string>
 	<key>NSSpeechRecognitionUsageDescription</key>
@@ -82,5 +84,199 @@
 	</array>
 	<key>UIFileSharingEnabled</key>
 	<true/>
+	<key>CFBundleDocumentTypes</key>
+	<array>
+		<dict>
+			<key>CFBundleTypeName</key>
+			<string>Books</string>
+			<key>CFBundleTypeRole</key>
+			<string>Viewer</string>
+			<key>LSHandlerRank</key>
+			<string>Alternate</string>
+			<key>LSItemContentTypes</key>
+			<array>
+				<string>org.idpf.epub-container</string>
+				<string>com.adobe.pdf</string>
+				<string>com.enve.book.cbz</string>
+				<string>com.enve.book.cbr</string>
+				<string>com.enve.book.fb2</string>
+				<string>com.amazon.mobi8-ebook</string>
+				<string>com.amazon.mobi-ebook</string>
+				<string>com.enve.book.azw</string>
+				<string>com.enve.book.kepub</string>
+			</array>
+		</dict>
+		<dict>
+			<key>CFBundleTypeName</key>
+			<string>Audiobooks</string>
+			<key>CFBundleTypeRole</key>
+			<string>Viewer</string>
+			<key>LSHandlerRank</key>
+			<string>Alternate</string>
+			<key>LSItemContentTypes</key>
+			<array>
+				<string>com.apple.m4b-audio</string>
+				<string>com.apple.m4a-audio</string>
+				<string>public.mp3</string>
+				<string>public.aac-audio</string>
+				<string>org.xiph.flac</string>
+				<string>com.microsoft.waveform-audio</string>
+				<string>public.aiff-audio</string>
+				<string>org.xiph.ogg-audio</string>
+				<string>org.xiph.opus</string>
+				<string>com.apple.coreaudio-format</string>
+			</array>
+		</dict>
+		<dict>
+			<key>CFBundleTypeName</key>
+			<string>Book archives</string>
+			<key>CFBundleTypeRole</key>
+			<string>Viewer</string>
+			<key>LSHandlerRank</key>
+			<string>Alternate</string>
+			<key>LSItemContentTypes</key>
+			<array>
+				<string>public.zip-archive</string>
+			</array>
+		</dict>
+	</array>
+	<key>LSSupportsOpeningDocumentsInPlace</key>
+	<false/>
+	<key>UTImportedTypeDeclarations</key>
+	<array>
+		<dict>
+			<key>UTTypeIdentifier</key>
+			<string>com.enve.book.cbz</string>
+			<key>UTTypeDescription</key>
+			<string>Comic book ZIP</string>
+			<key>UTTypeConformsTo</key>
+			<array>
+				<string>public.zip-archive</string>
+			</array>
+			<key>UTTypeTagSpecification</key>
+			<dict>
+				<key>public.filename-extension</key>
+				<array>
+					<string>cbz</string>
+				</array>
+				<key>public.mime-type</key>
+				<string>application/vnd.comicbook+zip</string>
+			</dict>
+		</dict>
+		<dict>
+			<key>UTTypeIdentifier</key>
+			<string>com.enve.book.cbr</string>
+			<key>UTTypeDescription</key>
+			<string>Comic book RAR</string>
+			<key>UTTypeConformsTo</key>
+			<array>
+				<string>public.archive</string>
+			</array>
+			<key>UTTypeTagSpecification</key>
+			<dict>
+				<key>public.filename-extension</key>
+				<array>
+					<string>cbr</string>
+				</array>
+				<key>public.mime-type</key>
+				<string>application/vnd.comicbook-rar</string>
+			</dict>
+		</dict>
+		<dict>
+			<key>UTTypeIdentifier</key>
+			<string>com.enve.book.fb2</string>
+			<key>UTTypeDescription</key>
+			<string>FictionBook</string>
+			<key>UTTypeConformsTo</key>
+			<array>
+				<string>public.xml</string>
+			</array>
+			<key>UTTypeTagSpecification</key>
+			<dict>
+				<key>public.filename-extension</key>
+				<array>
+					<string>fb2</string>
+				</array>
+				<key>public.mime-type</key>
+				<string>application/x-fictionbook+xml</string>
+			</dict>
+		</dict>
+		<dict>
+			<key>UTTypeIdentifier</key>
+			<string>com.amazon.mobi8-ebook</string>
+			<key>UTTypeDescription</key>
+			<string>Kindle book</string>
+			<key>UTTypeConformsTo</key>
+			<array>
+				<string>public.data</string>
+			</array>
+			<key>UTTypeTagSpecification</key>
+			<dict>
+				<key>public.filename-extension</key>
+				<array>
+					<string>azw3</string>
+				</array>
+				<key>public.mime-type</key>
+				<string>application/x-mobi8-ebook</string>
+			</dict>
+		</dict>
+		<dict>
+			<key>UTTypeIdentifier</key>
+			<string>com.amazon.mobi-ebook</string>
+			<key>UTTypeDescription</key>
+			<string>Mobipocket book</string>
+			<key>UTTypeConformsTo</key>
+			<array>
+				<string>public.data</string>
+			</array>
+			<key>UTTypeTagSpecification</key>
+			<dict>
+				<key>public.filename-extension</key>
+				<array>
+					<string>mobi</string>
+				</array>
+				<key>public.mime-type</key>
+				<string>application/x-mobipocket-ebook</string>
+			</dict>
+		</dict>
+		<dict>
+			<key>UTTypeIdentifier</key>
+			<string>com.enve.book.azw</string>
+			<key>UTTypeDescription</key>
+			<string>Kindle book</string>
+			<key>UTTypeConformsTo</key>
+			<array>
+				<string>public.data</string>
+			</array>
+			<key>UTTypeTagSpecification</key>
+			<dict>
+				<key>public.filename-extension</key>
+				<array>
+					<string>azw</string>
+				</array>
+				<key>public.mime-type</key>
+				<string>application/vnd.amazon.ebook</string>
+			</dict>
+		</dict>
+		<dict>
+			<key>UTTypeIdentifier</key>
+			<string>com.enve.book.kepub</string>
+			<key>UTTypeDescription</key>
+			<string>Kobo EPUB</string>
+			<key>UTTypeConformsTo</key>
+			<array>
+				<string>org.idpf.epub-container</string>
+			</array>
+			<key>UTTypeTagSpecification</key>
+			<dict>
+				<key>public.filename-extension</key>
+				<array>
+					<string>kepub</string>
+				</array>
+				<key>public.mime-type</key>
+				<string>application/epub+zip</string>
+			</dict>
+		</dict>
+	</array>
 </dict>
 </plist>

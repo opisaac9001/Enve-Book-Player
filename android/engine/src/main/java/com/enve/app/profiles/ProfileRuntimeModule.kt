@@ -57,6 +57,11 @@ object ProfileRuntimeModule {
 
     @Provides
     @Singleton
+    fun podcastRoutineStore(resources: ProfileResources): com.enve.app.data.podcasts.PodcastRoutineStore =
+        com.enve.app.data.podcasts.PodcastRoutineStore(resources.context, resources.locations)
+
+    @Provides
+    @Singleton
     fun history(resources: ProfileResources): com.enve.app.data.history.HistorySessionStore =
         com.enve.app.data.history.HistorySessionStore(resources.locations)
 
@@ -74,6 +79,16 @@ object ProfileRuntimeModule {
     @Singleton
     fun bookmarks(resources: ProfileResources): com.enve.app.playback.PlayerBookmarkService =
         com.enve.app.playback.PlayerBookmarkService(resources.locations)
+
+    @Provides
+    @Singleton
+    fun readingGoalStore(resources: ProfileResources): com.enve.core.data.local.ReadingGoalStore =
+        com.enve.core.data.local.ReadingGoalStore(resources.profilePreferences.enve)
+
+    @Provides
+    @Singleton
+    fun readerPageTurnStore(resources: ProfileResources): com.enve.core.data.local.ReaderPageTurnStore =
+        com.enve.core.data.local.ReaderPageTurnStore(resources.profilePreferences.enve)
 
     @Provides
     @Singleton

@@ -441,7 +441,10 @@ class StorytellerRepository @Inject constructor(
             StorytellerRatingUpdateRequest(rating.coerceIn(1, 5)),
         )
         if (!response.isSuccessful && response.code() != 204) {
-            error("Storyteller rating update failed: HTTP ${response.code()}")
+            throw com.enve.core.data.provider.ProviderMutationException(
+                response.code(),
+                "Storyteller rating update failed: HTTP ${response.code()}",
+            )
         }
     }
 

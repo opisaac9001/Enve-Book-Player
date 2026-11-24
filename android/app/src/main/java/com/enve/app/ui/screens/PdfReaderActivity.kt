@@ -18,8 +18,11 @@ import androidx.core.view.WindowCompat
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.setValue
+import androidx.compose.runtime.snapshotFlow
+import androidx.compose.ui.graphics.toAndroidRect
 import androidx.lifecycle.lifecycleScope
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
+import com.enve.core.data.local.ReaderPageTurnStyle
 import com.enve.core.data.model.Book
 import com.enve.core.data.model.BookSource
 import com.enve.core.reader.PdfReadingLayout
@@ -27,12 +30,19 @@ import com.enve.core.reader.PdfSpread
 import com.enve.engine.prefs.ReadNextPosition
 import com.enve.engine.theme.HearthPaletteStyle
 import com.enve.app.data.reader.nextBookInSeries
+import com.enve.app.data.offline.offlineDownloadKey
 import com.enve.app.ui.screens.reader.HearthPdfChrome
+import com.enve.app.ui.screens.reader.ReaderPageCurl
+import com.enve.app.ui.screens.reader.ReaderPageCurlPolicy
+import com.enve.app.ui.screens.reader.ReaderPageCurlRunner
 import com.enve.app.viewmodel.ThemeViewModel
 import dagger.hilt.android.AndroidEntryPoint
 import kotlinx.coroutines.CancellationException
+import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.asCoroutineDispatcher
+import kotlinx.coroutines.delay
+import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 import java.util.concurrent.Executors
@@ -82,6 +92,13 @@ class PdfReaderActivity : ComponentActivity() {
     private var renderGeneration = 0
     private var movedSinceOpen = false
     private val themeViewModel: ThemeViewModel by viewModels { profileBinding.factory }
+    private val pageCurl by lazy {
+        ReaderPageCurl(this, lifecycleScope, host = { findViewById<android.view.ViewGroup>(android.R.id.content) }, viewport = { pageViewport })
+    }
+    private val pageTurnStore get() = profileBinding.runtime.component.readerPageTurnStore()
+    private var pageTurnStyle by mutableStateOf(ReaderPageTurnStyle.STANDARD)
+    private var pageViewport: android.graphics.Rect? = null
+    private var reduceMotion = false
 
     companion object {
         private const val EXTRA_BOOK_ID = "bookId"
@@ -142,6 +159,8 @@ class PdfReaderActivity : ComponentActivity() {
             val nextInSeries = bookCacheDao.nextBookInSeries(bookId, bookConnectionId)
             uiState = uiState.copy(nextInSeries = nextInSeries)
         }
+        lifecycleScope.launch { pageTurnStore.style.collect { pageTurnStyle = it } }
+        lifecycleScope.launch { hearthPreferences.reduceMotion.collect { reduceMotion = it } }
 
         setContent {
             val themeState by themeViewModel.themeState.collectAsStateWithLifecycle()
@@ -170,6 +189,9 @@ class PdfReaderActivity : ComponentActivity() {
                     onOpenAppearance = { uiState = uiState.copy(appearanceVisible = true) },
                     onCloseAppearance = { uiState = uiState.copy(appearanceVisible = false) },
                     onLayoutChange = { updateLayout(it) },
+                    pageTurnStyle = pageTurnStyle,
+                    onPageTurnStyleChange = ::savePageTurnStyle,
+                    onPageViewportChanged = { pageViewport = it.toAndroidRect() },
                     readNextEnabled = readNextEnabled,
                     readNextPosition = readNextPosition,
                     onReadNext = openNext,
@@ -184,13 +206,15 @@ class PdfReaderActivity : ComponentActivity() {
     }
 
     private suspend fun openPdf(locator: String?, restoredPage: Int?) {
-        uiState = uiState.copy(isLoading = true, loadingText = "Downloading PDF…", error = null)
-
-        val downloadUrl = aggregatorRepository.getEbookDownloadUrl(bookId, bookSource, bookConnectionId)
-            ?: repository.getEbookDownloadUrl(bookId)
+        uiState = uiState.copy(isLoading = true, loadingText = "Opening PDF…", error = null)
 
         val file = try {
-            withContext(com.enve.core.data.remote.ConnectionScope.asContextElement(bookConnectionId)) {
+            val offlineFile = withContext(Dispatchers.IO) {
+                profileBinding.runtime.component.comicStorage().getDownloadedFile(offlineDownloadKey(bookSource, bookConnectionId, bookId))
+            }
+            offlineFile ?: withContext(com.enve.core.data.remote.ConnectionScope.asContextElement(bookConnectionId)) {
+                val downloadUrl = aggregatorRepository.getEbookDownloadUrl(bookId, bookSource, bookConnectionId)
+                    ?: repository.getEbookDownloadUrl(bookId)
                 downloadReaderFile(
                     cacheDir = profileBinding.runtime.component.storageLocations().cacheDirectory,
                     okHttpClient = okHttpClient,
@@ -205,7 +229,7 @@ class PdfReaderActivity : ComponentActivity() {
         } catch (e: CancellationException) {
             throw e
         } catch (e: Exception) {
-            uiState = uiState.copy(isLoading = false, error = "Download failed: ${e.message}")
+            uiState = uiState.copy(isLoading = false, error = "Could not open PDF: ${e.message}")
             return
         }
 
@@ -280,14 +304,43 @@ class PdfReaderActivity : ComponentActivity() {
     }
 
     private fun turnSpread(forward: Boolean) {
+        if (spreadTurnTarget(forward) == null) return
+        pageCurl.turn(
+            forward = forward,
+            curl = ReaderPageCurlPolicy.shouldCurl(
+                style = pageTurnStyle,
+                animatedPageTurns = true,
+                scrollMode = false,
+                reduceMotion = reduceMotion,
+                animatorsEnabled = android.animation.ValueAnimator.areAnimatorsEnabled(),
+                einkActive = themeViewModel.themeState.value.einkProfile.active,
+            ),
+            awaitTurn = ::renderedSpreadSignal,
+            perform = { spreadTurnTarget(forward)?.let(::selectPage) },
+        )
+    }
+
+    private fun spreadTurnTarget(forward: Boolean): Int? {
         val pageCount = uiState.pageCount
-        if (pageCount <= 0) return
-        val target = if (forward) {
+        if (pageCount <= 0) return null
+        return if (forward) {
             uiState.layout.pageAfterTurningForward(uiState.currentPage, pageCount)
         } else {
             uiState.layout.pageAfterTurningBackward(uiState.currentPage, pageCount)
         }
-        if (target != null) selectPage(target)
+    }
+
+    private fun renderedSpreadSignal(): suspend () -> Unit {
+        val before = uiState.currentBitmap
+        return {
+            snapshotFlow { uiState }.first { it.currentBitmap !== before && !it.isLoading }
+            delay(ReaderPageCurlRunner.PAINT_SETTLE_MS)
+        }
+    }
+
+    private fun savePageTurnStyle(style: ReaderPageTurnStyle) {
+        pageTurnStyle = style
+        profileBinding.runtime.component.resources().scope.launch { pageTurnStore.save(style) }
     }
 
     private fun updateLayout(layout: PdfReadingLayout) {
@@ -405,6 +458,7 @@ class PdfReaderActivity : ComponentActivity() {
 
     override fun onPause() {
         super.onPause()
+        pageCurl.cancel()
         if (!::profileBinding.isInitialized || profileBinding.retired || !movedSinceOpen) return
         if (uiState.pageCount > 0) syncProgress()
     }
@@ -439,6 +493,7 @@ class PdfReaderActivity : ComponentActivity() {
     }
 
     override fun onDestroy() {
+        pageCurl.close()
         super.onDestroy()
         renderJob?.cancel()
         val pdfRenderer = renderer

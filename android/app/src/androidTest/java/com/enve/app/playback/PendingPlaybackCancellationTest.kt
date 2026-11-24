@@ -12,6 +12,7 @@ import androidx.test.core.app.ApplicationProvider
 import androidx.test.ext.junit.runners.AndroidJUnit4
 import com.enve.app.profiles.DaggerProfileRuntimeComponent
 import com.enve.app.profiles.ProfileResources
+import com.enve.app.profiles.ProfileRuntimeComponent
 import com.enve.core.data.model.Book
 import com.enve.core.data.model.BookSource
 import com.enve.core.data.model.AppMediaType
@@ -27,12 +28,15 @@ import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.NonCancellable
 import kotlinx.coroutines.awaitCancellation
+import kotlinx.coroutines.currentCoroutineContext
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.runBlocking
 import kotlinx.coroutines.withContext
 import kotlinx.coroutines.withTimeout
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
+import org.junit.Assert.assertNotNull
+import org.junit.Assert.assertNotSame
 import org.junit.Assert.assertNull
 import org.junit.Assert.assertSame
 import org.junit.Assert.assertTrue
@@ -230,15 +234,119 @@ class PendingPlaybackCancellationTest {
         }
     }
 
+    @Test
+    fun stoppingThroughTheFacadeCancelsAProducerStillResolving() = componentFixture { component, browser, audio ->
+        val manager = component.audioPlayback()
+        val queue = component.playbackQueue()
+        val producerEntered = CompletableDeferred<Unit>()
+        val releaseProducer = CompletableDeferred<Unit>()
+        val producerFinished = CompletableDeferred<Unit>()
+        try {
+            queue.launchStart(Book("stopped-producer", "Stopped producer", source = BookSource.LOCAL)) {
+                try {
+                    val request = currentCoroutineContext()[Job]
+                    producerEntered.complete(Unit)
+                    withContext(NonCancellable) { releaseProducer.await() }
+                    manager.play(Uri.fromFile(audio).toString(), "stopped-producer", "Stopped producer", null, null, requestJob = request)
+                } finally {
+                    producerFinished.complete(Unit)
+                }
+            }
+            withTimeout(5_000) { producerEntered.await() }
+            component.playback().stop()
+            assertNull(queue.starting.value)
+            releaseProducer.complete(Unit)
+            withTimeout(5_000) { producerFinished.await() }
+            awaitControllerCommands(manager, browser)
+            withContext(Dispatchers.Main) {
+                assertEquals(0, browser.mediaItemCount)
+                assertFalse(browser.playWhenReady)
+                assertFalse(manager.hasPendingPlayback)
+                assertNull(manager.currentBookId)
+            }
+        } finally {
+            releaseProducer.complete(Unit)
+            queue.cancelPendingStart()
+        }
+    }
+
+    @Test
+    fun disconnectedControllerReconnectsForANewStartWithoutReplayingStaleWork() = fixture { manager, _, browser, audio ->
+        val uri = Uri.fromFile(audio).toString()
+        withContext(Dispatchers.Main) {
+            manager.play(uri, "before-disconnect", "Before disconnect", null, null)
+        }
+        await { withContext(Dispatchers.Main) { browser.isPlaying } }
+        val disconnected = withContext(Dispatchers.Main) { checkNotNull(controllerOf(manager)).also(MediaController::release) }
+        await { withContext(Dispatchers.Main) { controllerOf(manager) == null } }
+        withContext(Dispatchers.Main) {
+            assertNotNull(manager.state.value.errorMessage)
+            assertFalse(manager.state.value.isPlaying)
+            manager.play(uri, "stale-after-disconnect", "Stale after disconnect", null, null, requestJob = Job().apply { cancel() })
+            assertFalse(manager.hasPendingPlayback)
+            manager.play(uri, "after-disconnect", "After disconnect", null, null)
+        }
+        await {
+            withContext(Dispatchers.Main) {
+                browser.isPlaying && browser.currentMediaItem?.mediaMetadata?.title.toString() == "After disconnect"
+            }
+        }
+        withContext(Dispatchers.Main) {
+            val reconnected = checkNotNull(controllerOf(manager))
+            assertNotSame(disconnected, reconnected)
+            assertTrue(reconnected.isConnected)
+            assertEquals(1, browser.mediaItemCount)
+            assertEquals("after-disconnect", manager.currentBookId)
+            assertNull(manager.state.value.errorMessage)
+        }
+    }
+
+    @Test
+    fun unknownEarlierTrackOffsetKeepsThePersistedCheckpoint() = componentFixture { component, _, audio ->
+        val manager = component.audioPlayback()
+        val book = Book(
+            "unknown-offset",
+            "Unknown offset",
+            duration = 600L,
+            currentTime = 123L,
+            source = BookSource.LOCAL,
+            mediaType = AppMediaType.AUDIOBOOK,
+        )
+        component.bookCacheDao().upsert(listOf(book.toCachedBook()))
+        val unprepared = Uri.fromFile(File(audio.parentFile, "unprepared-first-track.wav")).toString()
+        withContext(Dispatchers.Main) {
+            manager.playMultiTrack(
+                listOf(
+                    AudioPlaybackManager.TrackInfo(unprepared, "Unknown length", 0L),
+                    AudioPlaybackManager.TrackInfo(Uri.fromFile(audio).toString(), "Known length", 30_000L),
+                ),
+                book.id, book.title, null,
+                startPositionMs = 5_000L,
+                mediaId = AutoMediaBrowserHelper.mediaIdForCacheKey(book.uniqueKey),
+            )
+        }
+        await {
+            manager.state.value.let { it.isPlaying && it.currentMediaItemIndex == 1 && it.currentPositionMs > 5_000L }
+        }
+        assertNull(manager.state.value.checkpointPositionMs)
+        component.playbackQueue().playQueued(nextBook.uniqueKey)
+        assertEquals(123L, checkNotNull(component.bookCacheDao().getByCacheKey(book.uniqueKey)).currentTime)
+    }
+
     private fun fixture(
         action: suspend (AudioPlaybackManager, PlaybackQueueCoordinator, MediaBrowser, File) -> Unit,
+    ) = componentFixture { component, browser, audio ->
+        action(component.audioPlayback(), component.playbackQueue(), browser, audio)
+    }
+
+    private fun componentFixture(
+        action: suspend (ProfileRuntimeComponent, MediaBrowser, File) -> Unit,
     ) = runBlocking {
         val context = ApplicationProvider.getApplicationContext<Context>()
         val resources = ProfileResources.open(context, UUID.randomUUID().toString())
         val component = DaggerProfileRuntimeComponent.factory().create(resources)
         component.bookCacheDao().upsert(listOf(nextBook.toCachedBook()))
         val manager = component.audioPlayback()
-        val queue = component.playbackQueue()
         val browser = connect(context)
         val audio = File(resources.locations.cacheDirectory, "pending-local.wav")
         writeAudio(audio)
@@ -250,7 +358,7 @@ class PendingPlaybackCancellationTest {
                 browser.clearMediaItems()
                 browser.volume = 1f
             }
-            action(manager, queue, browser, audio)
+            action(component, browser, audio)
         } finally {
             withContext(NonCancellable + Dispatchers.Main) {
                 manager.release()
@@ -276,6 +384,11 @@ class PendingPlaybackCancellationTest {
         }
         delay(300)
     }
+
+    private fun controllerOf(manager: AudioPlaybackManager): MediaController? =
+        AudioPlaybackManager::class.java.getDeclaredField("controller")
+            .apply { isAccessible = true }
+            .get(manager) as MediaController?
 
     private suspend fun connect(context: Context): MediaBrowser {
         val future = withContext(Dispatchers.Main) {

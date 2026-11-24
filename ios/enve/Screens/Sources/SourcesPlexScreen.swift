@@ -26,6 +26,8 @@ struct SourcesPlexScreen: View {
     @State private var selectedHomeUser: PlexHomeUser?
     @State private var showingUserPicker = false
     @State private var servers: [PlexServer] = []
+    @State private var selectedServerID: String?
+    @State private var serverSelectionTask: Task<Void, Never>?
     @State private var isBusy = false
     @State private var error: String?
     @State private var manualToken = ""
@@ -62,6 +64,7 @@ struct SourcesPlexScreen: View {
                         .foregroundStyle(hearth.textSecondary)
                 }
             }
+            .onDisappear { serverSelectionTask?.cancel() }
             .sheet(isPresented: $showingUserPicker) {
                 SourcesPlexUserPicker(
                     users: homeUsers,
@@ -207,9 +210,14 @@ struct SourcesPlexScreen: View {
                                     .foregroundStyle(hearth.textSecondary)
                             }
                             Spacer()
-                            Image(systemName: "chevron.right")
-                                .font(.hearthUI(12, weight: .semibold))
-                                .foregroundStyle(hearth.textTertiary)
+                            if selectedServerID == server.id {
+                                ProgressView().tint(hearth.ember)
+                                    .accessibilityLabel("Connecting to \(server.name)")
+                            } else {
+                                Image(systemName: "chevron.right")
+                                    .font(.hearthUI(12, weight: .semibold))
+                                    .foregroundStyle(hearth.textTertiary)
+                            }
                         }
                         .contentShape(Rectangle())
                     }
@@ -229,6 +237,7 @@ struct SourcesPlexScreen: View {
                     .font(.hearthCaption)
                     .foregroundStyle(hearth.ember)
             }
+            .disabled(isBusy)
         }
     }
 
@@ -373,25 +382,32 @@ struct SourcesPlexScreen: View {
     }
 
     private func selectServer(_ server: PlexServer) {
+        guard !isBusy else { return }
         isBusy = true
         error = nil
+        selectedServerID = server.id
 
-        Task {
+        serverSelectionTask = Task {
+            defer {
+                selectedServerID = nil
+                isBusy = false
+            }
             let token = server.accessToken
             let service = PlexService()
 
             guard let workingURL = await service.findBestConnection(server: server) else {
+                guard !Task.isCancelled else { return }
                 self.error =
-                    "Couldn't reach \(server.name). Check that remote access is enabled or that this Mac can reach the server's local network."
-                self.isBusy = false
+                    "Couldn't reach \(server.name). Check that remote access is enabled or that this device has Local Network access in Settings."
                 return
             }
 
             do {
+                try Task.checkCancellation()
                 try await verifyAndAdd(name: server.name, url: workingURL, serverToken: token)
             } catch {
+                guard !Task.isCancelled else { return }
                 self.error = "Couldn't add \(server.name): \(error.localizedDescription)"
-                self.isBusy = false
             }
         }
     }
@@ -415,6 +431,7 @@ struct SourcesPlexScreen: View {
         }
 
         let (isValid, validated) = try await appState.validateConnection(temp)
+        try Task.checkCancellation()
         guard isValid else {
             error = "Connection failed. Please try again."
             isBusy = false

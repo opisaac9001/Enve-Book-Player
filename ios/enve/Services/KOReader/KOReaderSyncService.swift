@@ -253,9 +253,12 @@ final class KOReaderSyncService {
         let remoteLocation = remote.progress.trimmingCharacters(in: .whitespacesAndNewlines)
         if remoteLocation.hasPrefix("{"), EpubCFI.jsonObject(remoteLocation) != nil {
             resolvedLocator = remoteLocation
-        } else if remoteLocation.hasPrefix("epubcfi("),
-            let url = EbookChapterSyncService.shared.resolvedFileURL(for: book) {
-            resolvedLocator = await EpubCFI.readiumLocatorJSON(forCFI: remoteLocation, totalProgression: percentage, epubFileURL: url)
+        } else if remoteLocation.hasPrefix("epubcfi(") {
+            #if !os(tvOS)
+            if let url = EbookChapterSyncService.shared.resolvedFileURL(for: book) {
+                resolvedLocator = await EpubCFI.readiumLocatorJSON(forCFI: remoteLocation, totalProgression: percentage, epubFileURL: url)
+            }
+            #endif
         } else if remoteLocation.hasPrefix("/body/DocFragment") {
             let fileURL = EbookChapterSyncService.shared.resolvedFileURL(for: book)
             if let url = fileURL,

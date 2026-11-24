@@ -7,6 +7,7 @@
 	objects = {
 
 /* Begin PBXBuildFile section */
+		CA5700010000000000000001 /* GoogleCastSDK in Frameworks */ = {isa = PBXBuildFile; platformFilter = ios; productRef = CA5700010000000000000002 /* GoogleCastSDK */; };
 		0F1E2D3C4B5A69788796A501 /* AppIntents.framework in Frameworks */ = {isa = PBXBuildFile; fileRef = 0F1E2D3C4B5A69788796A500 /* AppIntents.framework */; };
 		0F1E2D3C4B5A69788796A511 /* AppIntents.framework in Frameworks */ = {isa = PBXBuildFile; fileRef = 0F1E2D3C4B5A69788796A500 /* AppIntents.framework */; };
 		0F1E2D3C4B5A69788796A521 /* AppIntents.framework in Frameworks */ = {isa = PBXBuildFile; fileRef = 0F1E2D3C4B5A69788796A500 /* AppIntents.framework */; };
@@ -545,6 +546,7 @@
 				AACC1100EEFF22BB33DD4402 /* UnrarKit in Frameworks */,
 				BBDD2200FFAA33CC44EE5502 /* StoryAlignCore in Frameworks */,
 				FA3A00010000000000000001 /* FluidAudio in Frameworks */,
+				CA5700010000000000000001 /* GoogleCastSDK in Frameworks */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
@@ -705,6 +707,7 @@
 				AACC1100EEFF22BB33DD4401 /* UnrarKit */,
 				BBDD2200FFAA33CC44EE5501 /* StoryAlignCore */,
 				FA3A00010000000000000003 /* FluidAudio */,
+				CA5700010000000000000002 /* GoogleCastSDK */,
 			);
 			productName = enve;
 			productReference = 1D03D0ED2F1629100008FD58 /* enve.app */;
@@ -871,6 +874,7 @@
 				AACC1100EEFF22BB33DD4400 /* XCLocalSwiftPackageReference "LocalPackages/UnrarKit" */,
 				BBDD2200FFAA33CC44EE5500 /* XCLocalSwiftPackageReference "LocalPackages/StoryAlign" */,
 				FA3A00010000000000000002 /* XCRemoteSwiftPackageReference "FluidAudio" */,
+				CA5700010000000000000003 /* XCLocalSwiftPackageReference "LocalPackages/GoogleCast" */,
 			);
 			preferredProjectObjectVersion = 77;
 			productRefGroup = 1D03D0EE2F1629100008FD58 /* Products */;
@@ -1726,6 +1730,10 @@
 			isa = XCLocalSwiftPackageReference;
 			relativePath = LocalPackages/StoryAlign;
 		};
+		CA5700010000000000000003 /* XCLocalSwiftPackageReference "LocalPackages/GoogleCast" */ = {
+			isa = XCLocalSwiftPackageReference;
+			relativePath = LocalPackages/GoogleCast;
+		};
 /* End XCLocalSwiftPackageReference section */
 
 /* Begin XCRemoteSwiftPackageReference section */
@@ -1867,6 +1875,11 @@
 			isa = XCSwiftPackageProductDependency;
 			package = FA3A00010000000000000002 /* XCRemoteSwiftPackageReference "FluidAudio" */;
 			productName = FluidAudio;
+		};
+		CA5700010000000000000002 /* GoogleCastSDK */ = {
+			isa = XCSwiftPackageProductDependency;
+			package = CA5700010000000000000003 /* XCLocalSwiftPackageReference "LocalPackages/GoogleCast" */;
+			productName = GoogleCastSDK;
 		};
 /* End XCSwiftPackageProductDependency section */
 	};

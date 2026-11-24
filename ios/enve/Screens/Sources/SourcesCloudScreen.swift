@@ -620,7 +620,7 @@ final class SourcesCloudDriveModel {
                 }
                 defer { staging.remove() }
                 importState = .importing
-                let count = try await engine.sources.importFiles(urls: staging.urls, mode: mode)
+                let count = try await engine.sources.importFiles(urls: staging.urls, mode: mode).count
                 guard count > 0 else {
                     importState = .idle
                     errorMessage = "None of the selected files could be added as books."

@@ -17,6 +17,7 @@ import com.enve.core.data.model.Book
 import com.enve.core.data.model.BookSource
 import com.enve.core.data.model.ComicPageLoadingMode
 import com.enve.app.data.repository.AggregatorRepository
+import com.enve.app.data.offline.offlineDownloadKey
 import com.enve.app.data.repository.GrimmoryRepository
 import com.enve.app.ui.screens.ReaderFormat
 import com.enve.app.ui.screens.buildPageLocator
@@ -489,7 +490,7 @@ class ComicReaderViewModel @Inject constructor(
     private suspend fun openComic(locator: String?) {
         _state.update { it.copy(isLoading = true, loadingText = "Downloading ${format.displayName}...", error = null) }
 
-        val offlineFile = comicOfflineService.getLocalFile(bookId)
+        val offlineFile = comicOfflineService.getLocalFile(downloadKey())
         archiveDirection = offlineFile?.let { file ->
             withContext(Dispatchers.IO) { readComicArchiveDirection(file) }
         }
@@ -555,8 +556,8 @@ class ComicReaderViewModel @Inject constructor(
         comicOfflineService.startDownload(stubBookForDownload)
 
         val archive: File = try {
-            val terminal = comicOfflineService.progressByBookId
-                .mapNotNull { it[bookId] }
+            val terminal = comicOfflineService.progressByDownloadKey
+                .mapNotNull { it[stubBookForDownload.offlineDownloadKey] }
                 .onEach { progress ->
                     if (progress.status == com.enve.app.data.offline.ComicDownloadStatus.QUEUED ||
                         progress.status == com.enve.app.data.offline.ComicDownloadStatus.DOWNLOADING
@@ -577,7 +578,7 @@ class ComicReaderViewModel @Inject constructor(
             if (terminal.status != com.enve.app.data.offline.ComicDownloadStatus.COMPLETED) {
                 error(terminal.errorMessage ?: "Download ${terminal.status.name.lowercase()}")
             }
-            comicOfflineService.getLocalFile(bookId)
+            comicOfflineService.getLocalFile(stubBookForDownload.offlineDownloadKey)
                 ?: error("Download finished but file was not found in offline storage")
         } catch (e: kotlinx.coroutines.CancellationException) {
             throw e
@@ -768,6 +769,8 @@ class ComicReaderViewModel @Inject constructor(
     }
 
     private fun currentBookKey(): String = comicBookKey(bookId, bookSource, bookConnectionId)
+
+    private fun downloadKey(): String = offlineDownloadKey(bookSource, bookConnectionId, bookId)
 }
 
 private data class ComicPreferenceNames(

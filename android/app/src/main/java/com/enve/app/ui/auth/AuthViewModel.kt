@@ -293,12 +293,6 @@ class AuthViewModel @Inject constructor(
             val savedPassword = vault.get(CredentialVault.passwordKey(connection.id))
                 ?: vault.get(CredentialVault.accessTokenKey(connection.id))
                 ?: ""
-            val serviceClientId = connection.serviceClientId.ifBlank {
-                vault.get(CredentialVault.serviceClientIdKey(connection.id)).orEmpty()
-            }
-            val serviceClientSecret = connection.serviceClientSecret.ifBlank {
-                vault.get(CredentialVault.serviceClientSecretKey(connection.id)).orEmpty()
-            }
             _state.update {
                 it.copy(
                     selectedSource = connection.source,
@@ -309,8 +303,8 @@ class AuthViewModel @Inject constructor(
                     urlScheme = connection.urlScheme,
                     authMode = connection.authMode,
                     customHeaders = connection.customHeaders,
-                    serviceClientId = serviceClientId,
-                    serviceClientSecret = serviceClientSecret,
+                    serviceClientId = connection.serviceClientId,
+                    serviceClientSecret = connection.serviceClientSecret,
                     mtlsEnabled = connection.mtlsEnabled,
                     mtlsCertBytes = null,
                     mtlsCertPassword = "",
@@ -378,46 +372,27 @@ class AuthViewModel @Inject constructor(
     }
 
     fun stagePendingLoginCookie(cookie: String) {
-        prefs.stagePendingLoginCookie(cookie)
-        viewModelScope.launch { prefs.setPendingLoginCookie(cookie) }
+        stagePendingLoginHeaders(_state.value.customHeaders, cookie)
     }
 
     fun stagePendingLoginHeaders(headers: Map<String, String>, cookie: String? = null) {
-        val stagedHeaders = headers.toMutableMap()
-        when {
-            cookie == null -> {
-                val explicitCookie = stagedHeaders["Cookie"] ?: stagedHeaders["cookie"]
-                if (explicitCookie.isNullOrBlank()) {
-                    stagedHeaders.remove("Cookie")
-                    stagedHeaders.remove("cookie")
-                } else {
-                    stagedHeaders["Cookie"] = explicitCookie
-                    stagedHeaders.remove("cookie")
-                }
-            }
-            cookie.isBlank() -> {
-                stagedHeaders.remove("Cookie")
-                stagedHeaders.remove("cookie")
-            }
-            else -> stagedHeaders["Cookie"] = cookie
-        }
-        val resolvedCookie = stagedHeaders["Cookie"]?.takeIf { it.isNotBlank() }
-        if (cookie == null && resolvedCookie == null) {
-            prefs.stagePendingLoginCookie("")
-        } else {
-            prefs.stagePendingLoginCookie(resolvedCookie.orEmpty())
-        }
-        prefs.stagePendingLoginHeaders(stagedHeaders)
-        viewModelScope.launch {
-            prefs.setPendingLoginCookie(resolvedCookie)
-            prefs.setPendingLoginHeaders(stagedHeaders)
-        }
+        val staged = headers.filterKeys { !it.equals("Cookie", ignoreCase = true) }.toMutableMap()
+        val resolvedCookie = cookie ?: headers.entries.firstOrNull { it.key.equals("Cookie", ignoreCase = true) }?.value
+        if (!resolvedCookie.isNullOrBlank()) staged["Cookie"] = resolvedCookie
+        _state.update { it.copy(customHeaders = staged) }
     }
 
     private fun clearPendingLoginContext() {
-        prefs.stagePendingLoginCookie(null)
-        prefs.stagePendingLoginHeaders(emptyMap())
         viewModelScope.launch { prefs.clearPendingLoginContext() }
+    }
+
+    private fun loginContext(): kotlin.coroutines.CoroutineContext {
+        val state = _state.value
+        return com.enve.core.data.remote.LoginAttemptScope.asContextElement(
+            com.enve.core.data.remote.LoginAttempt(
+                normalizeUrl(state.serverUrl, state.urlScheme), state.selectedSource, state.effectiveHeaders.toMap(), state.username,
+            ),
+        )
     }
 
     fun removeCustomHeader(key: String) {
@@ -495,7 +470,7 @@ class AuthViewModel @Inject constructor(
             return
         }
 
-        viewModelScope.launch {
+        viewModelScope.launch(loginContext()) {
             _state.update { it.copy(isLoading = true, error = null, serverUrl = normalizedUrl) }
             val trimmedServerUrl = if (current.selectedSource == BookSource.OPDS) normalizedUrl else normalizedUrl.trimEnd('/')
             val previousSource = prefs.activeBookSource.first()
@@ -618,7 +593,7 @@ class AuthViewModel @Inject constructor(
 
         val normalizedUrl = normalizeUrl(current.serverUrl)
 
-        viewModelScope.launch {
+        viewModelScope.launch(loginContext()) {
             _state.update { it.copy(isLoading = true, error = null, serverUrl = normalizedUrl) }
 
             val resolvedServerUrlAndToken = if (current.selectedSource == BookSource.PLEX) {
@@ -804,7 +779,7 @@ class AuthViewModel @Inject constructor(
             return
         }
 
-        viewModelScope.launch {
+        viewModelScope.launch(loginContext()) {
             _state.update { it.copy(isLoading = true, error = null) }
             when (current.selectedSource) {
                 BookSource.GRIMMORY -> {
@@ -974,7 +949,7 @@ class AuthViewModel @Inject constructor(
     fun completeKomgaOauth(cookieHeader: String) {
         val current = _state.value
         if (!current.pendingKomgaOauth) return
-        viewModelScope.launch {
+        viewModelScope.launch(loginContext()) {
             _state.update { it.copy(isLoading = true, error = null) }
             when (val result = komgaOAuthFlow.verifySession(current.serverUrl, cookieHeader)) {
                 is com.enve.komga.auth.KomgaOAuthCompletion.Success -> {
@@ -1080,7 +1055,7 @@ class AuthViewModel @Inject constructor(
         }
 
         if (!token.isNullOrBlank()) {
-            viewModelScope.launch {
+            viewModelScope.launch(loginContext()) {
                 _state.update { it.copy(isLoading = true, error = null) }
                 val plexAdjusted = if (source == BookSource.PLEX) {
                     val plexClientId = prefs.getOrCreatePlexClientIdentifier()
@@ -1154,7 +1129,7 @@ class AuthViewModel @Inject constructor(
             return
         }
 
-        viewModelScope.launch {
+        viewModelScope.launch(loginContext()) {
             _state.update { it.copy(isLoading = true, error = null) }
             val callbackServerUrl = _state.value.serverUrl.trim()
             repository.oidcCallback(
@@ -1190,7 +1165,7 @@ class AuthViewModel @Inject constructor(
     }
 
     private fun handleGrimmoryOauthCallback(uri: Uri) {
-        viewModelScope.launch {
+        viewModelScope.launch(loginContext()) {
             _state.update { it.copy(isLoading = true, error = null) }
             when (val result = grimmoryOidcFlow.completeCallback(uri)) {
                 is com.enve.app.data.grimmory.auth.GrimmoryOidcCallback.Success -> {
@@ -1231,7 +1206,7 @@ class AuthViewModel @Inject constructor(
     }
 
     private fun handleAbsOauthCallback(uri: Uri) {
-        viewModelScope.launch {
+        viewModelScope.launch(loginContext()) {
             _state.update { it.copy(isLoading = true, error = null) }
             val username = _state.value.username
             when (val result = absOidcFlow.completeCallback(uri, username)) {
@@ -1270,7 +1245,7 @@ class AuthViewModel @Inject constructor(
     }
 
     private fun handleBookOrbitOauthCallback(uri: Uri) {
-        viewModelScope.launch {
+        viewModelScope.launch(loginContext()) {
             _state.update { it.copy(isLoading = true, error = null) }
             when (val result = bookOrbitOidcFlow.completeCallback(uri)) {
                 is com.enve.bookorbit.auth.BookOrbitOidcCallback.Success -> {
@@ -1313,7 +1288,7 @@ class AuthViewModel @Inject constructor(
     }
 
     private fun handleSiloOauthCallback(uri: Uri) {
-        viewModelScope.launch {
+        viewModelScope.launch(loginContext()) {
             _state.update { it.copy(isLoading = true, error = null) }
             when (val result = siloOidcFlow.completeCallback(uri)) {
                 is SiloOidcCallback.Success -> {
@@ -1788,13 +1763,6 @@ class AuthViewModel @Inject constructor(
             }
         }
 
-        if (state.serviceClientId.isNotBlank()) {
-            vault.put(CredentialVault.serviceClientIdKey(connectionId), state.serviceClientId)
-        }
-        if (state.serviceClientSecret.isNotBlank()) {
-            vault.put(CredentialVault.serviceClientSecretKey(connectionId), state.serviceClientSecret)
-        }
-
         connectionRegistry.upsert(
             ProviderConnection(
                 id = connectionId,
@@ -1845,13 +1813,16 @@ class AuthViewModel @Inject constructor(
         if (!username.isNullOrBlank()) {
             vault.put(CredentialVault.usernameKey(connectionId), username)
         }
-        val accessToken = vault.get(CredentialVault.KEY_ACCESS_TOKEN)
+        val attempt = com.enve.core.data.remote.LoginAttemptScope.get()
+        val accessToken = if (attempt != null) attempt.accessToken else vault.get(CredentialVault.KEY_ACCESS_TOKEN)
         if (!accessToken.isNullOrBlank()) {
             vault.put(CredentialVault.accessTokenKey(connectionId), accessToken)
         }
-        val refreshToken = vault.get(CredentialVault.KEY_REFRESH_TOKEN)
+        val refreshToken = if (attempt != null) attempt.refreshToken else vault.get(CredentialVault.KEY_REFRESH_TOKEN)
         if (!refreshToken.isNullOrBlank()) {
             vault.put(CredentialVault.refreshTokenKey(connectionId), refreshToken)
+        } else if (attempt?.accessToken != null) {
+            vault.remove(CredentialVault.refreshTokenKey(connectionId))
         }
         if (!password.isNullOrBlank()) {
             vault.put(CredentialVault.passwordKey(connectionId), password)
@@ -1921,8 +1892,6 @@ class AuthViewModel @Inject constructor(
             vault.remove(CredentialVault.refreshTokenKey(connectionId))
             vault.remove(CredentialVault.passwordKey(connectionId))
             vault.remove(CredentialVault.usernameKey(connectionId))
-            vault.remove(CredentialVault.serviceClientIdKey(connectionId))
-            vault.remove(CredentialVault.serviceClientSecretKey(connectionId))
             vault.remove(CredentialVault.kosyncUsernameKeyForConnection(connectionId))
             vault.remove(CredentialVault.kosyncPasswordKeyForConnection(connectionId))
             mtlsManager.clearCert(connectionId)

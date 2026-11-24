@@ -19,6 +19,7 @@ import androidx.compose.material.icons.outlined.Lock
 import androidx.compose.material3.Icon
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
@@ -39,8 +40,12 @@ import java.text.DateFormat
 import java.util.Date
 
 @Composable
-fun BookOrbitAchievementsScreen(onBack: () -> Unit) {
+fun BookOrbitAchievementsScreen(
+    onBack: () -> Unit,
+    initialAccountId: String? = null,
+) {
     val vm: BookOrbitAchievementsViewModel = profileViewModel()
+    LaunchedEffect(initialAccountId) { initialAccountId?.let(vm::selectAccount) }
     val accounts by vm.accounts.collectAsStateWithLifecycle()
     val accountId by vm.activeAccountId.collectAsStateWithLifecycle()
     val earnedOnly by vm.showEarnedOnly.collectAsStateWithLifecycle()

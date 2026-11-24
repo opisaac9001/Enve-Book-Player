@@ -43,8 +43,8 @@ class ProfilePreferencesTest {
             val scope = CoroutineScope(job + Dispatchers.IO)
             val first = ProfilePreferences.open(context, locations(root, "first"), scope)
             val second = ProfilePreferences.open(context, locations(root, "second"), scope)
-            val firstConnections = ConnectionRegistry(first.enve)
-            val secondConnections = ConnectionRegistry(second.enve)
+            val firstConnections = ConnectionRegistry(first.enve, com.enve.core.auth.CredentialVault.forProfile(context, "registry-test-first"))
+            val secondConnections = ConnectionRegistry(second.enve, com.enve.core.auth.CredentialVault.forProfile(context, "registry-test-second"))
             val firstTheme = HearthPreferencesStore(first.hearth)
             val secondTheme = HearthPreferencesStore(second.hearth)
             val originalFlow = firstConnections.connections

@@ -127,6 +127,7 @@ class ProfileViewModelFactory(private val component: com.enve.app.profiles.Profi
         com.enve.app.viewmodel.CustomFontsViewModel::class.java -> com.enve.app.viewmodel.CustomFontsViewModel(
             component.customFontRepository(),
             component.preferences(),
+            component.readerFontLibrary(),
         )
         com.enve.app.viewmodel.StorytellerHubViewModel::class.java -> com.enve.app.viewmodel.StorytellerHubViewModel(
             component.connections(),
@@ -160,6 +161,9 @@ class ProfileViewModelFactory(private val component: com.enve.app.profiles.Profi
             component.grimmoryRepository(),
             component.bookloreKoreaderSink(),
             component.database().pendingProgressPushDao(),
+            component.bookCacheDao(),
+            component.pendingProgressReplay(),
+            component.serverSync(),
         )
         com.enve.app.viewmodel.StatsViewModel::class.java -> com.enve.app.viewmodel.StatsViewModel(
             component.grimmoryRepository(),
@@ -235,6 +239,11 @@ class ProfileViewModelFactory(private val component: com.enve.app.profiles.Profi
             component.resources().context,
             com.enve.app.wear.WearLinkSessionClient(component.unauthenticatedHttpClient()),
         )
+        com.enve.hearth.journal.ReadingGoalViewModel::class.java -> com.enve.hearth.journal.ReadingGoalViewModel(
+            component.library(), component.preferencesFacade(), component.readingGoalStore(),
+        )
+        com.enve.hearth.journal.ReadingRecapViewModel::class.java -> com.enve.hearth.journal.ReadingRecapViewModel(component.library())
+        com.enve.hearth.readwise.ReadwiseViewModel::class.java -> com.enve.hearth.readwise.ReadwiseViewModel(component.readwise())
         com.enve.hearth.journal.HearthInsightsViewModel::class.java -> com.enve.hearth.journal.HearthInsightsViewModel(
             component.library(),
         )
@@ -247,6 +256,7 @@ class ProfileViewModelFactory(private val component: com.enve.app.profiles.Profi
             component.batchMatching(),
             component.duplicateMatching(),
         )
+        com.enve.hearth.settings.SettingsBackupViewModel::class.java -> com.enve.hearth.settings.SettingsBackupViewModel(component.settingsBackup())
         com.enve.hearth.settings.HearthSettingsViewModel::class.java -> com.enve.hearth.settings.HearthSettingsViewModel(
             component.preferencesFacade(),
             component.einkFacade(),
@@ -277,6 +287,7 @@ class ProfileViewModelFactory(private val component: com.enve.app.profiles.Profi
             component.library(),
             component.lastOpenedBookStore(),
             component.downloadActivity(),
+            component.pendingBookMutations(),
         )
         com.enve.hearth.library.HearthLibraryViewModel::class.java -> com.enve.hearth.library.HearthLibraryViewModel(
             component.library(),
@@ -289,6 +300,8 @@ class ProfileViewModelFactory(private val component: com.enve.app.profiles.Profi
             component.podcasts(),
             component.library(),
         )
+        com.enve.hearth.podcasts.PodcastRoutinesViewModel::class.java -> com.enve.hearth.podcasts.PodcastRoutinesViewModel(component.podcasts())
+        com.enve.hearth.podcasts.PodcastTransferViewModel::class.java -> com.enve.hearth.podcasts.PodcastTransferViewModel(component.podcasts())
         com.enve.hearth.podcasts.PodcastEpisodeViewModel::class.java -> com.enve.hearth.podcasts.PodcastEpisodeViewModel(
             component.library(),
         )
@@ -303,6 +316,7 @@ class ProfileViewModelFactory(private val component: com.enve.app.profiles.Profi
             component.bookOrbit(),
             component.serverTools(),
             markUnreadAction(),
+            component.pendingBookMutations(),
             component.preferencesFacade(),
         )
         com.enve.hearth.bookorbit.BookOrbitHighlightsViewModel::class.java -> com.enve.hearth.bookorbit.BookOrbitHighlightsViewModel(
@@ -312,6 +326,12 @@ class ProfileViewModelFactory(private val component: com.enve.app.profiles.Profi
             component.bookOrbit(),
         )
         com.enve.hearth.bookorbit.BookOrbitInsightsViewModel::class.java -> com.enve.hearth.bookorbit.BookOrbitInsightsViewModel(
+            component.bookOrbit(),
+        )
+        com.enve.hearth.bookorbit.BookOrbitSmartScopesViewModel::class.java -> com.enve.hearth.bookorbit.BookOrbitSmartScopesViewModel(
+            component.bookOrbit(),
+        )
+        com.enve.hearth.bookorbit.BookOrbitBookDropViewModel::class.java -> com.enve.hearth.bookorbit.BookOrbitBookDropViewModel(
             component.bookOrbit(),
         )
         com.enve.hearth.collections.CollectionsViewModel::class.java -> com.enve.hearth.collections.CollectionsViewModel(
@@ -329,6 +349,7 @@ class ProfileViewModelFactory(private val component: com.enve.app.profiles.Profi
             component.preferencesFacade(),
             component.sleepDataFacade(),
             component.library(),
+            component.playerExtras(),
         )
         com.enve.app.ui.auth.AuthViewModel::class.java -> com.enve.app.ui.auth.AuthViewModel(
             component.grimmoryRepository(),

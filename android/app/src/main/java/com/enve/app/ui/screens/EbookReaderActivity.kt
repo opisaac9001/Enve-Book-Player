@@ -50,10 +50,12 @@ import androidx.lifecycle.repeatOnLifecycle
 import androidx.lifecycle.lifecycleScope
 import com.enve.app.R
 import com.enve.core.data.model.*
+import com.enve.core.data.local.ReaderPageTurnStyle
 import com.enve.core.data.local.toBook
 import com.enve.core.listeningposition.SharedReadingLocation
 import com.enve.app.data.reader.*
 import com.enve.app.data.repository.CustomFontRepository
+import com.enve.app.data.offline.offlineDownloadKey
 import com.enve.app.document.EbookNormalizationException
 import com.enve.app.document.EbookSourceFormat
 import com.enve.app.document.NativeKindleEpubConverter
@@ -70,6 +72,10 @@ import com.enve.app.ui.screens.reader.ReaderIllustrationHit
 import com.enve.app.ui.screens.reader.ReaderIllustrationLoader
 import com.enve.app.ui.screens.reader.ReaderIllustrationProbe
 import com.enve.app.ui.screens.reader.ReaderIllustrationViewer
+import com.enve.app.ui.screens.reader.ReaderPageCurl
+import com.enve.app.ui.screens.reader.ReaderPageCurlPolicy
+import com.enve.app.ui.screens.reader.ReaderPageCurlRunner
+import com.enve.app.ui.screens.reader.windowBounds
 import com.enve.app.ui.screens.reader.ReaderPinchTextScale
 import com.enve.app.ui.screens.reader.ReaderPinchTextScaleIndicator
 import com.enve.app.ui.screens.reader.ReaderSelectionHandleFix
@@ -130,34 +136,10 @@ import org.readium.r2.shared.util.data.CompositeContainer
 import org.readium.r2.shared.util.getOrElse
 import org.readium.r2.shared.util.mediatype.MediaType
 import java.io.File
-import java.io.FileOutputStream
-import java.io.RandomAccessFile
-import java.security.MessageDigest
 import java.util.concurrent.TimeUnit
 import java.util.Locale
 import java.util.zip.ZipFile
 import kotlin.math.roundToLong
-
-internal data class OpenProgressResolution(
-    val locatorJson: String?,
-    val progress: Float,
-    val mayUseCachedAudioPosition: Boolean,
-)
-
-internal data class OpenProgressPlan(
-    val resolution: OpenProgressResolution,
-    val remote: OpenRemoteProgress,
-    val localUpdatedAt: Long = 0L,
-)
-
-internal fun sharedReadingOpenPlan(cached: CachedReaderProgress?, intentUpdatedAt: Long): OpenProgressPlan? {
-    if (cached == null || cached.updatedAt <= 0L || cached.updatedAt < intentUpdatedAt || !SharedReadingLocation.isSharedPosition(cached.locator)) return null
-    return OpenProgressPlan(
-        resolution = OpenProgressResolution(cached.locator, cached.progress, mayUseCachedAudioPosition = false),
-        remote = OpenRemoteProgress(snapshot = null, authority = OpenProgressAuthority.LOCAL),
-        localUpdatedAt = cached.updatedAt,
-    )
-}
 
 private sealed interface RemoteProgressOutcome {
     data class Resolved(val plan: OpenProgressPlan) : RemoteProgressOutcome
@@ -168,48 +150,6 @@ private sealed interface RemoteProgressOutcome {
         val localProgress: Float,
     ) : RemoteProgressOutcome
 }
-
-internal fun openProgressResolutionFor(
-    authority: OpenProgressAuthority,
-    localLocatorJson: String?,
-    localProgress: Float,
-    remoteLocatorJson: String?,
-    remoteProgress: Float,
-): OpenProgressResolution = when (authority) {
-    OpenProgressAuthority.REMOTE ->
-        OpenProgressResolution(remoteLocatorJson, remoteProgress, mayUseCachedAudioPosition = false)
-    OpenProgressAuthority.AUTOMATIC, OpenProgressAuthority.LOCAL ->
-        OpenProgressResolution(localLocatorJson, localProgress, mayUseCachedAudioPosition = !SharedReadingLocation.isSharedPosition(localLocatorJson))
-}
-
-internal suspend fun awaitWithinActiveBudget(
-    budgetMs: Long,
-    pausedMs: () -> Long,
-    await: suspend (Long) -> Boolean,
-): Boolean {
-    var remaining = budgetMs
-    var credited = 0L
-    while (true) {
-        if (await(remaining)) return true
-        val paused = pausedMs()
-        val uncredited = paused - credited
-        if (uncredited <= 0L) return false
-        credited = paused
-        remaining = uncredited
-    }
-}
-
-internal fun selectAudioResumeSeconds(
-    locatorAudioSeconds: Long?,
-    cachedAudioSeconds: Long?,
-    mayUseCachedAudioPosition: Boolean,
-): Long? = locatorAudioSeconds
-    ?: cachedAudioSeconds?.takeIf { mayUseCachedAudioPosition && it > 0L }
-
-internal fun shouldUseReaderNetwork(
-    hasOfflineSource: Boolean,
-    networkAvailable: Boolean,
-): Boolean = networkAvailable && !hasOfflineSource
 
 @AndroidEntryPoint
 @OptIn(FlowPreview::class, ExperimentalReadiumApi::class)
@@ -283,6 +223,12 @@ class EbookReaderActivity : FragmentActivity() {
     private var ttsEngine: TextToSpeech? = null
 
     private var selectionCallback: ReaderSelectionCallback? = null
+    private val pageCurl by lazy {
+        ReaderPageCurl(this, lifecycleScope, host = { epubContainer }, viewport = { epubContainer.windowBounds() })
+    }
+    private val pageTurnStore get() = profileBinding.runtime.component.readerPageTurnStore()
+    private var pageTurnStyle by mutableStateOf(ReaderPageTurnStyle.STANDARD)
+    private var reduceMotion = false
     private var edgeBrightnessGesture = false
     private var edgeBrightnessConsumed = false
     private var edgeBrightnessLevel = 1f
@@ -594,7 +540,7 @@ class EbookReaderActivity : FragmentActivity() {
         val generation = vm.readiumUserNavigationGeneration
         val anchor = vm.readiumReadingAnchor()
         kotlinx.coroutines.currentCoroutineContext().ensureActive()
-        if (!isCurrent()) return
+        if (!isCurrent() || generation != vm.readiumUserNavigationGeneration) return
         val layout = vm.beginReadiumLayout()
         try {
             repeat(WIDE_CONTENT_FIT_ATTEMPTS) {
@@ -647,12 +593,49 @@ class EbookReaderActivity : FragmentActivity() {
         return super.dispatchKeyEvent(event)
     }
 
-    private fun turnPageForward() {
-        vm.pageForward()
+    private fun turnPageForward() = turnPage(forward = true)
+
+    private fun turnPageBackward() = turnPage(forward = false)
+
+    private fun turnPage(forward: Boolean) {
+        val state = vm.state.value
+        pageCurl.turn(
+            forward = forward,
+            curl = (readiumNavigator != null || foliateEngine != null) && ReaderPageCurlPolicy.shouldCurl(
+                style = pageTurnStyle,
+                animatedPageTurns = state.prefs.animatedPageTurns,
+                scrollMode = state.prefs.scroll || state.autoScrollActive,
+                reduceMotion = reduceMotion,
+                animatorsEnabled = android.animation.ValueAnimator.areAnimatorsEnabled(),
+                einkActive = themeViewModel.themeState.value.einkProfile.active,
+            ),
+            awaitTurn = ::pageTurnSignal,
+            perform = { if (forward) vm.pageForward() else vm.pageBackward() },
+        )
     }
 
-    private fun turnPageBackward() {
-        vm.pageBackward()
+    private fun pageTurnSignal(): suspend () -> Unit {
+        foliateEngine?.let { engine ->
+            val before = engine.currentLocator
+            return {
+                while (engine.currentLocator == before) delay(FOLIATE_TURN_POLL_MS)
+                delay(ReaderPageCurlRunner.PAINT_SETTLE_MS)
+            }
+        }
+        val locators = readiumNavigator?.currentLocator ?: return { kotlinx.coroutines.awaitCancellation() }
+        val before = locators.value
+        return {
+            var latest = locators.first { it != before }
+            while (true) {
+                latest = withTimeoutOrNull(READIUM_TURN_QUIET_MS) { locators.first { it != latest } } ?: break
+            }
+            delay(ReaderPageCurlRunner.PAINT_SETTLE_MS)
+        }
+    }
+
+    private fun savePageTurnStyle(style: ReaderPageTurnStyle) {
+        pageTurnStyle = style
+        profileBinding.runtime.component.resources().scope.launch { pageTurnStore.save(style) }
     }
 
     private fun refreshEinkOnChapterBoundary() {
@@ -752,13 +735,13 @@ class EbookReaderActivity : FragmentActivity() {
         private const val READIUM_POSITION_STEADY_MS = 350L
         private const val READER_REVEAL_MS = 220L
         private const val AUDIO_SEEDED_PROGRESS_TOLERANCE = 0.005f
-        private const val ZIP_END_RECORD_BYTES = 22L
-        private const val MAX_ZIP_END_RECORD_SEARCH_BYTES = 65_557L
         private const val LINK_TAP_GRACE_MS = 700L
         private const val ILLUSTRATION_PROBE_TIMEOUT_MS = 400L
         private const val WIDE_CONTENT_FIT_DEBOUNCE_MS = 150L
         private const val WIDE_CONTENT_FIT_ATTEMPTS = 3
         private const val WIDE_CONTENT_FIT_RETRY_MS = 250L
+        private const val FOLIATE_TURN_POLL_MS = 16L
+        private const val READIUM_TURN_QUIET_MS = 120L
 
         fun createIntent(
             context: Context,
@@ -854,6 +837,8 @@ class EbookReaderActivity : FragmentActivity() {
             )
 
         vm.init(bookId, bookSource, connectionId, bookTitle, bookAuthor)
+        lifecycleScope.launch { pageTurnStore.style.collect { pageTurnStyle = it } }
+        lifecycleScope.launch { hearthPreferences.reduceMotion.collect { reduceMotion = it } }
 
         initTts()
 
@@ -955,6 +940,8 @@ class EbookReaderActivity : FragmentActivity() {
                     readNextPosition = readNextPosition,
                     onReadNext = onReadNext,
                     restReminder = restReminder,
+                    pageTurnStyle = pageTurnStyle,
+                    onPageTurnStyleChange = ::savePageTurnStyle,
                 )
                 pinchTextScalePreview?.let { preview ->
                     ReaderPinchTextScaleIndicator(preview, chromePalette, themeState.einkProfile.active)
@@ -1042,7 +1029,7 @@ class EbookReaderActivity : FragmentActivity() {
                         ?.takeIf { ReaderCachedSource.matches(it, checkpoint.publicationSha256) }
                 }
         }
-        val hasOfflineSource = cachedSource != null || comicOfflineStorage.getDownloadedFile(bookId)
+        val hasOfflineSource = cachedSource != null || comicOfflineStorage.getDownloadedFile(offlineDownloadKey(bookSource, bookConnectionId, bookId))
             ?.let { it.exists() && it.length() > 0L } == true
         val networkAvailable = hasNetworkConnection()
         val useReaderNetwork = shouldUseReaderNetwork(
@@ -1137,7 +1124,7 @@ class EbookReaderActivity : FragmentActivity() {
             syncCoordinator.registerBook(syncBook)
             if (networkAvailable) lifecycleScope.launch {
                 runCatching { syncCoordinator.pullAnnotations(syncBook) }
-                syncCoordinator.flushAnnotations(syncBook.id)
+                syncCoordinator.flushAnnotations(syncBook)
             }
             val openProgress = resolveOpenProgress(
                 locatorJson = locatorJson,
@@ -2149,7 +2136,7 @@ class EbookReaderActivity : FragmentActivity() {
         resource: ProviderEbookResource? = null,
     ): File {
 
-        val offlineFile = comicOfflineStorage.getDownloadedFile(bookId)
+        val offlineFile = comicOfflineStorage.getDownloadedFile(offlineDownloadKey(bookSource, bookConnectionId, bookId))
         if (offlineFile != null && offlineFile.exists() && offlineFile.length() > 0) {
             setStatus("Loading offline ${format.displayName}\u2026")
             validateDownloadedEbookSource(offlineFile, format)
@@ -2160,19 +2147,8 @@ class EbookReaderActivity : FragmentActivity() {
         val dir = (if (format.isEpubPackage || format == EbookSourceFormat.AZW3)
             ReaderCachedSource.directory(cacheRoot, bookSource, bookConnectionId)
         else File(cacheRoot, "ebooks")).also { it.mkdirs() }
-        val safeName = bookId.replace(Regex("[^a-zA-Z0-9_-]"), "_")
-        val fileDiscriminator = resource?.providerFileId
-            ?.replace(Regex("[^a-zA-Z0-9_-]"), "_")
-            ?.takeIf { it.isNotBlank() }
-            ?.let { ".$it" }
-            .orEmpty()
-        val cachedName = if (format == EbookSourceFormat.READALOUD) {
-            "$safeName.readaloud.${format.extension}"
-        } else {
-            "$safeName$fileDiscriminator.${format.extension}"
-        }
         val cached = ReaderCachedSource.find(dir, bookId, format, resource?.providerFileId)
-            ?: File(dir, cachedName)
+            ?: File(dir, ReaderCachedSource.filename(bookId, format, resource?.providerFileId))
 
         if (cached.exists() && cached.length() > 0) {
             if (isZipBackedEbook(format) && !looksLikeZip(cached)) {
@@ -2194,18 +2170,11 @@ class EbookReaderActivity : FragmentActivity() {
 
         if (downloadUrl.startsWith("content://") || downloadUrl.startsWith("file://")) {
             return withContext(Dispatchers.IO) {
-                val tmp = File(dir, "$safeName.tmp")
-                val input = contentResolver.openInputStream(android.net.Uri.parse(downloadUrl))
-                    ?: throw Exception("Couldn't open the local file. Was it moved or deleted?")
-                input.use { inp -> FileOutputStream(tmp).use { out -> inp.copyTo(out) } }
-                if (tmp.length() == 0L) { tmp.delete(); throw Exception("File is empty") }
-                validateDownloadedEbookSource(tmp, format)
-                if (cached.exists()) cached.delete()
-                if (!tmp.renameTo(cached)) {
-                    tmp.copyTo(cached, overwrite = true)
-                    tmp.delete()
+                cached.writePublication(format) { output ->
+                    val input = contentResolver.openInputStream(android.net.Uri.parse(downloadUrl))
+                        ?: throw Exception("Couldn't open the local file. Was it moved or deleted?")
+                    input.use { it.copyTo(output) }
                 }
-                cached
             }
         }
 
@@ -2215,59 +2184,41 @@ class EbookReaderActivity : FragmentActivity() {
                 .readTimeout(5, TimeUnit.MINUTES)
                 .writeTimeout(1, TimeUnit.MINUTES)
                 .build()
-            val resp = downloadClient.newCall(Request.Builder().url(downloadUrl).build()).execute()
-            if (!resp.isSuccessful) throw Exception("HTTP ${resp.code}")
-            val body = resp.body ?: throw Exception("Empty body")
-            val len  = body.contentLength()
-            val tmp  = File(dir, "$safeName.tmp")
-            var total = 0L
-            FileOutputStream(tmp).use { out ->
-                body.byteStream().use { inp ->
-                    val buf = ByteArray(16_384); var n: Int
-                    var lastUpdateTime = 0L
-                    while (inp.read(buf).also { n = it } != -1) {
-                        out.write(buf, 0, n); total += n
-                        if (len > 0) {
-                            val now = System.currentTimeMillis()
-                            if (now - lastUpdateTime > 200L) {
-                                lastUpdateTime = now
-                                val pct = (total * 100 / len).toInt()
-                                withContext(Dispatchers.Main) {
-                                    loadingBar.progress = pct
-                                    loadingPct.text = getString(R.string.loading_percent, pct)
-                                }
+            downloadClient.newCall(Request.Builder().url(downloadUrl).build()).execute().use { response ->
+                if (!response.isSuccessful) throw Exception("HTTP ${response.code}")
+                val body = response.body ?: throw Exception("Empty body")
+                val expected = body.contentLength()
+                cached.writePublication(format) { output ->
+                    val input = body.byteStream()
+                    val buffer = ByteArray(16_384)
+                    var total = 0L
+                    var lastUpdate = 0L
+                    while (true) {
+                        val count = input.read(buffer)
+                        if (count < 0) break
+                        output.write(buffer, 0, count)
+                        total += count
+                        val now = android.os.SystemClock.elapsedRealtime()
+                        if (expected > 0 && now - lastUpdate > 200L) {
+                            lastUpdate = now
+                            val percent = (total * 100 / expected).toInt()
+                            withContext(Dispatchers.Main) {
+                                loadingBar.progress = percent
+                                loadingPct.text = getString(R.string.loading_percent, percent)
                             }
                         }
                     }
+                    if (expected > 0 && total != expected) {
+                        throw Exception("The download stopped early — got ${total / 1024} KB of ${expected / 1024} KB.")
+                    }
                 }
+                if (bookSource == BookSource.STORYTELLER && format == EbookSourceFormat.READALOUD) {
+                    StorytellerReadaloudCache.recordRevision(cached, response.header("ETag"), response.header("Last-Modified"))
+                }
+                cached
             }
-            if (len > 0 && total != len) {
-                tmp.delete()
-                throw Exception("The download stopped early — got ${total / 1024} KB of ${len / 1024} KB.")
-            }
-            if (tmp.length() == 0L) { tmp.delete(); throw Exception("File is empty") }
-            validateDownloadedEbookSource(tmp, format)
-            if (cached.exists()) cached.delete()
-            if (!tmp.renameTo(cached)) {
-                tmp.copyTo(cached, overwrite = true)
-                tmp.delete()
-            }
-            if (bookSource == BookSource.STORYTELLER && format == EbookSourceFormat.READALOUD) {
-                StorytellerReadaloudCache.recordRevision(cached, resp.header("ETag"), resp.header("Last-Modified"))
-            }
-            cached
         }
     }
-
-    private fun validateDownloadedEbookSource(file: File, format: EbookSourceFormat) {
-        if (!isZipBackedEbook(format)) return
-        if (looksLikeZip(file)) return
-        file.delete()
-        throw Exception("The server did not return a valid ${format.displayName} file.")
-    }
-
-    private fun isZipBackedEbook(format: EbookSourceFormat): Boolean =
-        format.isEpubPackage || format == EbookSourceFormat.READALOUD
 
     @Suppress("DEPRECATION")
     private fun hasNetworkConnection(): Boolean {
@@ -2283,63 +2234,10 @@ class EbookReaderActivity : FragmentActivity() {
         }
     }
 
-    private fun looksLikeZip(file: File): Boolean {
-        if (!file.exists() || file.length() < ZIP_END_RECORD_BYTES) return false
-        return runCatching {
-            RandomAccessFile(file, "r").use { archive ->
-                val header = ByteArray(2)
-                archive.readFully(header)
-                if (header[0] != 'P'.code.toByte() || header[1] != 'K'.code.toByte()) return@use false
-                val tailLength = minOf(archive.length(), MAX_ZIP_END_RECORD_SEARCH_BYTES).toInt()
-                val tail = ByteArray(tailLength)
-                archive.seek(archive.length() - tailLength)
-                archive.readFully(tail)
-                (tail.size - 4 downTo 0).any { index ->
-                    tail[index] == 'P'.code.toByte() && tail[index + 1] == 'K'.code.toByte() &&
-                        tail[index + 2] == 0x05.toByte() && tail[index + 3] == 0x06.toByte()
-                }
-            }
-        }.getOrDefault(false)
-    }
-
     private fun discardUnreadableEbookCache(vararg files: File) {
         val cacheRoot = profileBinding.runtime.component.storageLocations().cacheDirectory.absolutePath
         files.filter { it.absolutePath.startsWith(cacheRoot) }.forEach { it.delete() }
     }
-
-    private fun File.sha256(): String {
-        val digest = MessageDigest.getInstance("SHA-256")
-        inputStream().buffered().use { input ->
-            val buffer = ByteArray(DEFAULT_BUFFER_SIZE)
-            while (true) {
-                val count = input.read(buffer)
-                if (count < 0) break
-                digest.update(buffer, 0, count)
-            }
-        }
-        return digest.digest().joinToString("") { byte -> "%02x".format(byte) }
-    }
-
-    private fun isReflowableEpub(file: File): Boolean = runCatching {
-        ZipFile(file).use { zip ->
-            val opfEntry = zip.entries().asSequence()
-                .filterNot { it.isDirectory }
-                .filter { it.name.endsWith(".opf", ignoreCase = true) }
-                .minByOrNull { it.name.length }
-                ?: return@use false
-            val packageDocument = zip.getInputStream(opfEntry)
-                .bufferedReader()
-                .use { it.readText() }
-                .lowercase(Locale.ROOT)
-            val fixedLayoutMarkers = listOf(
-                "pre-paginated",
-                "fixed-layout",
-                "rendition:layout-pre-paginated",
-                "original-resolution",
-            )
-            fixedLayoutMarkers.none(packageDocument::contains)
-        }
-    }.getOrDefault(false)
 
     private fun setStatus(msg: String) {
         lifecycleScope.launch(Dispatchers.Main) {
@@ -2358,6 +2256,7 @@ class EbookReaderActivity : FragmentActivity() {
 
     override fun onPause() {
         super.onPause()
+        pageCurl.cancel()
         if (!::profileBinding.isInitialized || profileBinding.retired) return
         vm.flushPreferences()
         vm.flushProgress()
@@ -2375,6 +2274,7 @@ class EbookReaderActivity : FragmentActivity() {
     }
 
     override fun onDestroy() {
+        pageCurl.close()
         if (::profileBinding.isInitialized && !profileBinding.retired) vm.setTtsEngine(null)
         foliateEngine?.close()
         foliateEngine = null
@@ -2455,61 +2355,6 @@ private fun ReadiumError.describe(): String =
         .ifBlank { "the file could not be decoded" }
 
 private const val MAX_READIUM_ERROR_CAUSES = 4
-
-private class ReaderSelectionCallback(
-    private val onSelectionStarted: () -> Unit,
-    private val onShowPopup: () -> Unit,
-    private val onClearSelection: () -> Unit,
-) : android.view.ActionMode.Callback {
-
-    @Volatile private var active = false
-    val isActive: Boolean get() = active
-    private val handler = android.os.Handler(android.os.Looper.getMainLooper())
-    private val showPopup = Runnable { if (active) onShowPopup() }
-    private val clearSelection = Runnable {
-        active = false
-        onClearSelection()
-    }
-
-    fun notifyFingerUp() {
-        if (!active) return
-        handler.removeCallbacksAndMessages(null)
-        handler.postDelayed(showPopup, POPUP_DELAY_MS)
-    }
-
-    override fun onCreateActionMode(mode: android.view.ActionMode, menu: android.view.Menu): Boolean {
-        handler.removeCallbacksAndMessages(null)
-        active = true
-        onSelectionStarted()
-        menu.clear()
-        handler.postDelayed(showPopup, POPUP_DELAY_MS)
-        return true
-    }
-
-    override fun onPrepareActionMode(mode: android.view.ActionMode, menu: android.view.Menu): Boolean {
-        menu.clear()
-        if (active) {
-            handler.removeCallbacks(showPopup)
-            handler.postDelayed(showPopup, POPUP_DELAY_MS)
-        }
-        return true
-    }
-
-    override fun onDestroyActionMode(mode: android.view.ActionMode) {
-        handler.removeCallbacksAndMessages(null)
-        handler.postDelayed(clearSelection, ACTION_MODE_REBUILD_GRACE_MS)
-    }
-
-    override fun onActionItemClicked(mode: android.view.ActionMode, item: android.view.MenuItem): Boolean {
-        mode.finish()
-        return true
-    }
-
-    private companion object {
-        const val POPUP_DELAY_MS = 120L
-        const val ACTION_MODE_REBUILD_GRACE_MS = 150L
-    }
-}
 
 internal fun locatorResourceInReadingOrder(href: String, readingOrder: List<String>): Boolean {
     if (href.isBlank()) return false

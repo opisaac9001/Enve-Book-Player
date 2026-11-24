@@ -49,7 +49,7 @@ class ProfileResources private constructor(
                 stores.hearth.data.first()
                 val vault = CredentialVault.forProfile(appContext, profileId)
                 val preferences = PreferencesManager(stores.enve, vault, scope)
-                val connections = ConnectionRegistry(stores.enve)
+                val connections = ConnectionRegistry(stores.enve, vault)
                 database = if (profileId == DEFAULT_ADULT_PROFILE_ID) ReaderDatabase.getInstance(appContext)
                     else ReaderDatabase.open(appContext, locations)
                 ProfileResources(

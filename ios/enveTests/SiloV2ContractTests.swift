@@ -76,6 +76,9 @@ nonisolated private final class SiloV2Fixture: URLProtocol, @unchecked Sendable 
         if let object = payload as? [String: Any], let etag = object["etag"] as? String {
             headers["ETag"] = etag
         }
+        if let object = payload as? [String: Any], let retryAfter = object["retry_after"] as? Int {
+            headers["Retry-After"] = String(retryAfter)
+        }
         let response = HTTPURLResponse(url: url, statusCode: status, httpVersion: "HTTP/1.1", headerFields: headers)!
         client?.urlProtocol(self, didReceive: response, cacheStoragePolicy: .notAllowed)
         if let data = payload as? Data {
@@ -159,13 +162,206 @@ struct SiloV2ContractTests {
         }
     }
 
+    @Test func remoteCardsRetainAvailableMetadataAndServerProgressWithoutDetails() async throws {
+        SiloV2Fixture.install { request, _ in
+            guard request.path == "/api/v2/catalog" else { return (500, nil) }
+            return (200, page([
+                card("ebook:card", "ebook").merging([
+                    "title": "Summary", "added_at": "2026-11-01T12:00:00.000Z",
+                    "user_state": ["played": true, "is_favorite": false, "in_watchlist": false],
+                    "sort_metrics": ["author": "Author", "narrator": "Narrator", "series_name": "Series", "progress_ratio": 0.75],
+                ]) { $1 },
+            ], next: nil))
+        }
+        let harness = makeHarness()
+        defer { harness.cleanup() }
+        let result = try await harness.provider.fetchRemoteCatalogPage(libraryId: "3",
+            request: RemoteCatalogRequest(search: nil, mediaType: .ebook, sort: .title), cursor: nil, limit: 50)
+        let book = try #require(result.books.first)
+        #expect(book.author == "Author" && book.narrator == "Narrator" && book.series == "Series")
+        #expect(book.ebookProgress == 0.75 && book.isFinished)
+        #expect(book.addedAt == ISO8601DateFormatter().date(from: "2026-11-01T12:00:00Z"))
+        #expect(SiloV2Fixture.requests().count == 1)
+    }
+
+    @Test func aMalformedRemoteCardCannotMasqueradeAsAnEmptyCatalog() async throws {
+        SiloV2Fixture.install { _, _ in
+            (200, page([["content_id": "ebook:broken", "type": "ebook"]], next: nil))
+        }
+        let harness = makeHarness()
+        defer { harness.cleanup() }
+        await #expect(throws: (any Error).self) {
+            _ = try await harness.provider.fetchRemoteCatalogPage(libraryId: "3",
+                request: RemoteCatalogRequest(search: nil, mediaType: .ebook, sort: .title), cursor: nil, limit: 50)
+        }
+    }
+
+    nonisolated private static func queryRules(_ request: SiloV2Fixture.Recorded) -> [[String]] {
+        (request.body["groups"] as? [[String: Any]] ?? []).map { group in
+            (group["rules"] as? [[String: Any]] ?? []).map {
+                "\($0["field"] as? String ?? ""):\($0["op"] as? String ?? ""):\($0["value"] as? String ?? "")"
+            }
+        }
+    }
+
+    @Test func filteredCatalogPostsOrWithinGroupsAndAcrossGroupsWithoutDetails() async throws {
+        SiloV2Fixture.install { request, _ in
+            guard request.method == "POST", request.path == "/api/v2/catalog/query" else { return (500, nil) }
+            return (200, page([
+                card("audiobook:fr", "audiobook").merging(["original_language": "fr", "genres": ["Fantasy"]]) { $1 },
+            ], next: "q2"))
+        }
+        let harness = makeHarness()
+        defer { harness.cleanup() }
+        let result = try await harness.provider.fetchRemoteCatalogPage(
+            libraryId: "3",
+            request: RemoteCatalogRequest(search: "dune", mediaType: .audiobook, sort: .recentlyAdded,
+                                          genres: ["Sci-Fi", "Fantasy"], languages: ["fr", "en"]),
+            cursor: "q1",
+            limit: 500
+        )
+        #expect(result.books.map(\.id) == ["audiobook:fr"])
+        #expect(result.books.first?.language == "fr")
+        #expect(result.nextCursor == "q2")
+
+        let requests = SiloV2Fixture.requests()
+        #expect(requests.count == 1)
+        let query = try #require(requests.first)
+        #expect(query.url.query == nil)
+        #expect(query.headers["X-Profile-Id"] == "p-main" && query.headers["Authorization"] == "Bearer access-1")
+        let body = query.body
+        #expect(body["source"] as? String == "query")
+        #expect(body["library_id"] as? String == "3")
+        #expect(body["type"] as? String == "audiobook")
+        #expect(body["q"] as? String == "dune")
+        #expect(body["sort"] as? String == "added_at" && body["order"] as? String == "desc")
+        #expect(body["limit"] as? Int == 100)
+        #expect(body["skip_total"] as? Bool == true)
+        #expect(body["cursor"] as? String == "q1")
+        #expect(body["match"] as? String == "all")
+        #expect((body["groups"] as? [[String: Any]])?.map { $0["match"] as? String } == ["any", "any"])
+        #expect(Self.queryRules(query) == [
+            ["genre:is:Fantasy", "genre:is:Sci-Fi"],
+            ["original_language:is:en", "original_language:is:fr"],
+        ])
+    }
+
+    @Test func singleGroupFilterIsStableAndUnfilteredBrowseStaysAGet() async throws {
+        SiloV2Fixture.install { request, _ in
+            switch (request.method, request.path) {
+            case ("POST", "/api/v2/catalog/query"), ("GET", "/api/v2/catalog"):
+                return (200, page([card("ebook:a", "ebook")], next: nil))
+            default:
+                return (500, nil)
+            }
+        }
+        let harness = makeHarness()
+        defer { harness.cleanup() }
+        var languages: Set<String> = []
+        for language in ["ja", "de", "pt-BR"] { languages.insert(language) }
+        for request in [
+            RemoteCatalogRequest(search: nil, mediaType: nil, sort: .title, languages: ["pt-BR", "ja", "de"]),
+            RemoteCatalogRequest(search: nil, mediaType: nil, sort: .title, languages: languages),
+            RemoteCatalogRequest(search: nil, mediaType: nil, sort: .title),
+        ] {
+            _ = try await harness.provider.fetchRemoteCatalogPage(libraryId: "3", request: request, cursor: nil, limit: 0)
+        }
+
+        let requests = SiloV2Fixture.requests()
+        #expect(requests.map(\.method) == ["POST", "POST", "GET"])
+        let posts = requests.prefix(2)
+        #expect(posts.allSatisfy {
+            $0.body["sort"] as? String == "title" && $0.body["order"] as? String == "asc"
+                && $0.body["limit"] as? Int == 1 && $0.body["type"] == nil && $0.body["q"] == nil
+                && $0.body["cursor"] == nil
+        })
+        #expect(posts.map(Self.queryRules) == Array(repeating: [[
+            "original_language:is:de", "original_language:is:ja", "original_language:is:pt-BR",
+        ]], count: 2))
+
+        let browse = requests[2]
+        #expect(browse.path == "/api/v2/catalog" && browse.body.isEmpty)
+        #expect(browse.query("sort") == ["title"] && browse.query("limit") == ["1"] && browse.query("skip_total") == ["true"])
+    }
+
+    @Test func filterOptionsSearchFacetValuesAfterCachingTheCapability() async throws {
+        SiloV2Fixture.install { request, _ in
+            switch request.path {
+            case "/api/v2/catalog/search/capabilities":
+                return (200, ["facet_value_search": true])
+            case "/api/v2/catalog/filters/search":
+                switch request.query("facet").first {
+                case "genre":
+                    return (200, ["values": [["value": "Fantasy", "count": 3], ["value": "Science Fiction", "count": 1]],
+                                  "values_has_more": false])
+                case "original_language":
+                    return (200, ["values": [["value": "en", "count": 4]], "values_has_more": true])
+                default:
+                    return (400, problem("invalid_facet", 400))
+                }
+            default:
+                return (404, problem("not_found", 404))
+            }
+        }
+        let harness = makeHarness()
+        defer { harness.cleanup() }
+        let options = try await harness.provider.fetchRemoteCatalogFilterOptions(libraryId: "3", mediaType: .ebook, search: "sci")
+        _ = try await harness.provider.fetchRemoteCatalogFilterOptions(libraryId: "3", mediaType: nil, search: "")
+
+        #expect(options.genres == ["Fantasy", "Science Fiction"])
+        #expect(options.languages == ["en"])
+        #expect(options.hasMore)
+        let requests = SiloV2Fixture.requests()
+        #expect(requests.filter { $0.path == "/api/v2/catalog/search/capabilities" }.count == 1)
+        #expect(!requests.contains { $0.path == "/api/v2/catalog/filters" })
+        let searches = requests.filter { $0.path == "/api/v2/catalog/filters/search" }
+        #expect(searches.count == 4)
+        #expect(Set(searches.prefix(2).compactMap { $0.query("facet").first }) == ["genre", "original_language"])
+        #expect(searches.prefix(2).allSatisfy {
+            $0.method == "GET" && $0.query("library_id") == ["3"] && $0.query("type") == ["ebook"]
+                && $0.query("q") == ["sci"] && $0.query("limit") == ["24"]
+        })
+        #expect(searches.suffix(2).allSatisfy { $0.query("type").isEmpty && $0.query("q").isEmpty })
+    }
+
+    @Test func filterOptionsRequireFacetValueSearchSupport() async throws {
+        SiloV2Fixture.install { request, _ in
+            guard request.path == "/api/v2/catalog/search/capabilities" else { return (500, nil) }
+            return (200, ["facet_value_search": false])
+        }
+        let harness = makeHarness()
+        defer { harness.cleanup() }
+        for _ in 0..<2 {
+            do {
+                _ = try await harness.provider.fetchRemoteCatalogFilterOptions(libraryId: "3", mediaType: nil, search: "")
+                Issue.record("An unsupported server returned filter options")
+            } catch {
+                #expect(error.localizedDescription.contains("Update"))
+            }
+        }
+        let requests = SiloV2Fixture.requests()
+        #expect(requests.map(\.path) == ["/api/v2/catalog/search/capabilities"])
+    }
+
+    @Test func detailMapsOriginalLanguageForOfflineFilters() async throws {
+        SiloV2Fixture.install { request, _ in
+            (200, detail(request.url.lastPathComponent, "ebook", container: "epub").merging(["original_language": "de"]) { $1 })
+        }
+        let harness = makeHarness()
+        defer { harness.cleanup() }
+        let book = try await harness.provider.fetchFullBookDetails(bookId: "ebook:de", libraryId: "3")
+        #expect(book.language == "de")
+        #expect(RemoteCatalogRequest(search: nil, mediaType: nil, sort: .title, languages: ["de"]).matchesAdvancedFilters(book))
+    }
+
     nonisolated private static func catalogResponse(_ request: SiloV2Fixture.Recorded) -> (status: Int, payload: Any?)? {
         switch request.path {
         case "/api/v2/catalog/items/audiobook:a": return (200, detail("audiobook:a", "audiobook", container: "m4b"))
         case "/api/v2/catalog/items/ebook:b": return (200, detail("ebook:b", "ebook", container: "epub"))
         case "/api/v2/catalog":
             guard request.query("source").isEmpty else { return nil }
-            let total: [String: Any] = ["total": 3, "total_exact": true, "window_cursor": "w"]
+            let skipTotal = request.query("skip_total") == ["true"]
+            let total: [String: Any] = ["total": skipTotal ? 0 : 3, "total_exact": !skipTotal, "window_cursor": "w"]
             switch request.query("cursor").first {
             case nil: return (200, page([card("audiobook:a", "audiobook")], next: "c1", extra: total))
             case "c1": return (200, page([], next: "c2", extra: total))
@@ -247,14 +443,16 @@ struct SiloV2ContractTests {
         #expect(batches.flatMap(\.books).map(\.id) == ["audiobook:a", "ebook:b"])
         #expect(batches.map(\.resumeToken) == ["c1", "c2", ""])
         #expect(batches.map(\.completesSnapshot) == [false, false, true])
+        #expect(batches.map(\.totalCount) == [3, 3, 3])
         #expect(batches.flatMap(\.books).first?.partKey == "120")
 
         let login = try #require(SiloV2Fixture.requests().first { $0.path == "/api/v2/auth/login" })
         #expect(login.body["username"] as? String == "reader")
         let catalog = SiloV2Fixture.requests().filter { $0.path == "/api/v2/catalog" }
         #expect(catalog.map { $0.query("cursor").first } == [nil, "c1", "c2"])
+        #expect(catalog.map { $0.query("skip_total").first } == [nil, "true", "true"])
         #expect(catalog.allSatisfy {
-            $0.query("sort") == ["title"] && $0.query("limit") == ["100"] && $0.query("library_id") == ["3"]
+            $0.query("sort") == ["title"] && $0.query("limit") == ["200"] && $0.query("library_id") == ["3"]
                 && $0.query("type").isEmpty && $0.query("offset").isEmpty
                 && $0.headers["X-Profile-Id"] == "p-main" && $0.headers["Authorization"] == "Bearer access-1"
         })
@@ -278,6 +476,186 @@ struct SiloV2ContractTests {
         )
         #expect(!rejected.resumed)
         #expect(try await rejected.next()?.books.map(\.id) == ["audiobook:a"])
+    }
+
+    @Test func posterURLsPreserveSignedQueriesAndEscapedPaths() async throws {
+        let posters = [
+            ("/api/v2/artwork/local/books/a%20b/w500.rev.webp?exp=123&sig=a%2Bb%2Fc",
+             "https://silo.invalid/api/v2/artwork/local/books/a%20b/w500.rev.webp?exp=123&sig=a%2Bb%2Fc"),
+            ("artwork/cover.webp?exp=123&sig=abc", "https://silo.invalid/artwork/cover.webp?exp=123&sig=abc"),
+            ("https://cdn.invalid/cover.webp?signature=a%2Fb", "https://cdn.invalid/cover.webp?signature=a%2Fb"),
+        ]
+        for (poster, expected) in posters {
+            SiloV2Fixture.install { _, _ in
+                var response = detail("ebook:cover", "ebook", container: "epub")
+                response["poster_url"] = poster
+                return (200, response)
+            }
+            let harness = makeHarness()
+            defer { harness.cleanup() }
+            let book = try await harness.provider.fetchFullBookDetails(bookId: "ebook:cover", libraryId: "1")
+            #expect(book.coverURL?.absoluteString == expected)
+        }
+    }
+
+    @Test func catalogImportEvictsOldDetailsAndKeepsTheLatestPageCached() async throws {
+        SiloV2Fixture.install { request, _ in
+            if request.path == "/api/v2/catalog" {
+                let start = Int(request.query("cursor").first ?? "0") ?? 0
+                let end = min(start + (Int(request.query("limit").first ?? "0") ?? 0), 300)
+                let items = (start..<end).map { card("audiobook:\($0)", "audiobook") }
+                return (200, page(items, next: end < 300 ? String(end) : nil,
+                                  extra: ["total": 300, "total_exact": true, "window_cursor": "w"]))
+            }
+            if request.path.hasPrefix("/api/v2/catalog/items/") {
+                return (200, detail(request.url.lastPathComponent, "audiobook", container: "m4b"))
+            }
+            return (404, nil)
+        }
+        let harness = makeHarness()
+        defer { harness.cleanup() }
+        let source = try await harness.provider.makeCatalogBatchSource(
+            libraryId: "3", resumeAfter: nil, expectedSnapshotIdentifier: nil
+        )
+        var imported = 0
+        while let batch = try await source.next() { imported += batch.books.count }
+        #expect(imported == 300)
+
+        for index in 200..<300 {
+            let book = try await harness.provider.fetchFullBookDetails(bookId: "audiobook:\(index)", libraryId: "3")
+            #expect(book.id == "audiobook:\(index)")
+        }
+        #expect(SiloV2Fixture.requests().filter { $0.path.hasPrefix("/api/v2/catalog/items/") }.count == 300)
+
+        for _ in 0..<2 {
+            let book = try await harness.provider.fetchFullBookDetails(bookId: "audiobook:0", libraryId: "3")
+            #expect(book.id == "audiobook:0")
+        }
+        #expect(SiloV2Fixture.requests().filter { $0.path == "/api/v2/catalog/items/audiobook:0" }.count == 2)
+    }
+
+    @Test func concurrentCatalogMappingPreservesOrderMetadataAndRejectedItems() async throws {
+        SiloV2Fixture.install { request, _ in
+            if request.path == "/api/v2/catalog" {
+                return (200, page((0..<24).map { card("ebook:\($0)", "ebook") }, next: nil,
+                                  extra: ["total": 24, "total_exact": true]))
+            }
+            let id = request.url.lastPathComponent
+            if id == "ebook:7" { return (200, ["type": "ebook"]) }
+            var response = detail(id, "ebook", container: "epub")
+            response["ebook"] = ["authors": [["name": "Author \(id)"]]]
+            response["series_title"] = "Complete Metadata"
+            response["poster_url"] = "/cover/\(id).webp?exp=123&sig=abc"
+            return (200, response)
+        }
+        let harness = makeHarness()
+        defer { harness.cleanup() }
+        let source = try await harness.provider.makeCatalogBatchSource(
+            libraryId: "1", resumeAfter: nil, expectedSnapshotIdentifier: nil
+        )
+        let batch = try #require(try await source.next())
+        #expect(batch.books.map(\.id) == (0..<24).filter { $0 != 7 }.map { "ebook:\($0)" })
+        #expect(!batch.completesSnapshot)
+        #expect(batch.books.allSatisfy {
+            $0.author == "Author \($0.id)" && $0.series == "Complete Metadata"
+                && $0.coverURL?.query == "exp=123&sig=abc" && $0.partKey == "120"
+        })
+        #expect(SiloV2Fixture.requests().filter { $0.path.hasPrefix("/api/v2/catalog/items/") }.count == 24)
+    }
+
+    @Test func catalogDetailFailureDoesNotCommitAPartialPage() async throws {
+        SiloV2Fixture.install { request, _ in
+            if request.path == "/api/v2/catalog" {
+                return (200, page((0..<24).map { card("ebook:\($0)", "ebook") }, next: nil,
+                                  extra: ["total": 24, "total_exact": true]))
+            }
+            if request.url.lastPathComponent == "ebook:7" { return (403, problem("forbidden", 403)) }
+            return (200, detail(request.url.lastPathComponent, "ebook", container: "epub"))
+        }
+        let harness = makeHarness()
+        defer { harness.cleanup() }
+        await #expect(throws: (any Error).self) {
+            _ = try await harness.provider.makeCatalogBatchSource(
+                libraryId: "1", resumeAfter: nil, expectedSnapshotIdentifier: nil
+            )
+        }
+    }
+
+    @Test func rateLimitedReadWaitsAndRetriesTheSameRequest() async throws {
+        SiloV2Fixture.install { request, history in
+            if history.isEmpty { return (429, ["retry_after": 1]) }
+            return (200, detail(request.url.lastPathComponent, "ebook", container: "epub"))
+        }
+        let harness = makeHarness()
+        defer { harness.cleanup() }
+        let start = ContinuousClock.now
+        let book = try await harness.provider.fetchFullBookDetails(bookId: "ebook:a", libraryId: "1")
+        #expect(book.id == "ebook:a")
+        #expect(start.duration(to: .now) >= .seconds(1))
+        let requests = SiloV2Fixture.requests()
+        #expect(requests.count == 2)
+        #expect(requests[0].url == requests[1].url)
+        #expect(requests[0].headers == requests[1].headers)
+    }
+
+    @Test func persistentRateLimitStopsAfterFiveRetries() async throws {
+        SiloV2Fixture.install { _, _ in (429, ["retry_after": 1]) }
+        let harness = makeHarness()
+        defer { harness.cleanup() }
+        await #expect(throws: (any Error).self) {
+            _ = try await harness.provider.fetchFullBookDetails(bookId: "ebook:a", libraryId: "1")
+        }
+        #expect(SiloV2Fixture.requests().count == 6)
+    }
+
+    @Test func cancellingRateLimitedReadDoesNotSendAnotherRequest() async throws {
+        SiloV2Fixture.install { _, _ in (429, ["retry_after": 30]) }
+        let harness = makeHarness()
+        defer { harness.cleanup() }
+        let task = Task {
+            try await harness.provider.fetchFullBookDetails(bookId: "ebook:a", libraryId: "1")
+        }
+        while SiloV2Fixture.requests().isEmpty { await Task.yield() }
+        task.cancel()
+        do {
+            _ = try await task.value
+            Issue.record("A cancelled read unexpectedly completed")
+        } catch {
+            #expect(error is CancellationError || (error as? URLError)?.code == .cancelled)
+        }
+        #expect(SiloV2Fixture.requests().count == 1)
+    }
+
+    @Test func rateLimitedWriteIsNeverReplayed() async throws {
+        SiloV2Fixture.install { _, _ in (429, ["retry_after": 1]) }
+        let harness = makeHarness()
+        defer { harness.cleanup() }
+        var request = URLRequest(url: URL(string: "https://silo.invalid/api/v2/playback/sessions")!)
+        request.httpMethod = "POST"
+        await #expect(throws: (any Error).self) {
+            let _: [String: String] = try await harness.provider.send(request, as: [String: String].self)
+        }
+        #expect(SiloV2Fixture.requests().count == 1)
+    }
+
+    @Test func detailCacheEvictsLeastRecentlyUsedBook() async throws {
+        SiloV2Fixture.install { request, _ in
+            (200, detail(request.url.lastPathComponent, "audiobook", container: "m4b"))
+        }
+        let harness = makeHarness()
+        defer { harness.cleanup() }
+        let provider = harness.provider
+        for index in 0..<100 {
+            _ = try await provider.fetchFullBookDetails(bookId: "audiobook:\(index)", libraryId: "3")
+        }
+        _ = try await provider.fetchFullBookDetails(bookId: "audiobook:0", libraryId: "3")
+        _ = try await provider.fetchFullBookDetails(bookId: "audiobook:100", libraryId: "3")
+        _ = try await provider.fetchFullBookDetails(bookId: "audiobook:0", libraryId: "3")
+        _ = try await provider.fetchFullBookDetails(bookId: "audiobook:1", libraryId: "3")
+
+        let requests = SiloV2Fixture.requests()
+        #expect(requests.filter { $0.path == "/api/v2/catalog/items/audiobook:0" }.count == 1)
+        #expect(requests.filter { $0.path == "/api/v2/catalog/items/audiobook:1" }.count == 2)
     }
 
     @Test func collectionsTraverseCursorPagesWithOpaqueIDs() async throws {

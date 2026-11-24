@@ -527,7 +527,7 @@ final class WebDAVProvider: WholeSnapshotCatalogProvider, PlaybackSessionProvide
         return try ebooks.cacheRemoteEbook(
             tempURL: tempURL,
             preferredFilename: filename,
-            bookIdentifier: book.id
+            bookIdentifier: book.ebookStorageID
         )
     }
 

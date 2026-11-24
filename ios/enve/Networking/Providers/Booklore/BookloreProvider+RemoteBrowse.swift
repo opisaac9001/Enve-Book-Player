@@ -26,7 +26,7 @@ extension BookloreProvider {
         let lastPage = (offset + limit - 1) / size
         let pageNumbers = Array(firstPage...lastPage)
 
-        var pages: [BooklorePage<BookloreBookSummary>] = []
+        var pages: [BooklorePage<BookloreLegacyBook>] = []
         var chunkStart = 0
         while chunkStart < pageNumbers.count {
             let chunkEnd = min(chunkStart + pageConcurrency, pageNumbers.count)
@@ -55,7 +55,7 @@ extension BookloreProvider {
             var reachedEnd = false
             for page in chunk {
                 guard let data = dataByPage[page] else { throw ProviderError.invalidResponse }
-                let decoded = try JSONDecoder().decode(BooklorePage<BookloreBookSummary>.self, from: data)
+                let decoded = try decodeLibraryPage(data, libraryId: libraryId)
                 pages.append(decoded)
                 if !decoded.hasNext {
                     reachedEnd = true
@@ -81,7 +81,7 @@ extension BookloreProvider {
         let page = try await fetchRemoteBrowsePage(
             libraryId: libraryId,
             page: 0,
-            size: min(limit, pageSize),
+            size: min(limit, catalogPageSize),
             sort: .addedOn,
             descending: true,
             search: trimmed
@@ -104,7 +104,7 @@ extension BookloreProvider {
         sort: GrimmoryRemoteSort,
         descending: Bool,
         search: String?
-    ) async throws -> BooklorePage<BookloreBookSummary> {
+    ) async throws -> BooklorePage<BookloreLegacyBook> {
         let data = try await fetchRemoteBrowsePageData(
             libraryId: libraryId,
             page: page,
@@ -113,7 +113,7 @@ extension BookloreProvider {
             descending: descending,
             search: search
         )
-        let result = try JSONDecoder().decode(BooklorePage<BookloreBookSummary>.self, from: data)
+        let result = try decodeLibraryPage(data, libraryId: libraryId)
         rejectedContent.update(
             connection: connection,
             libraryId: libraryId,
@@ -134,23 +134,12 @@ extension BookloreProvider {
     ) async throws -> Data {
         guard supportsRemoteBrowsing else { throw ProviderError.notImplemented }
 
-        var queryItems = [
-            URLQueryItem(name: "libraryId", value: libraryId),
-            URLQueryItem(name: "page", value: String(page)),
-            URLQueryItem(name: "size", value: String(size)),
-            URLQueryItem(name: "sort", value: sort.rawValue),
-            URLQueryItem(name: "dir", value: descending ? "desc" : "asc"),
-        ]
-        if let search {
-            queryItems.append(URLQueryItem(name: "search", value: search))
-        }
-
-        let request = try makeRequest(path: "/api/v1/app/books", queryItems: queryItems)
-        let (data, response) = try await performAuthorizedRequest(request)
-        guard response.statusCode == 200 else {
-            throw ProviderError.serverError("Mobile app books returned HTTP \(response.statusCode)")
-        }
-        try guardJSON(data, response: response, endpoint: "/api/v1/app/books")
-        return data
+        return try await fetchBrowsePageData(
+            facets: ["library:\(libraryId)"],
+            sort: descending ? "-\(sort.rawValue)" : sort.rawValue,
+            query: search,
+            page: page,
+            size: size
+        )
     }
 }

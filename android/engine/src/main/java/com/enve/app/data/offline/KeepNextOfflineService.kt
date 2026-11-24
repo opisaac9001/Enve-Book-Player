@@ -31,7 +31,7 @@ class KeepNextOfflineService @Inject constructor(
         reconcileMutex.withLock {
             val preference = settings.first()
             if (!preference.enabled || current.mediaType != AppMediaType.AUDIOBOOK) return@withLock
-            if (!downloads.isDownloaded(current.id)) return@withLock
+            if (!downloads.isDownloaded(current.offlineDownloadKey)) return@withLock
 
             val series = current.seriesName?.trim()?.takeIf(String::isNotEmpty) ?: return@withLock
             val candidates = bookCache.audiobooksInSeries(
@@ -54,8 +54,9 @@ class KeepNextOfflineService @Inject constructor(
     }
 
     private fun isKeptOffline(book: Book): Boolean {
-        val status = downloads.progressByBookId.value[book.id]?.status
-        return downloads.isDownloaded(book.id) ||
+        val key = book.offlineDownloadKey
+        val status = downloads.progressByDownloadKey.value[key]?.status
+        return downloads.isDownloaded(key) ||
             status == OfflineDownloadStatus.QUEUED ||
             status == OfflineDownloadStatus.DOWNLOADING
     }

@@ -13,7 +13,7 @@ struct TVEpubPaginationTests {
         let sources = [
             String(repeating: "A quiet afternoon by the river. The last line must remain visible.\n\n", count: 60),
             String(repeating: "Short verse.\nAnother line.\n\n", count: 70),
-            String(repeating: "長い文章と家族 👨‍👩‍👧‍👦 café e\u{301} — river. ", count: 100),
+            String(repeating: "長い文章と家族 \u{1F468}\u{200D}\u{1F469}\u{200D}\u{1F467}\u{200D}\u{1F466} café e\u{301} — river. ", count: 100),
             String(repeating: "uninterrupted", count: 200),
         ]
         let font = CTFontCreateWithName("TimesNewRomanPSMT" as CFString, 32, nil)

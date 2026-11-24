@@ -5,6 +5,9 @@ enum AnnotationExportFormat: String, CaseIterable, Identifiable {
     case plainText = "Plain Text"
     case json = "JSON"
     case csv = "CSV"
+    #if os(iOS)
+    case pdf = "PDF"
+    #endif
 
     var id: String { rawValue }
 
@@ -14,6 +17,9 @@ enum AnnotationExportFormat: String, CaseIterable, Identifiable {
         case .plainText: return "txt"
         case .json: return "json"
         case .csv: return "csv"
+        #if os(iOS)
+        case .pdf: return "pdf"
+        #endif
         }
     }
 
@@ -23,6 +29,9 @@ enum AnnotationExportFormat: String, CaseIterable, Identifiable {
         case .plainText: return "text/plain"
         case .json: return "application/json"
         case .csv: return "text/csv"
+        #if os(iOS)
+        case .pdf: return "application/pdf"
+        #endif
         }
     }
 }
@@ -33,12 +42,15 @@ struct AnnotationExporter {
     let annotations: [ReaderAnnotation]
     let bookmarks: [Bookmark]
 
-    func export(format: AnnotationExportFormat) -> String {
+    func preview(format: AnnotationExportFormat) -> String {
         switch format {
         case .markdown: return exportMarkdown()
         case .plainText: return exportPlainText()
         case .json: return exportJSON()
         case .csv: return exportCSV()
+        #if os(iOS)
+        case .pdf: return exportPlainText()
+        #endif
         }
     }
 
@@ -55,7 +67,8 @@ struct AnnotationExporter {
             for annotation in sorted {
                 let pos = Int(annotation.position * 100)
                 md += "### \(annotation.style.label) at \(pos)%\n\n"
-                md += "> \(annotation.text)\n\n"
+                if let chapter = annotation.chapterTitle, !chapter.isEmpty { md += "\(chapter)\n\n" }
+                md += markdownQuotedLines(annotation.text)
                 if let note = normalizedNote(annotation.note) {
                     md += "**Annotation:**\n\n"
                     md += markdownQuotedLines(note)
@@ -96,6 +109,7 @@ struct AnnotationExporter {
             for annotation in sorted {
                 let pos = Int(annotation.position * 100)
                 txt += "[\(annotation.style.label)] at \(pos)%:\n"
+                if let chapter = annotation.chapterTitle, !chapter.isEmpty { txt += "\(chapter)\n" }
                 txt += "\"\(annotation.text)\"\n"
                 if let note = annotation.note, !note.isEmpty {
                     txt += "Note: \(note)\n"
@@ -134,6 +148,7 @@ struct AnnotationExporter {
             let color: String
             let style: String
             let position: Double
+            let chapter: String?
             let createdAt: String
         }
 
@@ -158,6 +173,7 @@ struct AnnotationExporter {
                     color: $0.colorHex,
                     style: $0.style.rawValue,
                     position: $0.position,
+                    chapter: $0.chapterTitle,
                     createdAt: formatter.string(from: $0.createdAt)
                 )
             },
@@ -189,7 +205,7 @@ struct AnnotationExporter {
         for a in sorted {
             let text = csvEscape(a.text)
             let note = csvEscape(a.note ?? "")
-            csv += "annotation,\(text),\(note),\(a.colorHex),\(a.style.rawValue),\(Int(a.position * 100))%,,\(a.formattedTimestamp)\n"
+            csv += "annotation,\(text),\(note),\(a.colorHex),\(a.style.rawValue),\(Int(a.position * 100))%,\(csvEscape(a.chapterTitle ?? "")),\(csvEscape(a.formattedTimestamp))\n"
         }
 
         let ebookBookmarks = bookmarks.filter { $0.mediaType == .ebook }
@@ -197,7 +213,7 @@ struct AnnotationExporter {
             let title = csvEscape(b.title)
             let note = csvEscape(b.note ?? "")
             let chapter = csvEscape(b.chapterTitle ?? "")
-            csv += "bookmark,\(title),\(note),,,\(b.formattedTime),\(chapter),\(b.formattedDate)\n"
+            csv += "bookmark,\(title),\(note),,,\(b.formattedTime),\(chapter),\(csvEscape(b.formattedDate))\n"
         }
 
         return csv
@@ -205,7 +221,7 @@ struct AnnotationExporter {
 
     private func csvEscape(_ str: String) -> String {
         let escaped = str.replacingOccurrences(of: "\"", with: "\"\"")
-        if escaped.contains(",") || escaped.contains("\"") || escaped.contains("\n") {
+        if escaped.contains(",") || escaped.contains("\"") || escaped.contains("\n") || escaped.contains("\r") {
             return "\"\(escaped)\""
         }
         return escaped

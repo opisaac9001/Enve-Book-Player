@@ -25,21 +25,34 @@ class GrimmoryToolsRepositoryTest {
     private var status = 404
     private var validEmpty = false
     private var recommendations: String? = null
+    private var notebook: String? = null
+    private val paths = java.util.concurrent.CopyOnWriteArrayList<String>()
 
     @Before
     fun setUp() {
         server.dispatcher = object : Dispatcher() {
             override fun dispatch(request: RecordedRequest): MockResponse {
+                paths += request.path.orEmpty()
                 recommendations?.let { body ->
                     if (request.path?.contains("/recommendations") == true) {
                         return MockResponse().setHeader("Content-Type", "application/json").setBody(body)
                     }
                 }
+                notebook?.let { body ->
+                    if (request.requestUrl?.encodedPath == "/api/v1/notebook") {
+                        return MockResponse().setHeader("Content-Type", "application/json").setBody(body)
+                    }
+                    if (request.requestUrl?.encodedPath == "/api/v1/books/batch") {
+                        return MockResponse().setHeader("Content-Type", "application/json")
+                            .setBody("""[{"id":5,"metadata":{"title":"Five","authors":["Ada","Grace"]}}]""")
+                    }
+                }
                 if (validEmpty && request.path?.startsWith("/api/v1/user-stats/reading/genres") == true) {
                     return MockResponse().setHeader("Content-Type", "application/json").setBody("[]")
                 }
-                if (validEmpty && request.path?.startsWith("/api/v1/app/notebook/books") == true) {
-                    return MockResponse().setHeader("Content-Type", "application/json").setBody("{\"content\":[]}")
+                if (validEmpty && request.requestUrl?.encodedPath == "/api/v1/notebook") {
+                    return MockResponse().setHeader("Content-Type", "application/json")
+                        .setBody("""{"content":[],"page":{"size":12,"number":0,"totalElements":0,"totalPages":0}}""")
                 }
                 return MockResponse().setResponseCode(status)
             }
@@ -85,6 +98,31 @@ class GrimmoryToolsRepositoryTest {
         validEmpty = true
         assertTrue(repository.stats().isSuccess)
         assertTrue(repository.notes(12).isSuccess)
+    }
+
+    @Test
+    fun `notes load from one notebook page and one author batch`() = runBlocking {
+        notebook = """{"content":[
+            {"id":11,"type":"HIGHLIGHT","bookId":5,"bookTitle":"Five","text":"Newest","note":"Why","createdAt":"2026-11-14T10:00:00"},
+            {"id":10,"type":"NOTE","bookId":5,"bookTitle":"Five","text":"","note":"Only note","createdAt":"2026-11-13T10:00:00"},
+            {"id":9,"type":"HIGHLIGHT","bookId":5,"bookTitle":"Five","text":" ","createdAt":"2026-11-12T10:00:00"}
+        ],"page":{"size":12,"number":0,"totalElements":3,"totalPages":1}}"""
+
+        val notes = repository.notes(12).getOrThrow().orEmpty()
+
+        assertEquals(listOf("11", "10"), notes.map { it.id })
+        assertEquals("Five", notes.first().bookTitle)
+        assertEquals("Ada, Grace", notes.first().author)
+        assertEquals("Why", notes.first().note)
+        assertEquals("Only note", notes[1].text)
+        val notebookRequest = server.takeRequest().requestUrl!!
+        assertEquals("/api/v1/notebook", notebookRequest.encodedPath)
+        assertEquals("12", notebookRequest.queryParameter("size"))
+        assertEquals("desc", notebookRequest.queryParameter("sort"))
+        assertEquals(listOf("NOTE", "HIGHLIGHT", "BOOKMARK"), notebookRequest.queryParameterValues("types"))
+        assertEquals("5", server.takeRequest().requestUrl?.queryParameter("ids"))
+        assertEquals(2, paths.size)
+        assertTrue(paths.none { it.startsWith("/api/v1/app/") })
     }
 
     @Test

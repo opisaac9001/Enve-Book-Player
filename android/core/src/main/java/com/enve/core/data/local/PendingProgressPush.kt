@@ -31,6 +31,9 @@ interface PendingProgressPushDao {
     fun observeCount(): Flow<Int>
 
     @Query("SELECT * FROM pending_progress_push ORDER BY createdAt ASC")
+    fun observeAll(): Flow<List<PendingProgressPush>>
+
+    @Query("SELECT * FROM pending_progress_push ORDER BY createdAt ASC")
     suspend fun getAll(): List<PendingProgressPush>
 
     @Query("SELECT * FROM pending_progress_push WHERE bookId = :bookId AND source = :source AND connectionKey = :connectionKey LIMIT 1")
@@ -42,8 +45,16 @@ interface PendingProgressPushDao {
     @Query("DELETE FROM pending_progress_push WHERE bookId = :bookId AND source = :source AND connectionKey = :connectionKey")
     suspend fun delete(bookId: String, source: String, connectionKey: String)
 
-    @Query("DELETE FROM pending_progress_push WHERE bookId = :bookId AND source = :source AND connectionKey = :connectionKey AND createdAt = :createdAt AND percentage = :percentage")
-    suspend fun deleteIfUnchanged(bookId: String, source: String, connectionKey: String, createdAt: Long, percentage: Float): Int
+    @Query("DELETE FROM pending_progress_push WHERE bookId = :bookId AND source = :source AND connectionKey = :connectionKey AND createdAt = :createdAt AND percentage = :percentage AND mediaType = :mediaType AND isFinished = :isFinished")
+    suspend fun deleteIfUnchanged(bookId: String, source: String, connectionKey: String, createdAt: Long, percentage: Float, mediaType: String, isFinished: Boolean): Int
+
+    @Query("""
+        UPDATE pending_progress_push SET attempts = MIN(attempts + 1, 999), lastAttemptAt = :attemptedAt, lastError = :message
+        WHERE bookId = :bookId AND source = :source AND connectionKey = :connectionKey
+          AND createdAt = :createdAt AND percentage = :percentage AND mediaType = :mediaType AND isFinished = :isFinished
+    """)
+    suspend fun recordFailureIfUnchanged(bookId: String, source: String, connectionKey: String,
+        createdAt: Long, percentage: Float, mediaType: String, isFinished: Boolean, attemptedAt: Long, message: String): Int
 
     @Query("DELETE FROM pending_progress_push WHERE createdAt < :cutoffEpochMs")
     suspend fun pruneOlderThan(cutoffEpochMs: Long)

@@ -17,6 +17,7 @@ import androidx.test.ext.junit.runners.AndroidJUnit4
 import androidx.work.WorkManager
 import com.enve.app.data.offline.OfflineAudioManifest
 import com.enve.app.data.offline.OfflineAudioTrackManifest
+import com.enve.app.data.offline.offlineDownloadKey
 import com.enve.app.profiles.ProfileDeviceAuthentication
 import com.enve.app.profiles.ProfileLifecycleRegistry
 import com.enve.app.profiles.ProfileRuntimeRegistry
@@ -34,6 +35,7 @@ import com.enve.core.data.model.Chapter
 import com.enve.engine.profiles.ProfileDownloadFormat
 import java.io.File
 import java.util.UUID
+import kotlinx.coroutines.awaitCancellation
 import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
@@ -56,6 +58,60 @@ import org.junit.runner.RunWith
 @RunWith(AndroidJUnit4::class)
 class ProfileSwitchLifetimeTest {
     @get:Rule val compose = createEmptyComposeRule()
+    @Test
+    fun retiringReaderRequestKeepsReplacementHostIndependent() = runBlocking {
+        val base = ApplicationProvider.getApplicationContext<Context>()
+        WorkManager.getInstance(base)
+        val context = SwitchTestContext(base)
+        val runtimes = ProfileRuntimeRegistry(context)
+        val profileId = UUID.randomUUID().toString()
+        val requestJob = SupervisorJob()
+        val requestScope = CoroutineScope(requestJob + Dispatchers.Default)
+        val entered = CompletableDeferred<Unit>()
+        val cleanupEntered = CompletableDeferred<Unit>()
+        val finishCleanup = CompletableDeferred<Unit>()
+        try {
+            val component = runtimes.open(profileId)
+            val outgoingRuntime = com.enve.app.profiles.ActiveProfileRuntime(1L, component)
+            val replacementRuntime = com.enve.app.profiles.ActiveProfileRuntime(2L, component)
+            val outgoing = MainActivity.RuntimeHost(outgoingRuntime)
+            val replacement = MainActivity.RuntimeHost(replacementRuntime)
+            outgoing.readerOpenJob = requestScope.launch {
+                entered.complete(Unit)
+                try {
+                    awaitCancellation()
+                } finally {
+                    withContext(NonCancellable) {
+                        cleanupEntered.complete(Unit)
+                        finishCleanup.await()
+                    }
+                }
+            }
+            replacement.readerOpenJob = requestScope.launch { awaitCancellation() }
+            withTimeout(5_000) { entered.await() }
+            val retired = withContext(Dispatchers.Main) { outgoing.takeReaderOpenJob() }
+            withTimeout(5_000) { cleanupEntered.await() }
+            assertNull(outgoing.readerOpenJob)
+            assertFalse(retired!!.isCompleted)
+            assertTrue(replacement.readerOpenJob!!.isActive)
+            val state = com.enve.engine.profiles.ProfilesUiState()
+            assertTrue(outgoing.acceptsReaderRequest(outgoingRuntime, state))
+            assertFalse(outgoing.acceptsReaderRequest(outgoingRuntime, state.copy(switching = true)))
+            assertFalse(outgoing.acceptsReaderRequest(outgoingRuntime, state.copy(locked = true)))
+            assertFalse(outgoing.acceptsReaderRequest(replacementRuntime, state))
+            finishCleanup.complete(Unit)
+            withTimeout(5_000) { retired.join() }
+            assertTrue(replacement.readerOpenJob!!.isActive)
+        } finally {
+            finishCleanup.complete(Unit)
+            withContext(NonCancellable) {
+                requestJob.cancelAndJoin()
+                runtimes.close(profileId)
+            }
+            context.clear()
+        }
+    }
+
     @Test
     fun audioImportPreservesPrivateChapterMetadataAcrossReopenAndRepeatImport() = runBlocking {
         val base = ApplicationProvider.getApplicationContext<Context>()
@@ -87,15 +143,17 @@ class ProfileSwitchLifetimeTest {
                 BookExtras(sourceBook.uniqueKey, encodeChaptersJson(chapters), "[{\"contentUrl\":\"https://example.invalid/audio?token=test-secret\"}]"),
             )
             val storage = source.audioStorage()
-            val payload = storage.createTrackFinalFile(sourceBook.id, 0, "mp3").also { it.writeText("audio bytes") }
+            val payload = storage.createTrackFinalFile(sourceBook.offlineDownloadKey, 0, "mp3").also { it.writeText("audio bytes") }
             storage.saveManifest(
                 OfflineAudioManifest(
                     sourceBook.id, sourceBook.title, source = sourceBook.source.name, downloadedAtEpochMs = 1L,
                     tracks = listOf(OfflineAudioTrackManifest(0, "Single file", 60_000L, storage.relativePath(payload), payload.length())),
+                    connectionId = sourceBook.connectionId,
+                    downloadKey = sourceBook.offlineDownloadKey,
                 ),
             )
             val imported = coordinator.importCompleted(
-                sourceProfile.id, targetProfile.id, "AUDIOBOOK:${sourceBook.id}", ProfileDownloadFormat.AUDIOBOOK,
+                sourceProfile.id, targetProfile.id, "AUDIOBOOK:${sourceBook.offlineDownloadKey}", ProfileDownloadFormat.AUDIOBOOK,
             )
             assertEquals(BookSource.LOCAL, imported.source)
             assertNull(imported.connectionId)
@@ -113,7 +171,7 @@ class ProfileSwitchLifetimeTest {
             val editedChapters = chapters.map { it.copy(title = "Local ${it.title}") }
             target.database().bookExtrasDao().upsert(extras.copy(chaptersJson = encodeChaptersJson(editedChapters)))
             val repeated = coordinator.importCompleted(
-                sourceProfile.id, targetProfile.id, "AUDIOBOOK:${sourceBook.id}", ProfileDownloadFormat.AUDIOBOOK,
+                sourceProfile.id, targetProfile.id, "AUDIOBOOK:${sourceBook.offlineDownloadKey}", ProfileDownloadFormat.AUDIOBOOK,
             )
             assertEquals(imported.id, repeated.id)
             assertEquals(editedChapters, target.database().bookExtrasDao().get(imported.uniqueKey)!!.decodeChapters())
@@ -222,6 +280,42 @@ class ProfileSwitchLifetimeTest {
             enabled.switchProfile(DEFAULT_ADULT_PROFILE_ID, "246810")
             assertEquals(DEFAULT_ADULT_PROFILE_ID, enabled.activeRuntime.value?.profileId)
             assertFalse(enabled.state.value.locked)
+        } finally {
+            withContext(NonCancellable) {
+                applicationJob.cancelAndJoin()
+                runtimes.close(DEFAULT_ADULT_PROFILE_ID)
+            }
+            context.clear()
+        }
+    }
+
+    @Test
+    fun initializeRemovesStorageOfProfilesMissingFromTheCatalog() = runBlocking {
+        val base = ApplicationProvider.getApplicationContext<Context>()
+        WorkManager.getInstance(base)
+        val context = SwitchTestContext(base)
+        val applicationJob = SupervisorJob()
+        val applicationScope = CoroutineScope(applicationJob + Dispatchers.Default)
+        val catalog = FamilyProfileStore(context)
+        val kept = catalog.addAdult("Kept")
+        val orphan = UUID.randomUUID().toString()
+        val roots = listOf(context.filesDir, context.cacheDir, checkNotNull(context.getDatabasePath("reader.db").parentFile))
+        roots.forEach { root ->
+            listOf(kept.id, orphan).forEach { id ->
+                File(root, "profiles/$id/marker").also { check(checkNotNull(it.parentFile).mkdirs()) }.writeText("kept")
+            }
+        }
+        val ownerFile = File(context.filesDir, "owner-marker").also { it.writeText("kept") }
+        val runtimes = ProfileRuntimeRegistry(context)
+        try {
+            ProfileSwitchCoordinator(
+                context, catalog, runtimes, ProfileLifecycleRegistry(), ProfileDeviceAuthentication(context), applicationScope,
+            ).initialize()
+            roots.forEach { root ->
+                assertFalse(File(root, "profiles/$orphan").exists())
+                assertTrue(File(root, "profiles/${kept.id}/marker").exists())
+            }
+            assertTrue(ownerFile.exists())
         } finally {
             withContext(NonCancellable) {
                 applicationJob.cancelAndJoin()

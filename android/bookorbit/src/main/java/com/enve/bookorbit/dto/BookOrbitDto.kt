@@ -80,6 +80,7 @@ data class BookOrbitUserDto(
     val id: Int,
     val username: String,
     val isSuperuser: Boolean = false,
+    val permissions: List<String> = emptyList(),
 )
 
 @Serializable
@@ -116,6 +117,8 @@ data class BookOrbitCollectionOrderRequest(val order: List<BookOrbitCollectionOr
 data class BookOrbitLibraryDto(
     val id: Int,
     val name: String,
+    val folders: List<BookOrbitLibraryFolderDto> = emptyList(),
+    val allowedFormats: List<String> = emptyList(),
 )
 
 @Serializable

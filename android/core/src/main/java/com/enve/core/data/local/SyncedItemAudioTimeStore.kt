@@ -1,6 +1,9 @@
 package com.enve.core.data.local
 
 import android.content.Context
+import com.enve.core.reader.ReaderNarrationKey
+import kotlinx.serialization.encodeToString
+import kotlinx.serialization.json.Json
 import androidx.datastore.core.DataStore
 import androidx.datastore.preferences.core.Preferences
 import androidx.datastore.preferences.core.doublePreferencesKey
@@ -15,13 +18,13 @@ class SyncedItemAudioTimeStore(private val dataStore: DataStore<Preferences>) {
     @Inject
     constructor(@ApplicationContext context: Context) : this(context.enveDataStore)
 
-    suspend fun lastSyncedTime(bookId: String): Double? =
-        dataStore.data.first()[key(bookId)]
+    suspend fun lastSyncedTime(book: ReaderNarrationKey): Double? =
+        dataStore.data.first()[key(book)]
 
-    suspend fun record(bookId: String, currentTime: Double) {
-        dataStore.edit { preferences -> preferences[key(bookId)] = currentTime }
+    suspend fun record(book: ReaderNarrationKey, currentTime: Double) {
+        dataStore.edit { preferences -> preferences[key(book)] = currentTime }
     }
 
-    private fun key(bookId: String) =
-        doublePreferencesKey("sync.itemAudio.lastSyncedTime.$bookId")
+    private fun key(book: ReaderNarrationKey) =
+        doublePreferencesKey("sync.itemAudio.scoped.${Json.encodeToString(listOf(book.source.name, book.connectionId, book.bookId))}")
 }

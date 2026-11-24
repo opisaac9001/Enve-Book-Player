@@ -309,23 +309,31 @@ final class ProfileSwitchCoordinator {
         isSwitching = true
         defer { isSwitching = false }
         let source = try session(for: profile)
-        let books = await source.bookStore.allBooks()
+        let downloadIds = Set(source.downloads.completedTasks.map(\.bookId))
+        let books = try await source.bookStore.booksForDownloadImport(stableIds: downloadIds)
+        try Task.checkCancellation()
         try requireParentAuthorization()
-        let completed = source.downloads.completedTasks
-        return books.compactMap { book in
-            guard let task = completed.first(where: {
-                $0.bookId == book.downloadKey && $0.source == book.source
-            }) else { return nil }
-            let companion = books.first { other in
-                other.stableId != book.stableId && (
-                    book.linkedAudiobookStableId == other.stableId ||
-                    other.linkedAudiobookStableId == book.stableId ||
-                    book.readAloudSourceStableId == other.stableId ||
-                    other.readAloudSourceStableId == book.stableId
-                )
+        let completed = Dictionary(grouping: source.downloads.completedTasks, by: \.bookId)
+        let byStableId = Dictionary(grouping: books, by: \.stableId)
+        let order = Dictionary(uniqueKeysWithValues: books.enumerated().map { ($0.element.uniqueId, $0.offset) })
+        var companions: [String: Book] = [:]
+        for book in books {
+            for linkedId in [book.linkedAudiobookStableId, book.readAloudSourceStableId].compactMap({ $0 }) {
+                guard linkedId != book.stableId else { continue }
+                for linked in byStableId[linkedId] ?? [] {
+                    for (target, companion) in [(book, linked), (linked, book)] {
+                        if let existing = companions[target.uniqueId], order[existing.uniqueId]! <= order[companion.uniqueId]! { continue }
+                        companions[target.uniqueId] = companion
+                    }
+                }
             }
+        }
+        return books.compactMap { book in
+            guard downloadIds.contains(book.stableId) else { return nil }
+            guard let task = completed[book.downloadKey]?.first(where: { $0.source == book.source }) else { return nil }
+            let companion = companions[book.uniqueId]
             let linkedTask = companion.flatMap { linked in
-                completed.first { $0.bookId == linked.downloadKey && $0.source == linked.source }
+                completed[linked.downloadKey]?.first { $0.source == linked.source }
             }
             guard companion == nil || linkedTask != nil else { return nil }
             return ProfileDownloadImportCandidate(sourceProfileID: sourceProfileID, sourceBook: book,
@@ -349,7 +357,9 @@ final class ProfileSwitchCoordinator {
         if let linkedBook = candidate.linkedBook, let linkedTask = candidate.linkedTask {
             entries.append((book: linkedBook, completedTask: linkedTask))
         }
-        let freshBooks = await source.bookStore.allBooks()
+        let freshBooks = try await source.bookStore.booksForDownloadImport(stableIds: Set(entries.map { $0.book.stableId }))
+        try Task.checkCancellation()
+        try requireParentAuthorization()
         for entry in entries {
             guard source.downloads.completedTasks.contains(where: { $0.id == entry.completedTask.id && $0.status == .completed }),
                 let fresh = freshBooks.first(where: { $0.uniqueId == entry.book.uniqueId }),

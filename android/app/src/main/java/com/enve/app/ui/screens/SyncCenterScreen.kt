@@ -18,19 +18,29 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.draw.scale
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.platform.testTag
+import androidx.compose.ui.semantics.LiveRegionMode
+import androidx.compose.ui.semantics.contentDescription
+import androidx.compose.ui.semantics.heading
+import androidx.compose.ui.semantics.liveRegion
+import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.input.KeyboardType
 import androidx.compose.ui.text.input.PasswordVisualTransformation
 import androidx.compose.ui.text.input.VisualTransformation
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import com.enve.core.data.local.PendingProgressPush
+import com.enve.core.data.model.AppMediaType
 import com.enve.core.data.model.BookSource
 import com.enve.app.ui.components.*
 import com.enve.app.ui.components.ScreenBackButton
 import com.enve.app.ui.theme.DS
 import com.enve.app.ui.theme.EnveTheme
+import com.enve.app.ui.theme.eink
 import com.enve.app.ui.theme.rememberAdaptiveMetrics
 import com.enve.app.ui.theme.scaled
+import com.enve.app.viewmodel.PendingSyncStatus
 import com.enve.app.viewmodel.ProviderSyncStatus
 import com.enve.app.viewmodel.SyncCenterState
 import com.enve.hearth.design.hearthDisplay
@@ -38,6 +48,27 @@ import java.time.Instant
 import java.time.ZoneId
 import java.time.Duration
 import java.time.format.DateTimeFormatter
+import java.time.format.FormatStyle
+import kotlin.math.roundToInt
+
+const val SYNC_RECOVERY_LIST_TAG = "sync_recovery_list"
+const val SYNC_RECOVERY_ROW_TAG = "sync_recovery_row"
+const val SYNC_RECOVERY_EMPTY_TAG = "sync_recovery_empty"
+const val SYNC_RECOVERY_PAUSED_TAG = "sync_recovery_paused"
+const val SYNC_RECOVERY_BUSY_TAG = "sync_recovery_busy"
+const val SYNC_RECOVERY_STATUS_TAG = "sync_recovery_status"
+const val SYNC_RECOVERY_RETRY_TAG = "sync_recovery_retry"
+const val SYNC_RECOVERY_DISCARD_TAG = "sync_recovery_discard"
+const val SYNC_RECOVERY_CONFIRM_TAG = "sync_recovery_confirm"
+const val SYNC_RECOVERY_CONFIRM_DISCARD_TAG = "sync_recovery_confirm_discard"
+const val SYNC_RECOVERY_CONFIRM_CANCEL_TAG = "sync_recovery_confirm_cancel"
+const val SYNC_ERROR_TAG = "sync_error"
+
+private val ReplayRecoveryMessages = setOf(
+    "Reconnect or enable this server to send the update.",
+    "Refresh this book's library before retrying.",
+    "The server could not accept the update. Check the connection and retry.",
+)
 
 @Composable
 fun SyncCenterScreen(
@@ -51,9 +82,12 @@ fun SyncCenterScreen(
     onSaveKoreaderCredentials: () -> Unit,
     onTestKoreaderAuth: () -> Unit,
     onClearKoreaderCredentials: () -> Unit,
+    onRetryPending: (PendingProgressPush) -> Unit,
+    onDiscardPending: (PendingProgressPush) -> Unit,
 ) {
     val colors = EnveTheme.colors
     val metrics = rememberAdaptiveMetrics()
+    var discardCandidate by remember { mutableStateOf<PendingSyncStatus?>(null) }
 
     val lastSync = if (state.lastSyncTime <= 0L) {
         "Never"
@@ -170,6 +204,31 @@ fun SyncCenterScreen(
                 }
             }
 
+            state.error?.let {
+                SettingsCard(modifier = Modifier.padding(horizontal = DS.Spacing.LG.scaled(metrics))) {
+                    Row(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .testTag(SYNC_ERROR_TAG)
+                            .semantics(mergeDescendants = true) { liveRegion = LiveRegionMode.Polite }
+                            .padding(DS.Spacing.MD.scaled(metrics)),
+                        verticalAlignment = Alignment.CenterVertically,
+                        horizontalArrangement = Arrangement.spacedBy(DS.Spacing.SM.scaled(metrics)),
+                    ) {
+                        Icon(Icons.Default.Error, contentDescription = null, tint = syncErrorColor())
+                        Text(EnveTheme.eink.errorMessage(it), color = syncErrorColor(), fontSize = DS.FontSize.Caption.scaled(metrics))
+                    }
+                }
+            }
+
+            PendingRecoverySection(
+                state = state,
+                onRetry = onRetryPending,
+                onDiscard = { discardCandidate = it },
+                colors = colors,
+                metrics = metrics,
+            )
+
             if (state.providers.isNotEmpty()) {
                 SettingsSectionHeader(title = "Connected Services")
                 SettingsCard(modifier = Modifier.padding(horizontal = DS.Spacing.LG.scaled(metrics))) {
@@ -257,18 +316,223 @@ fun SyncCenterScreen(
                     }
                 }
             }
+        }
+    }
 
-            state.error?.let {
-                SettingsCard(modifier = Modifier.padding(horizontal = DS.Spacing.LG.scaled(metrics))) {
-                    Row(
-                        modifier = Modifier.fillMaxWidth().padding(DS.Spacing.MD.scaled(metrics)),
-                        verticalAlignment = Alignment.CenterVertically,
-                        horizontalArrangement = Arrangement.spacedBy(DS.Spacing.SM.scaled(metrics)),
-                    ) {
-                        Icon(Icons.Default.Error, contentDescription = null, tint = Color(0xFFB3453E))
-                        Text(it, color = Color(0xFFB3453E), fontSize = DS.FontSize.Caption.scaled(metrics))
+    discardCandidate?.let { candidate ->
+        AlertDialog(
+            onDismissRequest = { discardCandidate = null },
+            modifier = Modifier.testTag(SYNC_RECOVERY_CONFIRM_TAG),
+            title = { Text("Discard queued update?") },
+            text = {
+                Text(
+                    "This removes only the queued delivery of “${candidate.title}” to ${candidate.destination}. " +
+                        "Your reading progress on this device stays as it is.",
+                )
+            },
+            confirmButton = {
+                TextButton(
+                    onClick = {
+                        discardCandidate = null
+                        onDiscardPending(candidate.checkpoint)
+                    },
+                    modifier = Modifier.testTag(SYNC_RECOVERY_CONFIRM_DISCARD_TAG),
+                ) {
+                    Text("Discard Update", color = syncErrorColor())
+                }
+            },
+            dismissButton = {
+                TextButton(
+                    onClick = { discardCandidate = null },
+                    modifier = Modifier.testTag(SYNC_RECOVERY_CONFIRM_CANCEL_TAG),
+                ) {
+                    Text("Keep")
+                }
+            },
+        )
+    }
+}
+
+@Composable
+private fun syncErrorColor(): Color =
+    if (EnveTheme.eink.monochrome) EnveTheme.colors.primaryText else com.enve.hearth.design.Hearth.palette.statusError
+
+@Composable
+private fun PendingRecoverySection(
+    state: SyncCenterState,
+    onRetry: (PendingProgressPush) -> Unit,
+    onDiscard: (PendingSyncStatus) -> Unit,
+    colors: com.enve.app.ui.theme.EnveColorScheme,
+    metrics: com.enve.app.ui.theme.AdaptiveMetrics,
+) {
+    val canRetry = state.serverSyncEnabled && !state.isRecovering && !state.isSyncingAll
+
+    SettingsSectionHeader(title = "Queued Updates", modifier = Modifier.semantics { heading() })
+    SettingsCard(modifier = Modifier.padding(horizontal = DS.Spacing.LG.scaled(metrics))) {
+        Column(
+            modifier = Modifier.fillMaxWidth().testTag(SYNC_RECOVERY_LIST_TAG),
+            verticalArrangement = Arrangement.spacedBy(DS.Spacing.XS.scaled(metrics)),
+        ) {
+            if (!state.serverSyncEnabled) {
+                Row(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .testTag(SYNC_RECOVERY_PAUSED_TAG)
+                        .semantics(mergeDescendants = true) {}
+                        .padding(horizontal = DS.Spacing.LG.scaled(metrics), vertical = DS.Spacing.SM.scaled(metrics)),
+                    verticalAlignment = Alignment.CenterVertically,
+                    horizontalArrangement = Arrangement.spacedBy(DS.Spacing.SM.scaled(metrics)),
+                ) {
+                    Icon(Icons.Default.PauseCircle, contentDescription = null, tint = colors.accent, modifier = Modifier.size(18.dp))
+                    Text(
+                        "Server sync is off for this profile. Queued updates stay on this device and are not sent until it is turned back on.",
+                        color = colors.secondaryText,
+                        fontSize = DS.FontSize.Caption.scaled(metrics),
+                    )
+                }
+            }
+
+            if (state.isRecovering) {
+                Row(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .testTag(SYNC_RECOVERY_BUSY_TAG)
+                        .semantics(mergeDescendants = true) { liveRegion = LiveRegionMode.Polite }
+                        .padding(horizontal = DS.Spacing.LG.scaled(metrics), vertical = DS.Spacing.SM.scaled(metrics)),
+                    verticalAlignment = Alignment.CenterVertically,
+                    horizontalArrangement = Arrangement.spacedBy(DS.Spacing.SM.scaled(metrics)),
+                ) {
+                    if (!EnveTheme.eink.suppressAnimations) {
+                        CircularProgressIndicator(modifier = Modifier.size(16.dp), color = colors.accent, strokeWidth = 2.dp)
+                    }
+                    Text("Retrying queued update…", color = colors.secondaryText, fontSize = DS.FontSize.Caption.scaled(metrics))
+                }
+            }
+
+            if (state.pendingUpdates.isEmpty()) {
+                Text(
+                    "No updates are waiting to be sent. Reading positions that can't reach a server right away appear here.",
+                    color = colors.secondaryText,
+                    fontSize = DS.FontSize.Caption.scaled(metrics),
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .testTag(SYNC_RECOVERY_EMPTY_TAG)
+                        .padding(horizontal = DS.Spacing.LG.scaled(metrics), vertical = DS.Spacing.MD.scaled(metrics)),
+                )
+            } else {
+                state.pendingUpdates.forEachIndexed { index, update ->
+                    PendingUpdateRow(
+                        update = update,
+                        serverSyncEnabled = state.serverSyncEnabled,
+                        canRetry = canRetry,
+                        canDiscard = !state.isRecovering,
+                        onRetry = { onRetry(update.checkpoint) },
+                        onDiscard = { onDiscard(update) },
+                        colors = colors,
+                        metrics = metrics,
+                    )
+                    if (index < state.pendingUpdates.lastIndex) {
+                        HorizontalDivider(
+                            color = colors.separator.copy(alpha = 0.3f),
+                            modifier = Modifier.padding(horizontal = DS.Spacing.LG.scaled(metrics)),
+                        )
                     }
                 }
+            }
+        }
+    }
+}
+
+@Composable
+private fun PendingUpdateRow(
+    update: PendingSyncStatus,
+    serverSyncEnabled: Boolean,
+    canRetry: Boolean,
+    canDiscard: Boolean,
+    onRetry: () -> Unit,
+    onDiscard: () -> Unit,
+    colors: com.enve.app.ui.theme.EnveColorScheme,
+    metrics: com.enve.app.ui.theme.AdaptiveMetrics,
+) {
+    val checkpoint = update.checkpoint
+    val mediaLabel = when (AppMediaType.entries.find { it.name == checkpoint.mediaType }) {
+        AppMediaType.AUDIOBOOK -> "Audiobook"
+        AppMediaType.EBOOK -> "Ebook"
+        AppMediaType.PODCAST -> "Podcast"
+        null -> "Reading position"
+    }
+    val percentLabel = checkpoint.percentage.takeIf { it.isFinite() }
+        ?.let { "${(it.coerceIn(0f, 1f) * 100).roundToInt()}%" }
+    val formatter = remember { DateTimeFormatter.ofLocalizedDateTime(FormatStyle.MEDIUM, FormatStyle.SHORT) }
+    fun format(epochMs: Long) = formatter.format(Instant.ofEpochMilli(epochMs).atZone(ZoneId.systemDefault()))
+    val lastError = checkpoint.lastError
+    val isFailure = serverSyncEnabled && lastError != null
+    val status = when {
+        !serverSyncEnabled -> "Paused while server sync is off."
+        lastError != null -> lastError.takeIf { it in ReplayRecoveryMessages }
+            ?: "This update couldn't be sent yet. Check the connection and retry."
+        checkpoint.lastAttemptAt > 0L -> "Last tried ${format(checkpoint.lastAttemptAt)}. Waiting to send."
+        else -> "Waiting to send."
+    }
+
+    Column(
+        modifier = Modifier
+            .fillMaxWidth()
+            .testTag(SYNC_RECOVERY_ROW_TAG)
+            .padding(horizontal = DS.Spacing.LG.scaled(metrics), vertical = DS.Spacing.SM.scaled(metrics)),
+        verticalArrangement = Arrangement.spacedBy(DS.Spacing.XS.scaled(metrics)),
+    ) {
+        Column(modifier = Modifier.semantics(mergeDescendants = true) {}) {
+            Text(update.title, color = colors.primaryText, fontSize = DS.FontSize.Body.scaled(metrics), fontWeight = FontWeight.Medium)
+            Text(
+                listOfNotNull(update.destination, mediaLabel, percentLabel).joinToString(" • "),
+                color = colors.secondaryText,
+                fontSize = DS.FontSize.Caption.scaled(metrics),
+            )
+            Text(
+                "Saved ${format(checkpoint.createdAt)}",
+                color = colors.tertiaryText,
+                fontSize = DS.FontSize.Caption2.scaled(metrics),
+            )
+            Text(
+                if (isFailure) EnveTheme.eink.errorMessage(status) else status,
+                color = when {
+                    isFailure -> syncErrorColor()
+                    !serverSyncEnabled -> colors.accent
+                    else -> colors.secondaryText
+                },
+                fontSize = DS.FontSize.Caption.scaled(metrics),
+                modifier = Modifier.testTag(SYNC_RECOVERY_STATUS_TAG),
+            )
+        }
+        Row(
+            modifier = Modifier.fillMaxWidth(),
+            horizontalArrangement = Arrangement.spacedBy(DS.Spacing.SM.scaled(metrics), Alignment.End),
+        ) {
+            TextButton(
+                onClick = onDiscard,
+                enabled = canDiscard,
+                modifier = Modifier
+                    .testTag(SYNC_RECOVERY_DISCARD_TAG)
+                    .semantics { contentDescription = "Discard queued update for ${update.title}" },
+            ) {
+                Text("Discard", color = if (canDiscard) syncErrorColor() else colors.tertiaryText)
+            }
+            OutlinedButton(
+                onClick = onRetry,
+                enabled = canRetry,
+                border = androidx.compose.foundation.BorderStroke(1.dp, if (canRetry) colors.accent else colors.separator),
+                modifier = Modifier
+                    .testTag(SYNC_RECOVERY_RETRY_TAG)
+                    .semantics {
+                        contentDescription = if (serverSyncEnabled) {
+                            "Retry queued update for ${update.title}"
+                        } else {
+                            "Retry unavailable while server sync is off"
+                        }
+                    },
+            ) {
+                Text("Retry", color = if (canRetry) colors.accent else colors.tertiaryText)
             }
         }
     }
@@ -289,7 +553,7 @@ private fun ProviderSyncRow(
             duration.toHours() < 24 -> "${duration.toHours()}h ago"
             else -> "${duration.toDays()}d ago"
         }
-    } ?: "Never synced"
+    }?.let { "Last contact $it" } ?: "No contact recorded"
 
     Row(
         modifier = Modifier
@@ -432,7 +696,7 @@ private fun KoreaderSyncSection(
                 val isSuccess = result == "Connected"
                 Text(
                     text = result,
-                    color = if (isSuccess) Color(0xFF6F8F6A) else Color(0xFFB3453E),
+                    color = if (isSuccess) Color(0xFF6F8F6A) else com.enve.hearth.design.Hearth.palette.statusError,
                     fontSize = DS.FontSize.Caption.scaled(metrics),
                 )
             }

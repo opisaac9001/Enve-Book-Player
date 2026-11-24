@@ -20,11 +20,11 @@
   <a href="./LICENSE.md"><img src="https://img.shields.io/badge/license-AGPL--3.0--only-663399?style=for-the-badge" alt="AGPL-3.0-only license"></a>
 </p>
 
-Enve brings listening and reading together without requiring an Enve account, subscription, or cloud service. Connect the servers you already run, import local files, and keep your library and progress under your control.
+Connect your own servers or import local files. Enve works without an Enve account or subscription.
 
-This repository contains both editions: the Swift app under [`ios/`](ios/) and the Kotlin/Compose app under [`android/`](android/). The two apps share product behavior and architectural vocabulary while remaining native to their platforms.
+The [iOS app](ios/) uses Swift. The [Android app](android/) uses Kotlin and Jetpack Compose.
 
-The public repository follows stable releases. Day-to-day development happens privately, so `main` is updated in reviewed, release-sized snapshots rather than carrying unfinished work.
+The public `main` branch receives source snapshots from private development repositories.
 
 [Download Android 1.2 build 56](https://github.com/opisaac9001/Enve-Book-Player/releases/tag/v1.2.56), including the signed APK, matching source, and checksums.
 
@@ -32,18 +32,18 @@ The public repository follows stable releases. Day-to-day development happens pr
 
 ## What it does
 
-| | |
-| :---: | --- |
-| 🎧 | **Listen** — Audiobooks and podcasts with chapters, queues, sleep timers, bookmarks, CarPlay, and offline downloads. |
-| 📖 | **Read** — EPUB books and comics with a native Readium-based reader, annotations, themes, and reading controls. |
-| 🔄 | **Keep your place** — Playback and reading progress sync with supported servers and optional sync services. |
-| 📚 | **Bring libraries together** — One library across multiple sources, with duplicate-edition merging where possible. |
-| 🔊 | **Read along** — Synchronized text and audio for compatible books. |
-| 📊 | **Track and organize** — Collections, smart shelves, reading statistics, a journal, widgets, and platform companion experiences. |
+| Feature | Details |
+| --- | --- |
+| **Listen** | Audiobooks and podcasts with chapters, queues, sleep timers, bookmarks, CarPlay, and offline downloads. |
+| **Read** | EPUB books and comics with a native Readium-based reader, annotations, themes, and reading controls. |
+| **Keep your place** | Playback and reading progress sync with supported servers and optional sync services. |
+| **Bring libraries together** | One library across multiple sources, with duplicate-edition merging where possible. |
+| **Read along** | Synchronized text and audio for compatible books. |
+| **Track and organize** | Collections, smart shelves, reading statistics, a journal, and widgets. |
 
 ## Screenshots
 
-These screenshots show the iOS edition. Android follows the same Enve product direction with a native Compose interface.
+Screenshots from the iOS app.
 
 <p align="center">
   <img src="./screenshots/ios/home.png" alt="Enve home screen" width="250">
@@ -59,14 +59,12 @@ These screenshots show the iOS edition. Android follows the same Enve product di
 
 ## Supported libraries and services
 
-Enve works with local files and a broad range of self-hosted services:
-
-| | Supported sources |
-| :---: | --- |
-| 🎧 | **Audiobook and media servers:** Audiobookshelf, Plex, Jellyfin, Emby, Storyteller, Grimmory, BookOrbit, and Silo |
-| 📚 | **Comics and ebooks:** Komga, Kavita, and OPDS catalogs |
-| 🗂️ | **Files and feeds:** Local files, WebDAV, SMB, and RSS podcasts |
-| ☁️ | **Cloud and debrid:** Premiumize, Real-Debrid, and TorBox |
+| Source type | Supported sources |
+| --- | --- |
+| **Audiobook and media servers** | Audiobookshelf, Plex, Jellyfin, Emby, Storyteller, Grimmory, BookOrbit, and Silo |
+| **Comics and ebooks** | Komga, Kavita, and OPDS catalogs |
+| **Files and feeds** | Local files, WebDAV, SMB, and RSS podcasts |
+| **Cloud and debrid** | Premiumize, Real-Debrid, and TorBox |
 
 Provider capabilities differ. The [documentation](https://envemedia.com/docs/) has current setup instructions and service-specific notes.
 

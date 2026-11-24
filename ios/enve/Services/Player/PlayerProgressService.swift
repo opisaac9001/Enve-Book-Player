@@ -3,11 +3,6 @@ import Foundation
 import Logging
 
 public class PlayerProgressService {
-    static let shared = PlayerProgressService(
-        providerConnections: AppState.shared.providerConnections
-    )
-
-    private let storageService: StorageService
     private let plexService: PlexService
     private let audiobookshelfService: AudiobookshelfService
     private let providerConnections: any ProviderConnectionAccessing
@@ -19,20 +14,19 @@ public class PlayerProgressService {
     private unowned let profileSession: ProfileSession
 
     init(
-        storageService: StorageService = StorageService(),
         plexService: PlexService = PlexService(),
         audiobookshelfService: AudiobookshelfService = AudiobookshelfService(),
         providerConnections: any ProviderConnectionAccessing,
-        profileSession: ProfileSession = .owner
+        profileSession: ProfileSession
     ) {
         self.profileSession = profileSession
-        self.storageService = storageService
         self.plexService = plexService
         self.audiobookshelfService = audiobookshelfService
         self.providerConnections = providerConnections
     }
 
     public func saveProgress(book: Book, position: TimeInterval, duration: TimeInterval) {
+        guard !profileSession.isRetired else { return }
         profileSession.bookProgress.saveProgress(for: book, progress: position, duration: duration)
     }
 
@@ -44,12 +38,14 @@ public class PlayerProgressService {
     }
 
     public func saveLastPlayedBookId(_ id: String) {
+        guard !profileSession.isRetired else { return }
         profileSession.playerState.saveLastPlayedBookId(id)
     }
 
     public func syncProgressToRemote(book: Book, progress: TimeInterval) async {
+        guard !profileSession.isRetired, !Task.isCancelled else { return }
         await profileSession.sync.persistCurrentPlayback(book: book, position: progress)
-        guard profileSession.serverSyncEnabled else { return }
+        guard !profileSession.isRetired, !Task.isCancelled, profileSession.serverSyncEnabled else { return }
         let duration = book.duration ?? profileSession.playback.player.duration
         guard duration > 0 else { return }
         if book.source == .audiobookshelf, absSessionActive { return }
@@ -67,7 +63,7 @@ public class PlayerProgressService {
         localProgress: TimeInterval,
         serverPositionAlreadyResolved: Bool = false
     ) async -> ProgressConflict? {
-        guard profileSession.serverSyncEnabled else { return nil }
+        guard !profileSession.isRetired, !Task.isCancelled, profileSession.serverSyncEnabled else { return nil }
         var remoteProgress: TimeInterval?
         var remoteName: String = ""
 
@@ -76,7 +72,7 @@ public class PlayerProgressService {
             remoteName = cloudProgress.deviceName ?? "iCloud"
         }
 
-        if profileSession.serverSyncEnabled, book.source == .plex,
+        if !profileSession.isRetired, !Task.isCancelled, profileSession.serverSyncEnabled, book.source == .plex,
             let serverUrl = profileSession.plexAuth.loadServerUrl(),
             let token = profileSession.plexAuth.loadToken(),
             let plexResult = try? await plexService.fetchProgress(serverUrl: serverUrl, token: token, ratingKey: book.ratingKey)
@@ -88,7 +84,7 @@ public class PlayerProgressService {
             }
         }
 
-        if profileSession.serverSyncEnabled, book.source == .audiobookshelf && !serverPositionAlreadyResolved,
+        if !profileSession.isRetired, !Task.isCancelled, profileSession.serverSyncEnabled, book.source == .audiobookshelf && !serverPositionAlreadyResolved,
             let backendId = book.backendId,
             let backend = await MainActor.run(body: {
                 providerConnections.backend(id: backendId)
@@ -105,7 +101,7 @@ public class PlayerProgressService {
             }
         }
 
-        if profileSession.serverSyncEnabled, book.source == .storyteller && !serverPositionAlreadyResolved,
+        if !profileSession.isRetired, !Task.isCancelled, profileSession.serverSyncEnabled, book.source == .storyteller && !serverPositionAlreadyResolved,
             let provider = await MainActor.run(body: {
                 providerConnections.provider(for: book.providerId) as? StorytellerProvider
             }),
@@ -118,7 +114,7 @@ public class PlayerProgressService {
             }
         }
 
-        guard profileSession.serverSyncEnabled else { return nil }
+        guard !profileSession.isRetired, !Task.isCancelled, profileSession.serverSyncEnabled else { return nil }
         let conflictThreshold: TimeInterval = 30
         guard let remote = remoteProgress, abs(remote - localProgress) > conflictThreshold else {
             return nil
@@ -161,7 +157,7 @@ public class PlayerProgressService {
     {
         progressSyncTimer?.invalidate()
 
-        guard isPlaying, let book = currentBook else { return }
+        guard !profileSession.isRetired, isPlaying, let book = currentBook else { return }
 
         let interval = profileSession.preferences.loadPreferences().syncInterval
         progressSyncTimer = Timer.scheduledTimer(withTimeInterval: interval, repeats: true) { [weak self] _ in

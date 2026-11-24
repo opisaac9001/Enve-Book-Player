@@ -91,7 +91,7 @@ These endpoints stream raw binary image data (JPEG/PNG/WEBP).
 
 ---
 
-## 📓 9. Notebooks & Annotations
+## 9. Notebooks & Annotations
 * **List Annotated Books**: `GET /api/v1/app/notebook/books`
 * **Get Highlights/Bookmarks for Book**: `GET /api/v1/app/notebook/books/{bookId}/entries`
 * **Update Entry**: `PUT /api/v1/app/notebook/entries/{entryId}?type={type}`

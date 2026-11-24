@@ -53,4 +53,30 @@ interface PodcastsFacade {
     suspend fun subscribeToFeed(feedUrl: String)
 
     suspend fun unsubscribe(feedUrl: String)
+
+    val routines: StateFlow<List<PodcastRoutine>>
+
+    fun createRoutine(name: String, rules: List<PodcastRoutineRule>): PodcastRoutine?
+
+    fun saveRoutine(routine: PodcastRoutine)
+
+    fun deleteRoutine(id: String)
+
+    fun moveRoutine(id: String, delta: Int)
+
+    suspend fun runRoutine(routine: PodcastRoutine): PodcastRoutineRun
+
+    suspend fun previewPodcastImport(opml: ByteArray): PodcastImportPreview
+
+    suspend fun importPodcasts(
+        preview: PodcastImportPreview,
+        selection: Set<String>,
+        onProgress: (completed: Int, total: Int) -> Unit,
+    ): PodcastImportReport
+
+    suspend fun exportPodcasts(
+        includePrivateFeeds: Boolean,
+        includeProgress: Boolean,
+        onProgress: (completed: Int, total: Int) -> Unit,
+    ): PodcastExportResult
 }

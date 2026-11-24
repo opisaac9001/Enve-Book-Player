@@ -36,7 +36,9 @@ interface ProfileRuntimeComponent {
     fun downloadActivity(): com.enve.engine.downloads.DownloadActivityFacade
     fun playback(): com.enve.engine.playback.PlaybackFacade
     fun playerSession(): com.enve.engine.playback.PlayerSessionFacade
+    fun playerExtras(): com.enve.engine.playback.PlayerExtrasFacade
     fun preferencesFacade(): com.enve.engine.prefs.PreferencesFacade
+    fun settingsBackup(): com.enve.engine.backup.SettingsBackupFacade
     fun sources(): com.enve.engine.sources.SourcesFacade
     fun collections(): com.enve.engine.collections.CollectionsFacade
     fun annotations(): com.enve.engine.annotations.AnnotationsFacade
@@ -60,6 +62,10 @@ interface ProfileRuntimeComponent {
     fun audioStorage(): com.enve.app.data.offline.OfflineAudioStorage
     fun comicStorage(): com.enve.app.data.offline.ComicOfflineStorage
     fun bookmarks(): com.enve.app.playback.PlayerBookmarkService
+    fun readingGoalStore(): com.enve.core.data.local.ReadingGoalStore
+    fun readerFontLibrary(): com.enve.app.data.reader.fonts.ReaderFontLibrary
+    fun readerPageTurnStore(): com.enve.core.data.local.ReaderPageTurnStore
+    fun readwise(): com.enve.engine.readwise.ReadwiseFacade
     fun lastOpenedBookStore(): com.enve.core.data.local.LastOpenedBookStore
     fun keepNextOfflineStore(): com.enve.core.data.local.KeepNextOfflineStore
     fun audiobookGroupingOverrideStore(): com.enve.core.data.local.AudiobookGroupingOverrideStore
@@ -158,6 +164,8 @@ interface ProfileRuntimeComponent {
     fun progressConflictPassageService(): com.enve.app.data.sync.ProgressConflictPassageService
 
     fun pendingProgressReplay(): com.enve.app.data.sync.PendingProgressReplay
+    fun pendingBookMutationScheduler(): com.enve.app.data.sync.PendingBookMutationScheduler
+    fun pendingBookMutations(): com.enve.engine.library.PendingBookMutationsFacade
 
     fun storyAlignJobScheduler(): com.enve.app.storyalign.StoryAlignJobScheduler
     fun storyAlignJobRepository(): com.enve.app.storyalign.StoryAlignJobRepository

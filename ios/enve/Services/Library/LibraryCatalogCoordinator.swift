@@ -215,8 +215,9 @@ final class LibraryCatalogCoordinator {
         AppLogger.general.info("Refreshing local libraries...")
 
         let localLibraries = (profileSession?.localLibrary ?? LocalLibraryStorageStore.shared).loadLibraries()
+        let libraryIdSet = Set(localLibraries.map(\.id))
         let existingLocalBooks = await MainActor.run {
-            library.books.filter { $0.source == .local }
+            library.books.filter { $0.source == .local && libraryIdSet.contains($0.libraryId) }
         }
 
         let localProviderId = UUID(uuidString: "00000000-0000-0000-0000-000000000000")!
@@ -236,10 +237,8 @@ final class LibraryCatalogCoordinator {
         }
 
         var allLocalBooks: [Book] = []
-        var libraryIdSet: Set<String> = []
 
         for localLib in localLibraries {
-            libraryIdSet.insert(localLib.id)
             let libraryBooks = (profileSession?.localLibrary ?? LocalLibraryStorageStore.shared).loadBooks(libraryId: localLib.id)
             AppLogger.general.info("Found \(libraryBooks.count) books for local library: \(localLib.name)")
             let books = libraryBooks.map { $0.toBook(libraryId: localLib.id) }
@@ -575,6 +574,23 @@ final class LibraryCatalogCoordinator {
     }
 
     private func recentCatalogBooks(provider: any LibraryProvider, libraryId: String) async throws -> [Book] {
+        if let remote = provider as? any RemoteCatalogBrowsingProvider {
+            let page = try await remote.fetchRemoteCatalogPage(
+                libraryId: libraryId,
+                request: RemoteCatalogRequest(search: nil, mediaType: nil, sort: .recentlyAdded),
+                cursor: nil,
+                limit: Self.startupRecentBooksPerLibrary
+            )
+            let stored = await bookStore.booksByUniqueIds(Set(page.books.map(\.uniqueId)))
+            return page.books.map { summary in
+                guard var book = stored[summary.uniqueId] else { return summary }
+                book.title = summary.title
+                book.thumb = summary.thumb ?? book.thumb
+                book.description = summary.description ?? book.description
+                book.addedAt = summary.addedAt ?? book.addedAt
+                return book
+            }
+        }
         guard let paging = provider as? any RecentCatalogPagingProvider else {
             return try await provider.fetchRecentBooks(libraryId: libraryId, limit: Self.startupRecentBooksPerLibrary)
         }
@@ -608,7 +624,9 @@ final class LibraryCatalogCoordinator {
         for connection: ServerConnection,
         now: Date
     ) async -> Bool {
-        guard let provider = providerConnections[connection.id] else { return false }
+        guard let provider = providerConnections[connection.id],
+            !(provider is any RemoteCatalogBrowsingProvider)
+        else { return false }
         let providerLibraries = libraries.filter { $0.providerId == connection.id }
         let targets = selectedLibraries(from: providerLibraries, for: provider)
         guard !targets.isEmpty else { return true }
@@ -1117,6 +1135,17 @@ final class LibraryCatalogCoordinator {
             library.books.filter { $0.libraryId == lib.id && $0.providerId == providerId }
         }
 
+        // Browsed page by page, so refresh only stages recent additions and never reconciles the existing mirror.
+        if provider is any RemoteCatalogBrowsingProvider {
+            await importRemoteBrowsedRecents(
+                lib: lib,
+                provider: provider,
+                existingLibraryBooks: existingLibraryBooks,
+                limit: Self.startupRecentBooksPerLibrary
+            )
+            return
+        }
+
         if let bookloreProvider = provider as? BookloreProvider,
             bookloreProvider.supportsRemoteBrowsing,
             let remoteCount = try? await bookloreProvider.remoteBookCount(libraryId: lib.id)
@@ -1444,10 +1473,16 @@ final class LibraryCatalogCoordinator {
 
     private func importRemoteBrowsedRecents(
         lib: Library,
-        provider: BookloreProvider,
-        existingLibraryBooks: [Book]
+        provider: any LibraryProvider,
+        existingLibraryBooks: [Book],
+        limit: Int = 100
     ) async {
-        let recents = (try? await provider.fetchRecentBooks(libraryId: lib.id, limit: 100)) ?? []
+        let recents: [Book]
+        if provider is any RemoteCatalogBrowsingProvider {
+            recents = (try? await recentCatalogBooks(provider: provider, libraryId: lib.id)) ?? []
+        } else {
+            recents = (try? await provider.fetchRecentBooks(libraryId: lib.id, limit: limit)) ?? []
+        }
         let deletedIds = (profileSession?.deletedBooks ?? DeletedBooksTombstoneStore.shared).allDeleted
         let visible = recents.filter { !deletedIds.contains($0.stableId) }
         guard !visible.isEmpty else { return }
@@ -2067,6 +2102,7 @@ final class LibraryCatalogCoordinator {
     }
 
     private func purgeMissingLibraryBooks(providerId: UUID, validLibraries: [Library]) async {
+        guard providerConnections.isConfigurationAuthoritative else { return }
         var validProviderIds = Set(providerConnections.connections.filter { !$0.isArchived }.map { $0.id.uuidString })
         #if DEBUG && os(iOS)
         validProviderIds.formUnion(SyntheticLibrarySeeder.providerIds.map(\.uuidString))
@@ -2413,7 +2449,22 @@ final class LibraryCatalogCoordinator {
             }
 
             let enrichedBook = await (profileSession?.metadataManager ?? MetadataManager.shared).enrichBookWithStoredMetadata(fetchedBook)
-            var preservedBook = applyLocalRelationshipOverrides([enrichedBook], existingBooks: [book]).first ?? enrichedBook
+            var existingBook = book
+            if provider is any RemoteCatalogBrowsingProvider {
+                let stored = await bookStore.booksByUniqueIds([book.uniqueId])
+                existingBook = library.books.first { $0.uniqueId == book.uniqueId } ?? stored[book.uniqueId] ?? book
+            }
+            var preservedBook = applyLocalRelationshipOverrides([enrichedBook], existingBooks: [existingBook]).first ?? enrichedBook
+            if provider is any RemoteCatalogBrowsingProvider {
+                preservedBook.language = preservedBook.language ?? book.language ?? existingBook.language
+                // Resolving a card supplies metadata; progress synchronization owns reading state.
+                preservedBook.currentTime = existingBook.currentTime
+                preservedBook.ebookProgress = existingBook.ebookProgress
+                preservedBook.epubLocator = existingBook.epubLocator
+                preservedBook.isFinished = existingBook.isFinished
+                preservedBook.lastUpdate = existingBook.lastUpdate
+                preservedBook.hideFromContinue = existingBook.hideFromContinue
+            }
 
             if hasLinkedEbook {
                 if let renamed = (profileSession?.readerArtifacts ?? ReaderArtifactsStore.shared).loadCachedAudioChapters(for: preservedBook),
@@ -2426,6 +2477,8 @@ final class LibraryCatalogCoordinator {
             await MainActor.run {
                 if let index = library.books.firstIndex(where: { $0.uniqueId == book.uniqueId }) {
                     library.books[index] = preservedBook
+                } else if provider is any RemoteCatalogBrowsingProvider {
+                    library.books.append(preservedBook)
                 }
 
                 if session.currentBook?.uniqueId == book.uniqueId {
@@ -2434,10 +2487,14 @@ final class LibraryCatalogCoordinator {
 
                 saveMetadata()
 
-                if !(preservedBook.chapters?.isEmpty ?? true) || preservedBook.linkedAudiobookStableId != nil {
+                if !(provider is any RemoteCatalogBrowsingProvider),
+                    !(preservedBook.chapters?.isEmpty ?? true) || preservedBook.linkedAudiobookStableId != nil {
                     let bookToSave = preservedBook
                     retainOperation(priority: .utility) { [self] in await bookStore.upsertBooks([bookToSave]) }
                 }
+            }
+            if provider is any RemoteCatalogBrowsingProvider {
+                await bookStore.upsertBooks([preservedBook])
             }
         } catch {
             AppLogger.general.error("Error refreshing book details: \(error)")

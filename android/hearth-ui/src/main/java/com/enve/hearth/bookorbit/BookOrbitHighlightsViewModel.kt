@@ -23,6 +23,7 @@ import kotlinx.coroutines.flow.combine
 import kotlinx.coroutines.flow.distinctUntilChanged
 import kotlinx.coroutines.flow.stateIn
 import kotlinx.coroutines.flow.update
+import kotlinx.coroutines.flow.updateAndGet
 import kotlinx.coroutines.launch
 import javax.inject.Inject
 
@@ -48,20 +49,14 @@ class BookOrbitHighlightsViewModel @Inject constructor(
     private val _state = MutableStateFlow<BookOrbitLoad<Unit>>(BookOrbitLoad.Loading)
     val state: StateFlow<BookOrbitLoad<Unit>> = _state.asStateFlow()
 
-    private val _items = MutableStateFlow<List<BookOrbitHighlight>>(emptyList())
-    val items: StateFlow<List<BookOrbitHighlight>> = _items.asStateFlow()
+    private val _list = MutableStateFlow(BookOrbitPagedList<BookOrbitHighlight>(firstPage = FIRST_PAGE))
+    val list: StateFlow<BookOrbitPagedList<BookOrbitHighlight>> = _list.asStateFlow()
 
     private val _stats = MutableStateFlow(BookOrbitHighlightStats())
     val stats: StateFlow<BookOrbitHighlightStats> = _stats.asStateFlow()
 
     private val _books = MutableStateFlow<List<BookOrbitHighlightBookFacet>>(emptyList())
     val books: StateFlow<List<BookOrbitHighlightBookFacet>> = _books.asStateFlow()
-
-    private val _hasMore = MutableStateFlow(false)
-    val hasMore: StateFlow<Boolean> = _hasMore.asStateFlow()
-
-    private val _loadingMore = MutableStateFlow(false)
-    val loadingMore: StateFlow<Boolean> = _loadingMore.asStateFlow()
 
     private val _notice = MutableStateFlow<String?>(null)
     val notice: StateFlow<String?> = _notice.asStateFlow()
@@ -71,8 +66,6 @@ class BookOrbitHighlightsViewModel @Inject constructor(
     val activeAccountId: StateFlow<String?> = combine(accounts, chosenAccountId) { available, chosen ->
         chosen?.takeIf { id -> available.any { it.connectionId == id } } ?: available.firstOrNull()?.connectionId
     }.stateIn(viewModelScope, SharingStarted.WhileSubscribed(5_000), null)
-
-    private var loadedPage = 1
 
     init {
         viewModelScope.launch {
@@ -124,29 +117,22 @@ class BookOrbitHighlightsViewModel @Inject constructor(
     }
 
     fun loadMore() {
-        if (!_hasMore.value || _loadingMore.value) return
         val connectionId = activeAccountId.value ?: return
         val requested = filter.value
-        _loadingMore.value = true
+        val loading = _list.value.beginNextPage() ?: return
+        _list.value = loading
         viewModelScope.launch {
-            val nextPage = loadedPage + 1
             val page = try {
-                bookOrbit.highlights(connectionId, requested.copy(page = nextPage))
+                bookOrbit.highlights(connectionId, requested.copy(page = loading.nextPage))
             } catch (e: CancellationException) {
                 throw e
             } catch (_: Exception) {
                 null
             }
-            if (filter.value == requested && activeAccountId.value == connectionId) {
-                if (page != null) {
-                    loadedPage = nextPage
-                    _items.update { current -> (current + page.items).distinctBy(BookOrbitHighlight::id) }
-                    _hasMore.value = page.hasMore
-                } else {
-                    _hasMore.value = false
-                }
+            _list.update { current ->
+                if (page == null) current.fail(loading.generation, loading.nextPage)
+                else current.receive(loading.generation, loading.nextPage, page.items, page.total, BookOrbitHighlight::id)
             }
-            _loadingMore.value = false
         }
     }
 
@@ -208,7 +194,7 @@ class BookOrbitHighlightsViewModel @Inject constructor(
                 false
             }
             if (changed) {
-                _items.update { current -> current.filterNot { it.id == highlight.id } }
+                _list.update { current -> current.removing { it.id == highlight.id } }
                 _stats.update { it.copy(total = (it.total - 1).coerceAtLeast(0)) }
                 _notice.value = successMessage
             } else {
@@ -220,32 +206,29 @@ class BookOrbitHighlightsViewModel @Inject constructor(
     private suspend fun reload(request: HighlightRequest) {
         if (!request.hasAccounts || request.connectionId == null) {
             _state.value = BookOrbitLoad.NoAccount
-            _items.value = emptyList()
-            _hasMore.value = false
+            _list.update { it.cleared() }
             return
         }
         _state.value = BookOrbitLoad.Loading
-        loadedPage = 1
+        val started = _list.updateAndGet { it.restart() }
         val loaded = loadBookOrbit {
-            bookOrbit.highlights(request.connectionId, request.query.copy(page = 1))
+            bookOrbit.highlights(request.connectionId, request.query.copy(page = FIRST_PAGE))
         }
         _state.value = when (loaded) {
             is BookOrbitLoad.Ready -> {
-                applyPage(loaded.value)
+                applyPage(started.generation, loaded.value)
                 BookOrbitLoad.Ready(Unit)
             }
             BookOrbitLoad.Failed -> BookOrbitLoad.Failed
             else -> BookOrbitLoad.Unavailable
         }
         if (_state.value !is BookOrbitLoad.Ready) {
-            _items.value = emptyList()
-            _hasMore.value = false
+            _list.update { it.fail(started.generation, FIRST_PAGE) }
         }
     }
 
-    private fun applyPage(page: BookOrbitHighlightPage) {
-        _items.value = page.items
-        _hasMore.value = page.hasMore
+    private fun applyPage(generation: Int, page: BookOrbitHighlightPage) {
+        _list.update { it.receive(generation, FIRST_PAGE, page.items, page.total, BookOrbitHighlight::id) }
         _stats.value = BookOrbitHighlightStats(
             total = page.total,
             books = page.books,
@@ -261,5 +244,6 @@ class BookOrbitHighlightsViewModel @Inject constructor(
 
     private companion object {
         const val SEARCH_DEBOUNCE_MS = 300L
+        const val FIRST_PAGE = 1
     }
 }

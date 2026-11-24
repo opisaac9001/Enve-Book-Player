@@ -52,7 +52,7 @@ struct PendingSyncQueueFlusherTests {
     @Test func providerTransportUsesInjectedBookLookup() async throws {
         var requestedStableIds: [String] = []
         let transport = ProviderPendingSyncTransport(
-            providerResolver: PendingSyncProviderResolverStub(),
+            providerResolver: PendingSyncProviderResolverStub(), storytellerPositions: { .shared },
             bookLookup: { stableId in
                 requestedStableIds.append(stableId)
                 return nil
@@ -195,6 +195,49 @@ struct PendingSyncQueueFlusherTests {
         await flusher.flush()
         #expect(transport.attempts == ["book", "book"])
         #expect(fixture.store.isEmpty)
+    }
+
+    @Test func prolongedOutageKeepsTheCheckpointAcrossRestartUntilReconnection() async throws {
+        let fixture = makeStore()
+        defer { fixture.defaults.removePersistentDomain(forName: fixture.suiteName) }
+        fixture.store.enqueue(entry(id: "book", updatedAt: 10))
+        let clock = PendingSyncTestClock(Date(timeIntervalSince1970: 1_000))
+        let outage = PendingSyncTransportStub()
+        outage.results["book"] = Array(repeating: .failure(URLError(.notConnectedToInternet)), count: 15)
+        var flusher = PendingSyncQueueFlusher(store: fixture.store, transport: outage, now: { clock.date })
+
+        for _ in 0..<15 {
+            await flusher.flush()
+            let pending = try #require(fixture.store.entries["book"])
+            #expect(pending.nextRetryAfter - clock.date.timeIntervalSince1970 <= 900)
+            clock.date = Date(timeIntervalSince1970: pending.nextRetryAfter + 1)
+        }
+        #expect(outage.attempts.count == 15)
+        #expect(fixture.store.entries["book"]?.position == 10)
+
+        let newer = entry(id: "book", updatedAt: 30)
+        fixture.store.enqueue(newer)
+        let restored = PendingSyncQueueStore(defaults: fixture.defaults, storageKey: fixture.storageKey)
+        #expect(restored.entries["book"] == newer)
+
+        let reconnected = PendingSyncTransportStub()
+        flusher = PendingSyncQueueFlusher(store: restored, transport: reconnected, now: { clock.date })
+        await flusher.flush()
+        #expect(reconnected.attempts == ["book"])
+        #expect(restored.isEmpty)
+    }
+
+    @Test func retryDelayIsCappedAfterManyFailures() {
+        let fixture = makeStore()
+        defer { fixture.defaults.removePersistentDomain(forName: fixture.suiteName) }
+        fixture.store.enqueue(entry(id: "book", updatedAt: 10))
+        let now = Date(timeIntervalSince1970: 5_000)
+
+        for _ in 0..<40 { fixture.store.markRetry(stableId: "book", at: now) }
+
+        let pending = PendingSyncQueueStore(defaults: fixture.defaults, storageKey: fixture.storageKey).entries["book"]
+        #expect(pending != nil)
+        #expect(pending?.nextRetryAfter == 5_900)
     }
 
     @Test func persistedEntriesRecoverAfterStoreRecreation() {
@@ -361,18 +404,18 @@ struct PendingSyncQueueFlusherTests {
 
     @Test(.timeLimit(.minutes(1)))
     func queuedValidationFailuresPublishNonretryableSyncEvents() async throws {
-        let fixture = makeStore()
-        defer { fixture.defaults.removePersistentDomain(forName: fixture.suiteName) }
+        let profile = try SyncTestProfile()
         let book = Book(id: UUID().uuidString, title: "Validation fixture", source: .bookOrbit, mediaType: .ebook)
-        fixture.store.enqueue(entry(id: book.stableId, updatedAt: 10))
+        profile.session.pendingSync.enqueue(entry(id: book.stableId, updatedAt: 10))
         let transport = PendingSyncTransportStub()
         let validation = ProgressValidationError(message: "BookOrbit cannot accept this reading position.")
         transport.results[book.stableId] = [.failure(validation)]
-        let flusher = PendingSyncQueueFlusher(store: fixture.store, transport: transport)
+        let flusher = PendingSyncQueueFlusher(store: profile.session.pendingSync, transport: transport)
         let coordinator = SyncCoordinator(
             providerResolver: PendingSyncProviderResolverStub(),
             pendingSyncFlusher: flusher,
-            recentlyPlayedSync: PendingSyncRecentlyPlayedStub()
+            recentlyPlayedSync: PendingSyncRecentlyPlayedStub(),
+            profileSession: profile.session
         )
         let events = coordinator.subscribe(book: book)
 
@@ -380,40 +423,44 @@ struct PendingSyncQueueFlusherTests {
 
         var iterator = events.makeAsyncIterator()
         let event = try #require(await iterator.next())
-        guard case .pushFailed(let bookId, let message, let retryable) = event else {
+        if case .pushFailed(let bookId, let message, let retryable) = event {
+            #expect(bookId == book.stableId)
+            #expect(message == validation.localizedDescription)
+            #expect(!retryable)
+        } else {
             Issue.record("Expected a progress failure event")
-            return
         }
-        #expect(bookId == book.stableId)
-        #expect(message == validation.localizedDescription)
-        #expect(!retryable)
+        await coordinator.retire()
+        await profile.tearDown()
     }
 
     @Test(.timeLimit(.minutes(1)))
     func newSubscribersSeeAPersistedValidationFailure() async throws {
-        let fixture = makeStore()
-        defer { fixture.defaults.removePersistentDomain(forName: fixture.suiteName) }
+        let profile = try SyncTestProfile()
         let book = Book(id: UUID().uuidString, title: "Blocked fixture", source: .bookOrbit, mediaType: .ebook)
-        fixture.store.enqueue(entry(id: book.stableId, updatedAt: 10))
-        fixture.store.suspend(stableId: book.stableId, validationFailureMessage: "Reading position could not sync")
-        let restored = PendingSyncQueueStore(defaults: fixture.defaults, storageKey: fixture.storageKey)
+        profile.session.pendingSync.enqueue(entry(id: book.stableId, updatedAt: 10))
+        profile.session.pendingSync.suspend(stableId: book.stableId, validationFailureMessage: "Reading position could not sync")
+        let restored = PendingSyncQueueStore(defaults: profile.defaults)
         let flusher = PendingSyncQueueFlusher(store: restored, transport: PendingSyncTransportStub())
         let coordinator = SyncCoordinator(
             providerResolver: PendingSyncProviderResolverStub(),
             pendingSyncFlusher: flusher,
-            recentlyPlayedSync: PendingSyncRecentlyPlayedStub()
+            recentlyPlayedSync: PendingSyncRecentlyPlayedStub(),
+            profileSession: profile.session
         )
         let events = coordinator.subscribe(book: book)
         var iterator = events.makeAsyncIterator()
         let event = try #require(await iterator.next())
 
-        guard case .pushFailed(let bookId, let message, let retryable) = event else {
+        if case .pushFailed(let bookId, let message, let retryable) = event {
+            #expect(bookId == book.stableId)
+            #expect(message == flusher.validationFailure(for: book.stableId))
+            #expect(!retryable)
+        } else {
             Issue.record("Expected the persisted validation error")
-            return
         }
-        #expect(bookId == book.stableId)
-        #expect(message == flusher.validationFailure(for: book.stableId))
-        #expect(!retryable)
+        await coordinator.retire()
+        await profile.tearDown()
     }
 
     private func entry(id: String, updatedAt: TimeInterval) -> PendingServerSync {

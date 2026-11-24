@@ -286,4 +286,26 @@ interface BookOrbitFacade {
     ): BookOrbitHighlightExport?
 
     suspend fun openBook(connectionId: String, bookId: Int): Book?
+
+    suspend fun smartScopes(connectionId: String): List<BookOrbitSmartScope>?
+
+    suspend fun smartScopeBooks(connectionId: String, scopeId: Int, page: Int, search: String): BookOrbitSmartScopePage
+
+    suspend fun bookDropAccess(connectionId: String): BookOrbitBookDropAccess
+
+    suspend fun bookDropItems(connectionId: String, query: BookOrbitBookDropQuery): BookOrbitBookDropPage
+
+    suspend fun bookDropSummary(connectionId: String): BookOrbitBookDropSummary
+
+    suspend fun bookDropLibraries(connectionId: String): List<BookOrbitBookDropLibrary>
+
+    suspend fun importBookDropFile(connectionId: String, contentUri: String): BookOrbitBookDropItem
+
+    suspend fun updateBookDropItem(connectionId: String, itemId: Int, edit: BookOrbitBookDropEdit): BookOrbitBookDropItem
+
+    suspend fun applyFetchedBookDropMetadata(connectionId: String, itemIds: List<Int>): BookOrbitBookDropApplied
+
+    suspend fun approveBookDropItems(connectionId: String, itemIds: List<Int>): BookOrbitBookDropApproval
+
+    suspend fun discardBookDropItems(connectionId: String, itemIds: List<Int>)
 }

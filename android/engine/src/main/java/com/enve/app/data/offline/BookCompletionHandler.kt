@@ -25,8 +25,8 @@ class BookCompletionHandler @Inject constructor(
 
         val shouldDelete = policy?.autoDelete ?: prefs.autoDeleteFinishedBooks.first()
         if (shouldDelete) {
-            offlineDownloadManager.removeDownload(book.id)
-            comicOfflineService.removeDownload(book.id)
+            offlineDownloadManager.removeDownload(book.offlineDownloadKey)
+            comicOfflineService.removeDownload(book.offlineDownloadKey)
         }
 
         val autoDownload = policy?.autoDownloadNext ?: false
@@ -44,7 +44,8 @@ class BookCompletionHandler @Inject constructor(
         if (currentIdx < 0) return
 
         val next = seriesBooks.drop(currentIdx + 1).take(count)
-            .filterNot { comicOfflineService.isDownloaded(it.id) }
+            .map { if (it.connectionId == null) it.copy(connectionId = book.connectionId) else it }
+            .filterNot { comicOfflineService.isDownloaded(it.offlineDownloadKey) }
         if (next.isNotEmpty()) {
             comicOfflineService.startDownloadAll(next)
             Log.d("BookCompletionHandler", "Auto-queued ${next.size} books after finishing ${book.title}")

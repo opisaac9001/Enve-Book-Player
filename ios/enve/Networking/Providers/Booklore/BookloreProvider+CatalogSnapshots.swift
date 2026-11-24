@@ -76,29 +76,29 @@ extension BookloreProvider {
             return try await fetchBooksViaKomga(libraryId: libraryId)
         }
 
-        let firstPage: BooklorePage<BookloreBookSummary>
+        let firstPage: BooklorePage<BookloreLegacyBook>
         let firstPageData: Data
         do {
-            let data = try await fetchAppBooksPageData(libraryId: libraryId, page: 0)
+            let data = try await fetchLibraryPageData(libraryId: libraryId, page: 0)
             firstPageData = data
-            firstPage = try JSONDecoder().decode(BooklorePage<BookloreBookSummary>.self, from: data)
+            firstPage = try decodeLibraryPage(data, libraryId: libraryId)
         } catch {
             if Self.isCancellation(error) { throw error }
             return try await switchToLegacyBooksAPI(
-                reason: "Mobile app books request failed (\(error.localizedDescription))",
+                reason: "Books page request failed (\(error.localizedDescription))",
                 libraryId: libraryId
             )
         }
 
         if firstPage.rawItemCount == 0 {
             return try await switchToLegacyBooksAPI(
-                reason: "Mobile app books returned an empty first page",
+                reason: "Books page returned an empty first page",
                 libraryId: libraryId,
                 expectedBookIds: []
             )
         }
 
-        var appBookIds = Set(firstPage.content.map { $0.id.stringValue })
+        var pageBookIds = Set(firstPage.content.map { $0.id.stringValue })
         var checkpoint: GrimmoryCatalogCheckpoint?
         do {
             let prepared = try catalogCheckpoints.prepare(
@@ -130,14 +130,14 @@ extension BookloreProvider {
                         libraryId: libraryId,
                         page: page
                     )
-                    let stagedPage = try JSONDecoder().decode(BooklorePage<BookloreBookSummary>.self, from: data)
+                    let stagedPage = try decodeLibraryPage(data, libraryId: libraryId)
                     guard stagedPage.page == page,
                         stagedPage.totalPages == firstPage.totalPages,
                         stagedPage.totalElements == firstPage.totalElements
                     else {
                         throw ProviderError.invalidResponse
                     }
-                    appBookIds.formUnion(stagedPage.content.map { $0.id.stringValue })
+                    pageBookIds.formUnion(stagedPage.content.map { $0.id.stringValue })
                     pageData[page] = data
                 } catch {
                     catalogCheckpoints.discardPage(page: page, checkpoint: &current)
@@ -156,7 +156,7 @@ extension BookloreProvider {
                 let pages = try await withThrowingTaskGroup(of: (Int, Data).self) { group in
                     for page in requestedPages {
                         group.addTask {
-                            (page, try await self.fetchAppBooksPageData(libraryId: libraryId, page: page))
+                            (page, try await self.fetchLibraryPageData(libraryId: libraryId, page: page))
                         }
                     }
 
@@ -170,14 +170,14 @@ extension BookloreProvider {
 
                 for (page, data) in pages {
                     do {
-                        let decoded = try JSONDecoder().decode(BooklorePage<BookloreBookSummary>.self, from: data)
+                        let decoded = try decodeLibraryPage(data, libraryId: libraryId)
                         guard decoded.page == page,
                             decoded.totalPages == firstPage.totalPages,
                             decoded.totalElements == firstPage.totalElements
                         else {
                             throw ProviderError.invalidResponse
                         }
-                        appBookIds.formUnion(decoded.content.map { $0.id.stringValue })
+                        pageBookIds.formUnion(decoded.content.map { $0.id.stringValue })
                         pageData[page] = data
                         if var current = checkpoint {
                             do {
@@ -198,9 +198,9 @@ extension BookloreProvider {
             } catch {
                 if Self.isCancellation(error) { throw error }
                 return try await switchToLegacyBooksAPI(
-                    reason: "Mobile app books page batch failed (\(error.localizedDescription))",
+                    reason: "Books page batch failed (\(error.localizedDescription))",
                     libraryId: libraryId,
-                    expectedBookIds: appBookIds
+                    expectedBookIds: pageBookIds
                 )
             }
             missingOffset = endOffset
@@ -209,60 +209,41 @@ extension BookloreProvider {
         var allBooks: [Book] = []
         var snapshotIsComplete = true
         let context = catalogMapperContext(libraryId: libraryId)
-        // Returns false when the server has no batch format endpoint so the snapshot can switch tiers.
-        func append(_ page: BooklorePage<BookloreBookSummary>) async throws -> Bool {
-            if !page.rejectedItems.isEmpty { snapshotIsComplete = false }
-            rejectedContent.update(
-                connection: connection,
-                libraryId: libraryId,
-                acceptedItemIdentifiers: Set(page.content.map { $0.id.stringValue }),
-                rejectedItems: page.rejectedItems,
-                fallbackScope: "page-\(page.page)"
-            )
-            switch try await resolveCatalogFormats(
-                page.content.map { BookloreCatalogMapper.book(from: $0, context: context) }
-            ) {
-            case .batchEndpointUnsupported:
-                return false
-            case .resolved(let books, let complete):
-                if !complete { snapshotIsComplete = false }
-                allBooks.append(contentsOf: books)
-                onBatch?(
-                    LibraryFetchBatchResult(
-                        books: books,
-                        loadedSoFar: allBooks.count,
-                        totalCount: firstPage.totalElements
-                    )
-                )
-                return true
-            }
-        }
-
         for page in 0..<firstPage.totalPages {
             guard let data = pageData[page] else {
                 return try await switchToLegacyBooksAPI(
-                    reason: "Mobile app books snapshot is missing page \(page)",
+                    reason: "Books page snapshot is missing page \(page)",
                     libraryId: libraryId,
-                    expectedBookIds: appBookIds
+                    expectedBookIds: pageBookIds
                 )
             }
-            let decoded: BooklorePage<BookloreBookSummary>
+            let decoded: BooklorePage<BookloreLegacyBook>
             do {
-                decoded = try JSONDecoder().decode(BooklorePage<BookloreBookSummary>.self, from: data)
+                decoded = try decodeLibraryPage(data, libraryId: libraryId)
             } catch {
                 return try await switchToLegacyBooksAPI(
-                    reason: "Mobile app books staged page decode failed (\(error.localizedDescription))",
+                    reason: "Books page staged page decode failed (\(error.localizedDescription))",
                     libraryId: libraryId,
-                    expectedBookIds: appBookIds
+                    expectedBookIds: pageBookIds
                 )
             }
-            guard try await append(decoded) else {
-                return try await switchToLegacyBooksAPI(
-                    reason: "Mobile app books lack the batch format endpoint",
-                    libraryId: libraryId,
-                    expectedBookIds: appBookIds
+            if !decoded.rejectedItems.isEmpty { snapshotIsComplete = false }
+            rejectedContent.update(
+                connection: connection,
+                libraryId: libraryId,
+                acceptedItemIdentifiers: Set(decoded.content.map { $0.id.stringValue }),
+                rejectedItems: decoded.rejectedItems,
+                fallbackScope: "page-\(decoded.page)"
+            )
+            let books = decoded.content.map { BookloreCatalogMapper.book(from: $0, context: context) }
+            allBooks.append(contentsOf: books)
+            onBatch?(
+                LibraryFetchBatchResult(
+                    books: books,
+                    loadedSoFar: allBooks.count,
+                    totalCount: firstPage.totalElements
                 )
-            }
+            )
         }
 
         let companions = makeCompanionAudiobooks(forEbooks: &allBooks)
@@ -276,34 +257,68 @@ extension BookloreProvider {
         return (allBooks, snapshotIsComplete)
     }
 
-    func catalogFingerprint(for page: BooklorePage<BookloreBookSummary>) -> String {
+    func catalogFingerprint(for page: BooklorePage<BookloreLegacyBook>) -> String {
         let identity = page.content.map { $0.id.stringValue }.joined(separator: "\u{1F}")
         return SHA256.hash(data: Data(identity.utf8))
             .map { String(format: "%02x", $0) }
             .joined()
     }
 
-    func fetchAppBooksPageData(libraryId: String, page: Int) async throws -> Data {
-        let request = try makeRequest(
-            path: "/api/v1/app/books",
-            queryItems: [
-                URLQueryItem(name: "libraryId", value: libraryId),
-                URLQueryItem(name: "page", value: String(page)),
-                URLQueryItem(name: "size", value: String(pageSize)),
-                URLQueryItem(name: "sort", value: "addedOn"),
-                URLQueryItem(name: "dir", value: "desc"),
-            ]
-        )
+    // Grimmory rejects `id` as a caller sort key; it always appends `id` as the ascending tiebreaker.
+    func browsePageRequest(
+        facets: [String],
+        sort: String?,
+        query: String? = nil,
+        page: Int,
+        size: Int
+    ) throws -> URLRequest {
+        var queryItems = facets.map { URLQueryItem(name: "facet", value: $0) }
+        if let sort {
+            queryItems.append(URLQueryItem(name: "sort", value: sort))
+        }
+        if let query {
+            queryItems.append(URLQueryItem(name: "query", value: query))
+        }
+        queryItems.append(URLQueryItem(name: "page", value: String(page)))
+        queryItems.append(URLQueryItem(name: "size", value: String(size)))
+        return try makeRequest(path: "/api/v1/books/page", queryItems: queryItems)
+    }
+
+    func fetchBrowsePageData(
+        facets: [String],
+        sort: String?,
+        query: String? = nil,
+        page: Int,
+        size: Int
+    ) async throws -> Data {
+        let request = try browsePageRequest(facets: facets, sort: sort, query: query, page: page, size: size)
         if page == 0 {
             AppLogger.network.info("[Booklore] GET \(request.url?.redacted.absoluteString ?? "<nil>")")
         }
-
         let (data, response) = try await performAuthorizedRequest(request)
         guard response.statusCode == 200 else {
-            throw ProviderError.serverError("Mobile app books returned HTTP \(response.statusCode)")
+            throw ProviderError.serverError("Grimmory books page returned HTTP \(response.statusCode)")
         }
-        try guardJSON(data, response: response, endpoint: "/api/v1/app/books")
+        try guardJSON(data, response: response, endpoint: "/api/v1/books/page")
         return data
+    }
+
+    func fetchLibraryPageData(libraryId: String, page: Int) async throws -> Data {
+        try await fetchBrowsePageData(
+            facets: ["library:\(libraryId)"],
+            sort: "-addedOn",
+            page: page,
+            size: catalogPageSize
+        )
+    }
+
+    // The library facet is the only scope on a browse page; a server that ignored it would leak other libraries.
+    func decodeLibraryPage(_ data: Data, libraryId: String) throws -> BooklorePage<BookloreLegacyBook> {
+        let page = try JSONDecoder().decode(BooklorePage<BookloreLegacyBook>.self, from: data)
+        guard page.content.allSatisfy({ $0.libraryId?.stringValue == libraryId }) else {
+            throw ProviderError.invalidResponse
+        }
+        return page
     }
 
     var supportsRemoteBrowsing: Bool { supportsTransactionalCatalogImport }

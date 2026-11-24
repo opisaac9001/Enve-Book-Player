@@ -10,6 +10,7 @@ import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
+import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
@@ -155,6 +156,52 @@ internal fun ShelvesList(
 internal fun BrowseLoadingState() {
     Box(Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
         CircularProgressIndicator(color = Hearth.palette.ember, strokeWidth = 2.dp, modifier = Modifier.size(28.dp))
+    }
+}
+
+@Composable
+internal fun LibraryCatalogNotices(status: LibraryCatalogStatus, onRetry: () -> Unit) {
+    val palette = Hearth.palette
+    val messages = listOfNotNull(
+        status.cachedNotice,
+        status.sortNotice,
+        "You're offline, so only downloaded Silo books are shown.".takeIf { status.offline },
+    )
+    if (messages.isEmpty() && status.error == null) return
+    Column(
+        Modifier.fillMaxWidth().padding(horizontal = Hearth.Spacing.XL, vertical = Hearth.Spacing.XS),
+        verticalArrangement = Arrangement.spacedBy(Hearth.Spacing.XS),
+    ) {
+        messages.forEach { Text(it, style = HearthText.Caption, color = palette.textSecondary) }
+        if (status.offline && status.error == null) {
+            TextButton(onClick = onRetry, enabled = !status.loading, modifier = Modifier.heightIn(min = 48.dp)) {
+                Text("Retry connection", style = HearthText.Label, color = palette.ember)
+            }
+        }
+        status.error?.let { error ->
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                Text(error, style = HearthText.Caption, color = palette.statusError, modifier = Modifier.weight(1f))
+                TextButton(onClick = onRetry, enabled = !status.loading, modifier = Modifier.heightIn(min = 48.dp)) {
+                    Text("Retry", style = HearthText.Label, color = palette.ember)
+                }
+            }
+        }
+    }
+}
+
+@Composable
+internal fun LibraryCatalogFooter(status: LibraryCatalogStatus, onLoadMore: () -> Unit) {
+    Box(
+        Modifier.fillMaxWidth().padding(bottom = LocalMantelInset.current).heightIn(min = 48.dp),
+        contentAlignment = Alignment.Center,
+    ) {
+        if (status.loading) {
+            CircularProgressIndicator(color = Hearth.palette.ember, strokeWidth = 2.dp, modifier = Modifier.size(20.dp))
+        } else {
+            TextButton(onClick = onLoadMore, modifier = Modifier.heightIn(min = 48.dp)) {
+                Text("Load more", style = HearthText.Label, color = Hearth.palette.ember)
+            }
+        }
     }
 }
 

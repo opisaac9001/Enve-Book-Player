@@ -3,6 +3,7 @@ import SwiftUI
 struct JournalInsightsScreen: View {
     @Environment(\.hearth) private var hearth
     @Environment(\.mantelInset) private var mantelInset
+    @Environment(\.profileSession) private var profileSession
 
     @Environment(JournalInsightsModel.self) private var model
     @State private var loaded = false
@@ -160,6 +161,13 @@ struct JournalInsightsScreen: View {
             if review.totalSeconds <= 0 && review.booksFinished == 0 {
                 JournalQuietNote(text: "This year is waiting for its first chapter.")
             }
+
+            NavigationLink {
+                JournalRecapScreen(profileSession: profileSession ?? .owner)
+            } label: {
+                JournalLinkRow(glyph: "calendar", title: "Recaps", subtitle: "Month by month, ready to share")
+            }
+            .buttonStyle(PressableStyle())
         }
     }
 

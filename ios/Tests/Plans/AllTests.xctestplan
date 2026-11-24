@@ -9,7 +9,12 @@
     }
   ],
   "defaultOptions" : {
-
+    "environmentVariableEntries" : [
+      {
+        "key" : "ENVE_UNIT_TEST_HOST",
+        "value" : "1"
+      }
+    ]
   },
   "testTargets" : [
     {

@@ -113,7 +113,7 @@ struct SourcesFilesScreen: View {
                 let count = try await engine.sources.importFiles(
                     urls: urls,
                     mode: audioSelectionMode
-                )
+                ).count
 
                 importedCount = count
                 isImporting = false

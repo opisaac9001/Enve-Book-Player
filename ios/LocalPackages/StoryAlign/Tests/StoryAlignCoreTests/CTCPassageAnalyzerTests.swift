@@ -108,7 +108,7 @@ final class CTCPassageAnalyzerTests: XCTestCase {
 
     func testSentenceListKeepsOriginalIdentityAndUTF16Offsets() {
         let root = URL(fileURLWithPath: "/book", isDirectory: true)
-        let first = EpubManifestItem(id: "c1", href: "c1.xhtml", mediaType: "application/xhtml+xml", properties: nil, spineItemIndex: 0, text: nil, xmlData: Data(count: 2048), hasScript: false, xhtmlSentences: ["Café 🙂.", "Two."], name: "One", filePath: URL(fileURLWithPath: "/book/OEBPS/Text/c1.xhtml"))
+        let first = EpubManifestItem(id: "c1", href: "c1.xhtml", mediaType: "application/xhtml+xml", properties: nil, spineItemIndex: 0, text: nil, xmlData: Data(count: 2048), hasScript: false, xhtmlSentences: ["Café \u{1F642}.", "Two."], name: "One", filePath: URL(fileURLWithPath: "/book/OEBPS/Text/c1.xhtml"))
         let second = EpubManifestItem(id: "c2", href: "c2.xhtml", mediaType: "application/xhtml+xml", properties: nil, spineItemIndex: 1, text: nil, xmlData: Data(count: 2048), hasScript: false, xhtmlSentences: ["Three."], name: "Two", filePath: URL(fileURLWithPath: "/book/OEBPS/Text/c2.xhtml"))
         let list = CTCPassageAnalyzer.sentences(chapters: [first, second], root: root)
         XCTAssertEqual(list.map(\.href), ["OEBPS/Text/c1.xhtml", "OEBPS/Text/c1.xhtml", "OEBPS/Text/c2.xhtml"])

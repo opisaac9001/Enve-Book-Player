@@ -8,6 +8,7 @@ import android.media.MediaFormat
 import android.net.Uri
 import com.enve.app.data.offline.OfflineDownloadManager
 import com.enve.app.data.offline.OfflineDownloadStatus
+import com.enve.app.data.offline.offlineDownloadKey
 import com.enve.app.data.repository.AggregatorRepository
 import com.enve.app.storyalign.align.AlignedChapter
 import com.enve.app.storyalign.align.AlignmentDecision
@@ -251,17 +252,18 @@ class StoryAlignGenerator @Inject constructor(
     }
 
     private suspend fun ensureAudioDownloaded(book: Book, onProgress: suspend (Float) -> Unit): List<Track> {
-        if (!offlineDownloads.isDownloaded(book.id)) {
+        val key = book.offlineDownloadKey
+        if (!offlineDownloads.isDownloaded(key)) {
             downloadAudio(book, onProgress)
         }
-        var manifest = offlineDownloads.getManifest(book.id)
+        var manifest = offlineDownloads.getManifest(key)
             ?: throw IllegalStateException("Audiobook download did not produce tracks")
         var tracks = manifestTracks(manifest)
         val badTrack = tracks.firstOrNull { !it.file.hasAudioTrack() }
         if (badTrack != null) {
-            offlineDownloads.removeDownload(book.id)
+            offlineDownloads.removeDownload(key)
             downloadAudio(book, onProgress)
-            manifest = offlineDownloads.getManifest(book.id)
+            manifest = offlineDownloads.getManifest(key)
                 ?: throw IllegalStateException("Audiobook download did not produce tracks")
             tracks = manifestTracks(manifest)
             val retriedBadTrack = tracks.firstOrNull { !it.file.hasAudioTrack() }
@@ -274,8 +276,8 @@ class StoryAlignGenerator @Inject constructor(
 
     private suspend fun downloadAudio(book: Book, onProgress: suspend (Float) -> Unit) {
         offlineDownloads.startAudiobookDownload(book, allowCellular = true)
-        val result = offlineDownloads.progressByBookId
-            .map { it[book.id] }
+        val result = offlineDownloads.progressByDownloadKey
+            .map { it[book.offlineDownloadKey] }
             .first { p ->
                 if (p != null) onProgress(p.progress)
                 p?.status == OfflineDownloadStatus.COMPLETED || p?.status == OfflineDownloadStatus.FAILED

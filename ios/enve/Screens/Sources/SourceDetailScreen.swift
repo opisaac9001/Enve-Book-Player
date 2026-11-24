@@ -591,7 +591,7 @@ struct SourceDetailScreen: View {
         }
 
         if connection.type == .booklore,
-            let creds = profileSession.isOwner ? BookloreKoreaderSink.shared.credentials(for: connection.id) : nil
+            let creds = profileSession.isOwner ? profileSession.koreaderSink.credentials(for: connection.id) : nil
         {
             koreaderUsername = creds.username
             koreaderEnabled = creds.enabled
@@ -629,21 +629,21 @@ struct SourceDetailScreen: View {
 
     private func saveKoreaderCredentials() {
         guard (try? profiles.authorizeChanges(in: profileSession)) != nil else { return }
-        guard profileSession.isOwner else { return }
+        guard profileSession.isOwner, !profileSession.isRetired else { return }
         let passwordMD5 =
             koreaderPassword.isEmpty
-            ? (BookloreKoreaderSink.shared.credentials(for: connectionId)?.passwordMD5 ?? "")
+            ? (profileSession.koreaderSink.credentials(for: connectionId)?.passwordMD5 ?? "")
             : BookloreKoreaderSink.md5Hex(koreaderPassword)
         let creds = BookloreKoreaderCredentials(
             username: koreaderUsername,
             passwordMD5: passwordMD5,
             enabled: koreaderEnabled
         )
-        BookloreKoreaderSink.shared.setCredentials(creds, for: connectionId)
+        profileSession.koreaderSink.setCredentials(creds, for: connectionId)
     }
 
     private func testKoreaderAuth() {
-        guard profileSession.isOwner else { return }
+        guard profileSession.isOwner, !profileSession.isRetired else { return }
         guard let baseURL = URL(string: normalizedURL()) else { return }
         isTestingKoreaderAuth = true
         let creds = BookloreKoreaderCredentials(
@@ -651,9 +651,10 @@ struct SourceDetailScreen: View {
             passwordMD5: BookloreKoreaderSink.md5Hex(koreaderPassword),
             enabled: koreaderEnabled
         )
-        BookloreKoreaderSink.shared.setCredentials(creds, for: connectionId)
+        profileSession.koreaderSink.setCredentials(creds, for: connectionId)
         Task {
-            let ok = (try? await BookloreKoreaderSink.shared.testAuth(providerId: connectionId, baseURL: baseURL)) ?? false
+            let ok = (try? await profileSession.koreaderSink.testAuth(providerId: connectionId, baseURL: baseURL)) ?? false
+            guard !profileSession.isRetired, !Task.isCancelled else { return }
             isTestingKoreaderAuth = false
             koreaderAuthState = ok ? .ok : .failed
             if ok {

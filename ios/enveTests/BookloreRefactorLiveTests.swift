@@ -134,7 +134,7 @@ struct BookloreRefactorLiveTests {
             for pageNumber in 0..<importSession.totalPages {
                 let data = try provider.catalogCheckpoints.pageData(connectionId: provider.connection.id,
                     libraryId: large.0.id, page: pageNumber)
-                let page = try JSONDecoder().decode(BooklorePage<BookloreBookSummary>.self, from: data)
+                let page = try provider.decodeLibraryPage(data, libraryId: large.0.id)
                 summaryIDs.formUnion(page.content.map { $0.id.stringValue })
                 rejectedCount += page.rejectedItems.count
             }
@@ -277,7 +277,7 @@ struct BookloreRefactorLiveTests {
                 #expect(changed[list]?.contains(book.id) == !wasSaved)
             }
 
-            let detail = try await fixture.request(path: "/api/v1/app/books/\(bookID)")
+            let detail = try await fixture.request(path: "/api/v1/books/\(bookID)")
             let object = try #require(JSONSerialization.jsonObject(with: detail) as? [String: Any])
             let originalRating = (object["personalRating"] as? NSNumber)?.intValue
             fixture.cleanup.append {
@@ -289,7 +289,7 @@ struct BookloreRefactorLiveTests {
                 }
             }
             try await provider.updatePersonalRating(for: book, rating: 4)
-            let ratedData = try await fixture.request(path: "/api/v1/app/books/\(bookID)")
+            let ratedData = try await fixture.request(path: "/api/v1/books/\(bookID)")
             let rated = try #require(JSONSerialization.jsonObject(with: ratedData) as? [String: Any])
             #expect((rated["personalRating"] as? NSNumber)?.intValue == 8)
             fixture.record("shelf create/rename/membership, magic filters, favorites/for-later, and personal rating")
@@ -432,15 +432,13 @@ struct BookloreRefactorLiveTests {
         }
 
         func book(search: String) async throws -> Book {
-            let request = try provider.makeRequest(path: "/api/v1/app/books", queryItems: [
-                URLQueryItem(name: "search", value: search), URLQueryItem(name: "size", value: "100"),
-            ])
+            let request = try provider.browsePageRequest(facets: [], sort: "-addedOn", query: search, page: 0, size: 100)
             let (data, response) = try await provider.performAuthorizedRequest(request)
             #expect(response.statusCode == 200)
-            let page = try JSONDecoder().decode(BooklorePage<BookloreBookSummary>.self, from: data)
-            let summary = try #require(page.content.first)
-            return try await provider.fetchFullBookDetails(bookId: summary.id.stringValue,
-                libraryId: summary.libraryId?.stringValue ?? "")
+            let page = try JSONDecoder().decode(BooklorePage<BookloreLegacyBook>.self, from: data)
+            let record = try #require(page.content.first)
+            return try await provider.fetchFullBookDetails(bookId: record.id.stringValue,
+                libraryId: record.libraryId?.stringValue ?? "")
         }
 
         func request(path: String, method: String = "GET", json: Any? = nil) async throws -> Data {

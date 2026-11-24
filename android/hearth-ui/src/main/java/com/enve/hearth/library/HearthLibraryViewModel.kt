@@ -198,33 +198,44 @@ class HearthLibraryViewModel @Inject constructor(
         prefs.librarySortStack.map(::decodeSortStack)
             .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000), DEFAULT_SORT)
 
-    private val allBooks: StateFlow<List<Book>> =
-        library.allBooks.stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000), emptyList())
+    private val catalogBooks: StateFlow<List<Book>> =
+        library.catalogLocalBooks.stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000), emptyList())
 
+    @OptIn(ExperimentalCoroutinesApi::class)
     val savedBooks: StateFlow<Map<SavedBookList, List<Book>>> =
-        combine(allBooks, savedBooksFacade.saved, readingEnabled) { books, saved, reading ->
-            val byKey = books.filter { includesLibraryBook(it, reading) }.associateBy(Book::uniqueKey)
-            SavedBookList.entries.associateWith { list -> saved[list].orEmpty().mapNotNull(byKey::get) }
+        combine(savedBooksFacade.saved, readingEnabled, ::Pair).flatMapLatest { (saved, reading) ->
+            val keys = saved.values.flatten().distinct()
+            if (keys.isEmpty()) kotlinx.coroutines.flow.flowOf(emptyMap())
+            else combine(keys.map(library::bookByKeyFlow)) { records ->
+                val byKey = records.filterNotNull().filter { includesLibraryBook(it, reading) }.associateBy(Book::uniqueKey)
+                SavedBookList.entries.associateWith { list -> saved[list].orEmpty().mapNotNull(byKey::get) }
+            }
         }.stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000), emptyMap())
 
     private val excludedLibraryIds: StateFlow<Set<String>> =
         prefs.excludedLibraryIds.stateIn(viewModelScope, SharingStarted.Eagerly, emptySet())
 
     private val visibleBooks: StateFlow<List<Book>> =
-        combine(allBooks, excludedLibraryIds, readingEnabled) { books, excluded, reading ->
+        combine(catalogBooks, excludedLibraryIds, readingEnabled) { books, excluded, reading ->
             books.excludingLibraries(excluded).filter { includesLibraryBook(it, reading) }
         }.flowOn(Dispatchers.Default)
             .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000), emptyList())
 
+    private val configuredConnections: StateFlow<List<ProviderConnection>?> = connectionRegistry.connections
+        .stateIn(viewModelScope, SharingStarted.Eagerly, null)
+
     val sources: StateFlow<List<BookSource>> =
-        visibleBooks.map { list -> list.asSequence().map { it.source }.distinct().sortedBy { it.displayName }.toList() }
-            .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000), emptyList())
+        combine(visibleBooks, configuredConnections) { list, connections ->
+            (list.asSequence().map { it.source } + connections.orEmpty().asSequence().filter { it.enabled }.map { it.source })
+                .distinct().sortedBy { it.displayName }.toList()
+        }.stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000), emptyList())
 
     private val availableLibraries: StateFlow<List<Library>> =
         library.libraries.stateIn(viewModelScope, SharingStarted.Eagerly, emptyList())
 
-    private val configuredConnections: StateFlow<List<ProviderConnection>?> = connectionRegistry.connections
-        .stateIn(viewModelScope, SharingStarted.Eagerly, null)
+    private val siloConnections: StateFlow<List<ProviderConnection>> = configuredConnections.map { connections ->
+        connections.orEmpty().filter { it.enabled && it.source == BookSource.SILO }.map { it.copy(lastSyncedAt = null) }.sortedBy { it.id }
+    }.stateIn(viewModelScope, SharingStarted.Eagerly, emptyList())
 
     private val requestedLibrarySelection = MutableStateFlow<LibrarySelection?>(null)
 
@@ -322,15 +333,85 @@ class HearthLibraryViewModel @Inject constructor(
         }.flowOn(Dispatchers.Default)
             .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000), emptyList())
 
-    val advancedFilterOptions: StateFlow<LibraryAdvancedFilterOptions> =
-        combine(baseScopedBooks, effectiveStatus) { books, selectedStatus ->
-            LibraryAdvancedFilterPolicy.options(books.filter { matchesStatus(it, selectedStatus) })
-        }.flowOn(Dispatchers.Default)
-            .stateIn(
-                viewModelScope,
-                SharingStarted.WhileSubscribed(5000),
-                LibraryAdvancedFilterOptions(),
+    private data class CatalogScope(
+        val facet: LibraryFacet,
+        val status: StatusFilter,
+        val media: MediaFilter,
+        val selection: LibrarySelection,
+        val libraries: List<Library>,
+    )
+
+    val catalogPlan: StateFlow<LibraryCatalogPlan> = combine(
+        combine(facet, effectiveStatus, effectiveMedia, librarySelection, availableLibraries, ::CatalogScope),
+        advancedFilters,
+        sortStack,
+        query,
+        combine(siloConnections, excludedLibraryIds, readingEnabled, ::Triple),
+    ) { scope, advanced, sort, q, (silo, excluded, reading) ->
+        val selection = scope.selection
+        val scopeSource = selection.source ?: selection.libraryId?.let { id ->
+            scope.libraries.firstOrNull { it.id == id && (selection.connectionId == null || it.connectionId == selection.connectionId) }?.source
+        }
+        libraryCatalogPlan(
+            facet = scope.facet,
+            status = scope.status,
+            media = scope.media,
+            selection = selection,
+            scopeSource = scopeSource,
+            advanced = advanced,
+            sort = sort,
+            query = q,
+            siloEnabled = silo.isNotEmpty(),
+            excludedLibraryIds = excluded,
+            readingEnabled = reading,
+        )
+    }.stateIn(viewModelScope, SharingStarted.Eagerly, LibraryCatalogPlan())
+
+    private val remoteCatalog = RemoteCatalogPager(viewModelScope, library::remoteCatalogPage)
+    private val remoteFilterOptions = RemoteFilterOptionsLoader(viewModelScope, library::remoteCatalogFilterOptions)
+
+    val catalogStatus: StateFlow<LibraryCatalogStatus> =
+        combine(catalogPlan, remoteCatalog.state) { plan, remote ->
+            val current = plan.live && remote.request == plan.request
+            LibraryCatalogStatus(
+                live = plan.live,
+                cachedNotice = plan.cachedNotice,
+                sortNotice = plan.sortNotice,
+                loading = plan.live && (!current || remote.loading),
+                offline = current && remote.offline,
+                error = remote.error.takeIf { current },
+                hasMore = current && remote.hasMore,
             )
+        }.stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000), LibraryCatalogStatus())
+
+    private val _filterOptionSearch = MutableStateFlow("")
+    val filterOptionSearch: StateFlow<String> = _filterOptionSearch.asStateFlow()
+    private val filterSheetVisible = MutableStateFlow(false)
+
+    val filterOptions: StateFlow<LibraryFilterOptionsState> = combine(
+        combine(baseScopedBooks, effectiveStatus, catalogPlan, ::Triple),
+        remoteFilterOptions.state,
+        _filterOptionSearch,
+        advancedFilters,
+    ) { (books, selectedStatus, plan), remote, search, advanced ->
+        val local = LibraryAdvancedFilterPolicy.options(
+            books.filter { matchesStatus(it, selectedStatus) && (!plan.live || it.source != BookSource.SILO) },
+        )
+        val remoteKey = plan.request?.let { RemoteFilterOptionsRequest(filterOptionsScope(it), search.trim()) }
+        val current = remote.takeIf { remoteKey != null && it.key == remoteKey }
+        val remoteOptions = current?.options?.options
+        val (genres, moreGenres) = visibleFilterOptions(local.genres + remoteOptions?.genres.orEmpty(), advanced.genres, search)
+        val (languages, moreLanguages) = visibleFilterOptions(local.languages + remoteOptions?.languages.orEmpty(), advanced.languages, search)
+        LibraryFilterOptionsState(
+            genres = genres,
+            languages = languages,
+            hasMore = moreGenres || moreLanguages || remoteOptions?.hasMore == true,
+            loading = plan.live && (current == null || current.loading),
+            error = current?.options?.error,
+            remote = plan.live,
+        )
+    }.flowOn(Dispatchers.Default)
+        .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000), LibraryFilterOptionsState())
 
     private data class DisplayFilter(
         val query: String,
@@ -346,14 +427,18 @@ class HearthLibraryViewModel @Inject constructor(
         }
 
     val books: StateFlow<List<Book>> =
-        combine(visibleBooks, displayFilter) { list, filter ->
-            list.asSequence()
+        combine(visibleBooks, displayFilter, catalogPlan, remoteCatalog.state) { list, filter, plan, remote ->
+            val request = plan.request
+            val local = list.asSequence()
+                .filter { request == null || it.source != BookSource.SILO }
                 .filter { matchesScope(it, filter.scope) }
                 .filter { matchesStatus(it, filter.status) }
                 .filter { LibraryAdvancedFilterPolicy.matches(it, filter.advanced) }
                 .filter { filter.query.isBlank() || matchesQuery(it, filter.query) }
-                .sortedWith(comparatorFor(filter.sort))
-                .toList()
+            if (request == null) return@combine local.sortedWith(comparatorFor(filter.sort)).toList()
+            val current = remote.request == request
+            val remoteBooks = if (current) remote.books.filter { it.id !in filter.scope.hidden } else emptyList()
+            mergeCatalogPages(local.toList(), remoteBooks, remoteCatalogComparator(request.catalog.sort), current && remote.hasMore)
         }.flowOn(Dispatchers.Default)
             .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000), emptyList())
 
@@ -437,7 +522,34 @@ class HearthLibraryViewModel @Inject constructor(
         viewModelScope.launch {
             excludedLibraryIds.collect { invalidateDrill() }
         }
+        viewModelScope.launch {
+            combine(catalogPlan, siloConnections) { plan, connections -> plan.request to connections }
+                .collect { (request, connections) -> remoteCatalog.submit(request, connections) }
+        }
+        viewModelScope.launch {
+            siloConnections.collect { remoteFilterOptions.retry() }
+        }
+        viewModelScope.launch {
+            combine(catalogPlan, _filterOptionSearch, filterSheetVisible) { plan, search, visible ->
+                plan.request?.takeIf { visible }?.let { RemoteFilterOptionsRequest(filterOptionsScope(it), search.trim()) }
+            }.collect { remoteFilterOptions.submit(it) }
+        }
     }
+
+    fun loadMoreCatalog() = remoteCatalog.loadMore()
+
+    fun retryCatalog() = remoteCatalog.retry()
+
+    fun setFilterSheetVisible(visible: Boolean) {
+        filterSheetVisible.value = visible
+        if (!visible) _filterOptionSearch.value = ""
+    }
+
+    fun setFilterOptionSearch(search: String) {
+        _filterOptionSearch.value = search
+    }
+
+    fun retryFilterOptions() = remoteFilterOptions.retry()
 
     private fun currentLibraryScope(): String = librarySelection.value.let { libraryScopeKey(it.source, it.libraryId) }
 
@@ -718,6 +830,7 @@ class HearthLibraryViewModel @Inject constructor(
 
     fun refresh() = viewModelScope.launch {
         library.refresh()
+        remoteCatalog.reload()
         savedBooksFacade.refresh()
         if (_shelves.value.isNotEmpty() || facet.value == LibraryFacet.SHELVES) {
             _shelvesLoading.value = true
@@ -857,7 +970,17 @@ class HearthLibraryViewModel @Inject constructor(
         }
     }
     fun hide(book: Book) = viewModelScope.launch { library.setHidden(book.id, true) }
-    fun download(book: Book) = viewModelScope.launch { library.download(book) }
+    fun download(book: Book) = viewModelScope.launch { downloadBook(book) }
+
+    private suspend fun downloadBook(book: Book) {
+        try {
+            library.download(book)
+        } catch (error: kotlinx.coroutines.CancellationException) {
+            throw error
+        } catch (error: Exception) {
+            notice.value = "Couldn't prepare this download. Check the server connection and try again."
+        }
+    }
     fun removeDownload(book: Book) = viewModelScope.launch { library.removeDownload(book) }
 
     fun playAllDrill(): Boolean {
@@ -933,7 +1056,7 @@ class HearthLibraryViewModel @Inject constructor(
     }
 
     fun bulkHide() = bulk { library.setHidden(it.id, true) }
-    fun bulkDownload() = bulk { library.download(it) }
+    fun bulkDownload() = bulk { downloadBook(it) }
 
     private fun bulk(action: suspend (Book) -> Unit) {
         val targets = selectedBooks()
@@ -999,20 +1122,23 @@ class HearthLibraryViewModel @Inject constructor(
             (b.narrator?.contains(needle, ignoreCase = true) == true)
     }
 
-    private fun comparatorFor(stack: List<SortDescriptor>): Comparator<Book> = Comparator { a, b ->
-        for (descriptor in stack.ifEmpty { DEFAULT_SORT }) {
-            val aMissing = missingSortValue(a, descriptor.field)
-            val bMissing = missingSortValue(b, descriptor.field)
-            if (aMissing != bMissing) return@Comparator if (aMissing) 1 else -1
-            val cmp = sortComparison(a, b, descriptor.field)
-            if (cmp != 0) {
-                return@Comparator if (descriptor.direction == SortDirection.ASCENDING) cmp else -cmp
+    private fun comparatorFor(stack: List<SortDescriptor>): Comparator<Book> {
+        val keys = SortKeys()
+        return Comparator { a, b ->
+            for (descriptor in stack.ifEmpty { DEFAULT_SORT }) {
+                val aMissing = missingSortValue(a, descriptor.field, keys)
+                val bMissing = missingSortValue(b, descriptor.field, keys)
+                if (aMissing != bMissing) return@Comparator if (aMissing) 1 else -1
+                val cmp = sortComparison(a, b, descriptor.field, keys)
+                if (cmp != 0) {
+                    return@Comparator if (descriptor.direction == SortDirection.ASCENDING) cmp else -cmp
+                }
             }
+            a.title.compareTo(b.title, ignoreCase = true)
         }
-        a.title.compareTo(b.title, ignoreCase = true)
     }
 
-    private fun missingSortValue(b: Book, field: LibrarySort): Boolean = when (field) {
+    private fun missingSortValue(b: Book, field: LibrarySort, keys: SortKeys): Boolean = when (field) {
         LibrarySort.RECENT -> b.lastReadTime <= 0L && b.addedOn <= 0L
         LibrarySort.TITLE -> b.title.isBlank()
         LibrarySort.AUTHOR, LibrarySort.AUTHOR_SURNAME -> b.author.isNullOrBlank()
@@ -1020,26 +1146,25 @@ class HearthLibraryViewModel @Inject constructor(
         LibrarySort.SERIES -> b.seriesName.isNullOrBlank()
         LibrarySort.PROGRESS -> false
         LibrarySort.DURATION -> b.duration <= 0L
-        LibrarySort.YEAR -> publishedYear(b) == null
+        LibrarySort.YEAR -> keys.year(b) == null
         LibrarySort.GOODREADS_RATING -> b.goodreadsRating == null
     }
 
-    private fun sortComparison(a: Book, b: Book, field: LibrarySort): Int = when (field) {
+    private fun sortComparison(a: Book, b: Book, field: LibrarySort, keys: SortKeys): Int = when (field) {
         LibrarySort.RECENT -> recentStamp(a).compareTo(recentStamp(b))
         LibrarySort.TITLE -> a.title.compareTo(b.title, ignoreCase = true)
         LibrarySort.AUTHOR -> (a.author ?: "").compareTo(b.author ?: "", ignoreCase = true)
-        LibrarySort.AUTHOR_SURNAME -> surname(a.author).compareTo(surname(b.author), ignoreCase = true)
+        LibrarySort.AUTHOR_SURNAME -> keys.surname(a.author).compareTo(keys.surname(b.author), ignoreCase = true)
         LibrarySort.NARRATOR -> (a.narrator ?: "").compareTo(b.narrator ?: "", ignoreCase = true)
-        LibrarySort.NARRATOR_SURNAME -> surname(a.narrator).compareTo(surname(b.narrator), ignoreCase = true)
+        LibrarySort.NARRATOR_SURNAME -> keys.surname(a.narrator).compareTo(keys.surname(b.narrator), ignoreCase = true)
         LibrarySort.SERIES -> {
             val bySeries = (a.seriesName ?: "").compareTo(b.seriesName ?: "", ignoreCase = true)
             if (bySeries != 0) bySeries
-            else (a.seriesNumber?.toFloatOrNull() ?: Float.MAX_VALUE)
-                .compareTo(b.seriesNumber?.toFloatOrNull() ?: Float.MAX_VALUE)
+            else keys.seriesNumber(a).compareTo(keys.seriesNumber(b))
         }
         LibrarySort.PROGRESS -> bookProgress(a).compareTo(bookProgress(b))
         LibrarySort.DURATION -> a.duration.compareTo(b.duration)
-        LibrarySort.YEAR -> (publishedYear(a) ?: 0).compareTo(publishedYear(b) ?: 0)
+        LibrarySort.YEAR -> (keys.year(a) ?: 0).compareTo(keys.year(b) ?: 0)
         LibrarySort.GOODREADS_RATING -> (a.goodreadsRating ?: 0f).compareTo(b.goodreadsRating ?: 0f)
     }
 
@@ -1047,9 +1172,26 @@ class HearthLibraryViewModel @Inject constructor(
 
     private fun bookProgress(b: Book): Float =
         maxOf(b.readProgress, b.epubProgress ?: 0f, if (b.duration > 0) b.currentTime.toFloat() / b.duration else 0f)
+}
 
-    private fun surname(name: String?): String {
-        val cleaned = name?.trim().orEmpty()
+private class SortKeys {
+    private val surnames = HashMap<String, String>()
+    private val years = HashMap<String, Int?>()
+    private val seriesNumbers = HashMap<String, Float>()
+
+    fun surname(name: String?): String = name?.let { surnames.getOrPut(it) { surnameOf(it) } } ?: ""
+
+    fun year(book: Book): Int? {
+        val date = book.publishedDate ?: return null
+        if (date !in years) years[date] = publishedYear(book)
+        return years[date]
+    }
+
+    fun seriesNumber(book: Book): Float =
+        book.seriesNumber?.let { seriesNumbers.getOrPut(it) { it.toFloatOrNull() ?: Float.MAX_VALUE } } ?: Float.MAX_VALUE
+
+    private fun surnameOf(name: String): String {
+        val cleaned = name.trim()
         if (cleaned.isEmpty()) return ""
         cleaned.substringBefore(',', "").trim().takeIf { it.isNotEmpty() && cleaned.contains(',') }?.let { return it }
         return cleaned.split(';', '&').first().trim().substringAfterLast(' ')

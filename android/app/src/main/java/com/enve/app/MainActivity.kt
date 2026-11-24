@@ -35,6 +35,7 @@ import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import androidx.lifecycle.lifecycleScope
 import com.enve.core.listeningposition.ListeningPositionLink
 import dagger.hilt.android.AndroidEntryPoint
+import kotlinx.coroutines.cancelAndJoin
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.launch
@@ -51,13 +52,24 @@ import com.enve.app.ui.components.CastButton
 @AndroidEntryPoint
 class MainActivity : ComponentActivity() {
     private var runtimeHost: RuntimeHost? = null
-    private class RuntimeHost(val runtime: com.enve.app.profiles.ActiveProfileRuntime) : androidx.lifecycle.ViewModelStoreOwner {
+    internal class RuntimeHost(val runtime: com.enve.app.profiles.ActiveProfileRuntime) : androidx.lifecycle.ViewModelStoreOwner {
         override val viewModelStore = androidx.lifecycle.ViewModelStore()
         val factory = com.enve.app.profiles.ProfileViewModelFactory(runtime.component)
         val auth: AuthViewModel get() = androidx.lifecycle.ViewModelProvider(viewModelStore, factory)[AuthViewModel::class.java]
+        var readerOpenJob: kotlinx.coroutines.Job? = null
+
+        fun takeReaderOpenJob(): kotlinx.coroutines.Job? = readerOpenJob.also {
+            readerOpenJob = null
+            it?.cancel()
+        }
+
+        fun acceptsReaderRequest(active: com.enve.app.profiles.ActiveProfileRuntime?, state: com.enve.engine.profiles.ProfilesUiState): Boolean =
+            active === runtime && !state.locked && !state.switching
     }
     private val openPlayerFromWidget = kotlinx.coroutines.flow.MutableStateFlow(false)
     private val positionLinkMessage = kotlinx.coroutines.flow.MutableStateFlow<String?>(null)
+    private val readerShortcut = kotlinx.coroutines.flow.MutableStateFlow<String?>(null)
+    private val incomingFiles = kotlinx.coroutines.flow.MutableStateFlow<List<android.net.Uri>>(emptyList())
 
     @Inject
     lateinit var profiles: com.enve.app.profiles.ProfileSwitchCoordinator
@@ -73,7 +85,21 @@ class MainActivity : ComponentActivity() {
         enableEdgeToEdge()
         super.onCreate(savedInstanceState)
         readWidgetIntent(intent)
+        com.enve.app.automation.ReaderShortcuts.publish(this)
+        readerShortcut.value = if (savedInstanceState == null) {
+            intent.takeUnless { it.flags and Intent.FLAG_ACTIVITY_LAUNCHED_FROM_HISTORY != 0 }
+                ?.let { com.enve.app.automation.ReaderShortcuts.request(this, it) }
+        } else {
+            savedInstanceState.getString("reader_shortcut")
+        }
         if (savedInstanceState == null) readPositionLinkIntent(intent)
+        incomingFiles.value = if (savedInstanceState == null) {
+            if (intent.flags and Intent.FLAG_ACTIVITY_LAUNCHED_FROM_HISTORY == 0) {
+                com.enve.app.cloud.IncomingBookIntent.files(intent, "$packageName.fileprovider")
+            } else emptyList()
+        } else {
+            savedInstanceState.getStringArrayList("incoming_books").orEmpty().map(android.net.Uri::parse)
+        }
 
         lifecycleScope.launch {
             profiles.initialize()
@@ -118,12 +144,20 @@ class MainActivity : ComponentActivity() {
                 return@setContent
             }
             key(runtime.generation) {
+                val sharedFiles by incomingFiles.collectAsState()
+                LaunchedEffect(runtime.generation, sharedFiles) {
+                    if (sharedFiles.isNotEmpty()) {
+                        startActivity(com.enve.app.cloud.CloudImportActivity.incomingIntent(this@MainActivity, sharedFiles))
+                        incomingFiles.value = emptyList()
+                    }
+                }
                 val host = remember(runtime.generation) { RuntimeHost(runtime) }
                 DisposableEffect(host) {
                     runtimeHost = host
                     runtime.component.einkManager().initialize()
                     val registration = profileLifecycle.register(runtime.profileId) {
                         kotlinx.coroutines.withContext(kotlinx.coroutines.Dispatchers.Main.immediate) {
+                            host.takeReaderOpenJob()?.cancelAndJoin()
                             host.viewModelStore.clear()
                             host.factory.retire()
                             if (runtimeHost === host) runtimeHost = null
@@ -131,9 +165,11 @@ class MainActivity : ComponentActivity() {
                     }
                     handleAuthCallbackIntent(intent)
                     onDispose {
+                        val readerJob = host.takeReaderOpenJob()
                         host.viewModelStore.clear()
                         lifecycleScope.launch(kotlinx.coroutines.NonCancellable + kotlinx.coroutines.Dispatchers.Main.immediate) {
                             try {
+                                readerJob?.cancelAndJoin()
                                 host.factory.retire()
                             } finally {
                                 registration.close()
@@ -177,6 +213,26 @@ class MainActivity : ComponentActivity() {
 
             var classicInitialRoute by remember { mutableStateOf<String?>(null) }
             var downloadedBookRequest by remember { mutableStateOf<Book?>(null) }
+            var libraryShortcutRequest by remember { mutableStateOf(false) }
+            val shortcut by readerShortcut.collectAsState()
+            LaunchedEffect(shortcut, runtime.generation) {
+                val request = shortcut ?: return@LaunchedEffect
+                classicInitialRoute = null
+                if (request == com.enve.app.automation.ReaderShortcuts.CONTINUE &&
+                    runtime.component.preferencesFacade().readingEnabled.first()) {
+                    val library = runtime.component.library()
+                    val key = runtime.component.lastOpenedBookStore().lastOpenedBookKey.first()
+                    val last = key?.let { library.bookByKeyFlow(it).first() }
+                        ?.takeIf { it.mediaType == com.enve.core.data.model.AppMediaType.EBOOK }
+                    val book = last ?: library.continueBooks.first()
+                        .filter { it.mediaType == com.enve.core.data.model.AppMediaType.EBOOK }
+                        .maxByOrNull { it.lastReadTime }
+                    if (book != null) openReader(book) else libraryShortcutRequest = true
+                } else {
+                    libraryShortcutRequest = true
+                }
+                readerShortcut.value = null
+            }
 
             var resumeHearthInSettings by remember { mutableStateOf(false) }
             val hearthState = rememberSaveableStateHolder()
@@ -190,6 +246,8 @@ class MainActivity : ComponentActivity() {
                         profileName = profileState.profiles.firstOrNull { it.id == runtime.profileId }?.name,
                         initialShowSettings = resumeHearthInSettings,
                         showPlayerRequest = widgetPlayerRequest,
+                        showLibraryRequest = libraryShortcutRequest,
+                        onLibraryRequestConsumed = { libraryShortcutRequest = false },
                         onPlayerRequestConsumed = { openPlayerFromWidget.value = false },
                         positionLinkRequest = positionLinkRequest,
                         onPositionLinkConsumed = { positionLinkMessage.value = null },
@@ -300,9 +358,11 @@ class MainActivity : ComponentActivity() {
         HearthSettingsDestination.StoryAlign -> Routes.STORYALIGN_STUDIO
         HearthSettingsDestination.Downloads -> Routes.DOWNLOADS
         HearthSettingsDestination.Storage -> Routes.STORAGE
+        HearthSettingsDestination.SettingsBackup -> Routes.SETTINGS_BACKUP
         HearthSettingsDestination.SyncCloud -> Routes.SYNC_CLOUD
         HearthSettingsDestination.KOReader -> Routes.KOREADER_HUB
         HearthSettingsDestination.Obsidian -> Routes.OBSIDIAN_SYNC
+        HearthSettingsDestination.Readwise -> Routes.READWISE
         HearthSettingsDestination.Vocabulary -> Routes.VOCABULARY_HUB
         HearthSettingsDestination.Dictionaries -> Routes.DICTIONARIES
         HearthSettingsDestination.LibraryDisplay -> Routes.LIBRARY_DISPLAY
@@ -319,44 +379,63 @@ class MainActivity : ComponentActivity() {
     }
 
     private fun openReader(book: Book, annotation: ReaderAnnotation? = null) {
-        val readerFormat = book.readerFormat()
-        startActivity(
-            when (readerFormat?.uppercase()) {
-                "PDF" -> com.enve.app.ui.screens.PdfReaderActivity.createIntent(
-                    context = this,
-                    bookId = book.id,
-                    bookSource = book.source,
-                    connectionId = book.connectionId,
-                    title = book.title,
-                    author = book.author ?: "",
-                    locator = annotation?.readerLocator(readerFormat) ?: book.epubLocator,
-                )
-                "CBZ", "CBX", "CBR" -> com.enve.app.ui.screens.ComicReaderActivity.createIntent(
-                    context = this,
-                    bookId = book.id,
-                    bookSource = book.source,
-                    connectionId = book.connectionId,
-                    title = book.title,
-                    author = book.author ?: "",
-                    format = readerFormat,
-                    locator = annotation?.readerLocator(readerFormat) ?: book.epubLocator,
-                )
-                else -> com.enve.app.ui.screens.EbookReaderActivity.createIntent(
-                    context = this,
-                    bookId = book.id,
-                    bookSource = book.source,
-                    connectionId = book.connectionId,
-                    title = book.title,
-                    author = book.author ?: "",
-                    bookFormat = readerFormat,
-                    epubLocator = annotation?.readerLocator(readerFormat) ?: book.epubLocator,
-                    epubProgress = annotation?.totalProgression?.toFloat()?.coerceIn(0f, 1f)
-                        ?: book.epubProgress
-                        ?: book.readProgress,
-                    lastReadTime = book.lastReadTime,
-                )
-            },
-        )
+        val host = runtimeHost ?: return
+        if (!host.acceptsReaderRequest(profiles.activeRuntime.value, profiles.state.value)) return
+        host.takeReaderOpenJob()
+        val runtime = host.runtime
+        host.readerOpenJob = lifecycleScope.launch {
+            val resolved = if (book.readerFormat() == null) {
+                try {
+                    runtime.component.library().bookDetail(book) ?: book
+                } catch (error: kotlinx.coroutines.CancellationException) {
+                    throw error
+                } catch (error: Exception) {
+                    if (runtimeHost === host && host.acceptsReaderRequest(profiles.activeRuntime.value, profiles.state.value)) {
+                        android.widget.Toast.makeText(this@MainActivity, "Couldn't open this book. Check the server connection and try again.", android.widget.Toast.LENGTH_LONG).show()
+                    }
+                    return@launch
+                }
+            } else book
+            if (runtimeHost !== host || !host.acceptsReaderRequest(profiles.activeRuntime.value, profiles.state.value)) return@launch
+            val readerFormat = resolved.readerFormat()
+            startActivity(
+                when (readerFormat?.uppercase()) {
+                    "PDF" -> com.enve.app.ui.screens.PdfReaderActivity.createIntent(
+                        context = this@MainActivity,
+                        bookId = resolved.id,
+                        bookSource = resolved.source,
+                        connectionId = resolved.connectionId,
+                        title = resolved.title,
+                        author = resolved.author ?: "",
+                        locator = annotation?.readerLocator(readerFormat) ?: resolved.epubLocator,
+                    )
+                    "CBZ", "CBX", "CBR" -> com.enve.app.ui.screens.ComicReaderActivity.createIntent(
+                        context = this@MainActivity,
+                        bookId = resolved.id,
+                        bookSource = resolved.source,
+                        connectionId = resolved.connectionId,
+                        title = resolved.title,
+                        author = resolved.author ?: "",
+                        format = readerFormat,
+                        locator = annotation?.readerLocator(readerFormat) ?: resolved.epubLocator,
+                    )
+                    else -> com.enve.app.ui.screens.EbookReaderActivity.createIntent(
+                        context = this@MainActivity,
+                        bookId = resolved.id,
+                        bookSource = resolved.source,
+                        connectionId = resolved.connectionId,
+                        title = resolved.title,
+                        author = resolved.author ?: "",
+                        bookFormat = readerFormat,
+                        epubLocator = annotation?.readerLocator(readerFormat) ?: resolved.epubLocator,
+                        epubProgress = annotation?.totalProgression?.toFloat()?.coerceIn(0f, 1f)
+                            ?: resolved.epubProgress
+                            ?: resolved.readProgress,
+                        lastReadTime = resolved.lastReadTime,
+                    )
+                },
+            )
+        }
     }
 
     private fun ReaderAnnotation.readerLocator(readerFormat: String?): String? {
@@ -392,6 +471,16 @@ class MainActivity : ComponentActivity() {
         handleAuthCallbackIntent(intent)
         readWidgetIntent(intent)
         readPositionLinkIntent(intent)
+        com.enve.app.cloud.IncomingBookIntent.files(intent, "$packageName.fileprovider")
+            .takeIf { it.isNotEmpty() }?.let { incomingFiles.value = it }
+        com.enve.app.automation.ReaderShortcuts.request(this, intent)
+            ?.let { readerShortcut.value = it }
+    }
+
+    override fun onSaveInstanceState(outState: Bundle) {
+        outState.putString("reader_shortcut", readerShortcut.value)
+        outState.putStringArrayList("incoming_books", ArrayList(incomingFiles.value.map(android.net.Uri::toString)))
+        super.onSaveInstanceState(outState)
     }
 
     private fun readWidgetIntent(intent: Intent?) {

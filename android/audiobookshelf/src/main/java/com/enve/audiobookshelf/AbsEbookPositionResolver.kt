@@ -5,9 +5,12 @@ import com.enve.audiobookshelf.api.AudiobookshelfApi
 import com.enve.audiobookshelf.dto.AbsMediaProgressDto
 import com.enve.core.data.local.SyncedItemAudioTimeStore
 import com.enve.core.data.model.Book
+import com.enve.core.data.model.BookSource
+import com.enve.core.data.remote.ConnectionScope
 import com.enve.core.data.sync.SyncSnapshot
 import com.enve.core.reader.EpubCfi
 import com.enve.core.reader.MediaOverlayTimeline
+import com.enve.core.reader.ReaderNarrationKey
 import com.enve.core.reader.ReaderNarrationSource
 import java.io.IOException
 import java.util.concurrent.ConcurrentHashMap
@@ -23,14 +26,15 @@ class AbsEbookPositionResolver @Inject constructor(
     private val syncedAudioTimes: SyncedItemAudioTimeStore,
     private val serverSync: com.enve.core.data.local.ProfileServerSyncStore,
 ) {
-    private val itemAudioDurations = ConcurrentHashMap<String, Double>()
+    private val itemAudioDurations = ConcurrentHashMap<ReaderNarrationKey, Double>()
 
     suspend fun pushEbookProgress(bookId: String, percentage: Float, locator: String?) {
         val syncStartedAt = System.currentTimeMillis()
         if (!serverSync.isEnabled) return
+        val key = ReaderNarrationKey(BookSource.AUDIOBOOKSHELF, ConnectionScope.getConnectionId(), bookId)
         val readiumLocator = locator?.let(::absReadiumLocator)
         val ebookLocation = readiumLocator?.let { json ->
-            narration.existingReaderAsset(bookId)?.let { epub ->
+            narration.existingReaderAsset(key)?.let { epub ->
                 epubWork("EPUB CFI upload conversion failed") { EpubCfi.providerCfi(json, epub) }
                     ?: run {
                         Log.i(TAG, "ABS ebook position did not round-trip as a CFI; sending progress only")
@@ -38,9 +42,9 @@ class AbsEbookPositionResolver @Inject constructor(
                     }
             }
         }
-        val itemAudioDuration = itemAudioDuration(bookId)
+        val itemAudioDuration = itemAudioDuration(key)
         val audioPosition = itemAudioDuration?.takeIf { it > 0.0 }?.let { duration ->
-            readiumLocator?.let { narrationAudioPosition(bookId, it, duration) }
+            readiumLocator?.let { narrationAudioPosition(key, it, duration) }
         }
         val body = absEbookProgressBody(
             progress = percentage.coerceIn(0f, 1f),
@@ -51,7 +55,7 @@ class AbsEbookPositionResolver @Inject constructor(
         if (!serverSync.accepts(syncStartedAt)) return
         val response = api.updateEbookProgress(libraryItemId = bookId, body = body)
         if (!response.isSuccessful) error("Audiobookshelf ebook progress sync failed: HTTP ${response.code()}")
-        audioPosition?.let { syncedAudioTimes.record(bookId, it.currentTime) }
+        audioPosition?.let { syncedAudioTimes.record(key, it.currentTime) }
     }
 
     suspend fun ebookSnapshot(book: Book, record: AbsMediaProgressDto): SyncSnapshot? {
@@ -67,14 +71,15 @@ class AbsEbookPositionResolver @Inject constructor(
         var locator = (serverLocation as? AbsServerEbookLocation.ReadiumLocatorJson)?.json
         var epubCfi = (serverLocation as? AbsServerEbookLocation.Cfi)?.cfi
         val cfi = epubCfi
-        val epub = narration.existingReaderAsset(book.id)
+        val key = ReaderNarrationKey(book.source, book.connectionId, book.id)
+        val epub = narration.existingReaderAsset(key)
         if (cfi != null && epub != null) {
             epubWork("EPUB CFI resolution failed") { EpubCfi.readiumLocatorJson(cfi, percentage.toDouble(), epub) }?.let {
                 locator = it
                 epubCfi = null
             }
         }
-        narratedPositionFromItemAudio(record, locator, book)?.let { (narratedLocator, progression) ->
+        narratedPositionFromItemAudio(record, locator, key)?.let { (narratedLocator, progression) ->
             locator = narratedLocator
             epubCfi = null
             percentage = progression.toFloat()
@@ -92,12 +97,12 @@ class AbsEbookPositionResolver @Inject constructor(
     }
 
     private suspend fun narrationAudioPosition(
-        bookId: String,
+        key: ReaderNarrationKey,
         locator: String,
         itemAudioDuration: Double,
     ): AbsAudioPosition? {
-        val narrationTime = narration.narrationTime(bookId) ?: return null
-        val timeline = narration.overlayTimeline(bookId) ?: return null
+        val narrationTime = narration.narrationTime(key) ?: return null
+        val timeline = narration.overlayTimeline(key) ?: return null
         val resolved = timeline.resolveEpub3Locator(locator)
             ?.takeIf { it.source == MediaOverlayTimeline.Source.FRAGMENT }
             ?: return null
@@ -112,14 +117,14 @@ class AbsEbookPositionResolver @Inject constructor(
     private suspend fun narratedPositionFromItemAudio(
         record: AbsMediaProgressDto,
         serverLocator: String?,
-        book: Book,
+        key: ReaderNarrationKey,
     ): Pair<String, Double>? {
         val audioTime = record.currentTime?.takeIf { it > 0.0 } ?: return null
-        val itemDuration = itemAudioDuration(book.id)?.takeIf { it > 0.0 } ?: return null
-        val timeline = narration.overlayTimeline(book.id) ?: return null
+        val itemDuration = itemAudioDuration(key)?.takeIf { it > 0.0 } ?: return null
+        val timeline = narration.overlayTimeline(key) ?: return null
         if (!MediaOverlayTimeline.narrationMatchesAudio(timeline.totalAudioDuration, itemDuration)) return null
-        val lastSyncedAudioTime = syncedAudioTimes.lastSyncedTime(book.id)
-        syncedAudioTimes.record(book.id, audioTime)
+        val lastSyncedAudioTime = syncedAudioTimes.lastSyncedTime(key)
+        syncedAudioTimes.record(key, audioTime)
         return absNarratedLocator(
             itemAudioTime = audioTime,
             itemAudioDuration = itemDuration,
@@ -129,17 +134,17 @@ class AbsEbookPositionResolver @Inject constructor(
         )
     }
 
-    private suspend fun itemAudioDuration(itemId: String): Double? {
-        itemAudioDurations[itemId]?.let { return it }
+    private suspend fun itemAudioDuration(key: ReaderNarrationKey): Double? {
+        itemAudioDurations[key]?.let { return it }
         val response = try {
-            api.getExpandedItem(itemId)
+            api.getExpandedItem(key.bookId)
         } catch (e: IOException) {
             Log.w(TAG, "ABS item lookup failed: ${e.message}")
             return null
         }
         if (!response.isSuccessful) return null
         val duration = response.body()?.media?.duration?.takeIf { it > 0.0 } ?: 0.0
-        itemAudioDurations[itemId] = duration
+        itemAudioDurations[key] = duration
         return duration
     }
 

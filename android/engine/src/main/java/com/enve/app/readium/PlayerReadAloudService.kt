@@ -6,6 +6,7 @@ import android.net.Uri
 import com.enve.app.data.links.BookLinkRepository
 import com.enve.app.data.offline.withDownloadCalls
 import com.enve.app.data.offline.ComicOfflineStorage
+import com.enve.app.data.offline.offlineDownloadKey
 import com.enve.app.data.repository.AggregatorRepository
 import com.enve.app.playback.AudioPlaybackManager
 import com.enve.core.data.local.ProfileStorageLocations
@@ -250,8 +251,9 @@ class PlayerReadAloudService @Inject constructor(
     }
 
     private fun existingAsset(book: Book): File? {
-        if (offline.getManifest(book.id)?.uniqueKey == book.uniqueKey) {
-            offline.getDownloadedFile(book.id)?.takeIf { it.extension.equals("epub", ignoreCase = true) }?.let { return it }
+        val key = book.offlineDownloadKey
+        if (offline.getManifest(key)?.offlineDownloadKey == key) {
+            offline.getDownloadedFile(key)?.takeIf { it.extension.equals("epub", ignoreCase = true) }?.let { return it }
         }
         return cachedAsset(book).takeIf { it.isFile && it.length() > 0L }
     }

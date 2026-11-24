@@ -13,7 +13,8 @@ import java.util.UUID
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
-import kotlinx.coroutines.cancel
+import kotlinx.coroutines.Job
+import kotlinx.coroutines.cancelAndJoin
 import kotlinx.coroutines.runBlocking
 import okhttp3.MediaType.Companion.toMediaType
 import okhttp3.OkHttpClient
@@ -41,6 +42,7 @@ class OfflineDownloadIntegrityTest {
     private val requests = mutableListOf<Request>()
     private var respond: (Request) -> Response = { ok(it, "abcdef") }
     private val book = Book(id = "integrity-book", title = "Integrity", source = BookSource.AUDIOBOOKSHELF)
+    private val key = book.offlineDownloadKey
 
     @Before
     fun setUp() {
@@ -58,15 +60,15 @@ class OfflineDownloadIntegrityTest {
 
     @After
     fun tearDown() {
-        parentScope.cancel()
+        runBlocking { parentScope.coroutineContext[Job]!!.cancelAndJoin() }
         database.close()
         root.deleteRecursively()
     }
 
     @Test
     fun resumeSendsIfRangeWithTheStoredValidator() = runBlocking {
-        storage.createTrackTempFile(book.id, 0).writeText("abc")
-        storage.trackResumeValidatorFile(book.id, 0).writeText("\"v1\"")
+        storage.createTrackTempFile(key, 0).writeText("abc")
+        storage.trackResumeValidatorFile(key, 0).writeText("\"v1\"")
         respond = { request ->
             if (request.header("Range") == "bytes=3-" && request.header("If-Range") == "\"v1\"") {
                 partial(request, "def", "bytes 3-5/6")
@@ -79,13 +81,31 @@ class OfflineDownloadIntegrityTest {
 
         assertEquals("\"v1\"", requests.single().header("If-Range"))
         assertEquals("abcdef", trackFile().readText())
-        assertFalse(storage.trackResumeValidatorFile(book.id, 0).exists())
-        assertEquals(6L, storage.getManifest(book.id)!!.tracks.single().bytes)
+        assertFalse(storage.trackResumeValidatorFile(key, 0).exists())
+        assertEquals(6L, storage.getManifest(key)!!.tracks.single().bytes)
+    }
+
+    @Test
+    fun changedValidatorOnPartialResponseRequiresFullRetry() = runBlocking {
+        storage.createTrackTempFile(key, 0).writeText("abc")
+        storage.trackResumeValidatorFile(key, 0).writeText("\"v1\"")
+        respond = { request ->
+            partial(request, "xyz", "bytes 3-5/6").newBuilder().header("ETag", "\"v2\"").build()
+        }
+
+        assertEquals(DownloadRunOutcome.RETRY, manager().runDownload(book, finalAttempt = false))
+        assertNull(storage.getManifest(key))
+        assertFalse(storage.trackResumeValidatorFile(key, 0).exists())
+
+        respond = { ok(it, "uvwxyz") }
+        assertEquals(DownloadRunOutcome.COMPLETED, manager().runDownload(book))
+        assertNull(requests.last().header("Range"))
+        assertEquals("uvwxyz", trackFile().readText())
     }
 
     @Test
     fun partialWithoutValidatorRestartsFromZero() = runBlocking {
-        storage.createTrackTempFile(book.id, 0).writeText("stale")
+        storage.createTrackTempFile(key, 0).writeText("stale")
 
         assertEquals(DownloadRunOutcome.COMPLETED, manager().runDownload(book))
 
@@ -95,8 +115,8 @@ class OfflineDownloadIntegrityTest {
 
     @Test
     fun changedRepresentationReplacesThePartialFile() = runBlocking {
-        storage.createTrackTempFile(book.id, 0).writeText("abc")
-        storage.trackResumeValidatorFile(book.id, 0).writeText("\"v1\"")
+        storage.createTrackTempFile(key, 0).writeText("abc")
+        storage.trackResumeValidatorFile(key, 0).writeText("\"v1\"")
         respond = { ok(it, "uvwxyz") }
 
         assertEquals(DownloadRunOutcome.COMPLETED, manager().runDownload(book))
@@ -110,13 +130,13 @@ class OfflineDownloadIntegrityTest {
 
         val retrying = manager(tracks)
         assertEquals(DownloadRunOutcome.RETRY, retrying.runDownload(book, finalAttempt = false))
-        assertFalse(storage.isDownloaded(book.id))
-        assertEquals(OfflineDownloadStatus.QUEUED, retrying.progressByBookId.value[book.id]?.status)
+        assertFalse(storage.isDownloaded(key))
+        assertEquals(OfflineDownloadStatus.QUEUED, retrying.progressByDownloadKey.value[key]?.status)
 
         val final = manager(tracks)
         assertEquals(DownloadRunOutcome.FAILED, final.runDownload(book, finalAttempt = true))
-        assertEquals(OfflineDownloadStatus.FAILED, final.progressByBookId.value[book.id]?.status)
-        assertNull(storage.existingTrackFinalFile(book.id, 0))
+        assertEquals(OfflineDownloadStatus.FAILED, final.progressByDownloadKey.value[key]?.status)
+        assertNull(storage.existingTrackFinalFile(key, 0))
     }
 
     @Test
@@ -145,7 +165,7 @@ class OfflineDownloadIntegrityTest {
 
     @Test
     fun trackDownloadedWithoutAStoredAssetIdIsReused() = runBlocking {
-        storage.createTrackFinalFile(book.id, 0, "mp3").writeText("abcdef")
+        storage.createTrackFinalFile(key, 0, "mp3").writeText("abcdef")
         respond = { request -> ok(request, if (request.url.encodedPath == "/one.mp3") "uvwxyz" else "ghijkl") }
 
         assertEquals(DownloadRunOutcome.COMPLETED, manager(twoTracks(firstAssetId = "ino-2")).runDownload(book))
@@ -160,7 +180,7 @@ class OfflineDownloadIntegrityTest {
         val manager = manager()
 
         assertEquals(DownloadRunOutcome.FAILED, manager.runDownload(book, finalAttempt = false))
-        assertEquals(OfflineDownloadStatus.FAILED, manager.progressByBookId.value[book.id]?.status)
+        assertEquals(OfflineDownloadStatus.FAILED, manager.progressByDownloadKey.value[key]?.status)
     }
 
     @Test
@@ -173,7 +193,7 @@ class OfflineDownloadIntegrityTest {
 
     @Test
     fun incompleteManifestIsNotPlayedOffline() = runBlocking {
-        val present = storage.createTrackFinalFile(book.id, 0, "mp3").apply { writeText("audio") }
+        val present = storage.createTrackFinalFile(key, 0, "mp3").apply { writeText("audio") }
         val manifest = OfflineAudioManifest(
             bookId = book.id,
             title = book.title,
@@ -181,30 +201,31 @@ class OfflineDownloadIntegrityTest {
             downloadedAtEpochMs = 1L,
             tracks = listOf(
                 OfflineAudioTrackManifest(0, "One", 1_000L, storage.relativePath(present), 5L),
-                OfflineAudioTrackManifest(1, "Two", 1_000L, "${book.id}/track_1.mp3", 5L),
+                OfflineAudioTrackManifest(1, "Two", 1_000L, "$key/track_1.mp3", 5L),
             ),
+            downloadKey = key,
         )
         storage.saveManifest(manifest)
 
-        assertNull(manager().localTracks(book.id))
+        assertNull(manager().localTracks(key))
 
-        storage.createTrackFinalFile(book.id, 1, "mp3").writeText("audio")
-        assertEquals(2, manager().localTracks(book.id)?.size)
-        assertFalse(File(storage.bookDirectory(book.id), "manifest.json.tmp").exists())
+        storage.createTrackFinalFile(key, 1, "mp3").writeText("audio")
+        assertEquals(2, manager().localTracks(key)?.size)
+        assertFalse(File(storage.bookDirectory(key), "manifest.json.tmp").exists())
     }
 
     @Test
     fun cancelDiscardsOnlyThatBooksPartialFiles() = runBlocking {
-        storage.createTrackTempFile(book.id, 0).writeText("abc")
-        storage.createTrackFinalFile(book.id, 1, "mp3").writeText("audio")
+        storage.createTrackTempFile(key, 0).writeText("abc")
+        storage.createTrackFinalFile(key, 1, "mp3").writeText("audio")
         val other = storage.createTrackTempFile("other-book", 0).apply { writeText("keep") }
         val manager = manager()
 
-        manager.cancelDownload(book.id)
+        manager.cancelDownload(key)
 
-        assertFalse(storage.bookDirectory(book.id).exists())
+        assertFalse(storage.bookDirectory(key).exists())
         assertTrue(other.exists())
-        assertNull(manager.progressByBookId.value[book.id])
+        assertNull(manager.progressByDownloadKey.value[key])
     }
 
     private fun twoTracks(firstAssetId: String) = listOf(
@@ -212,7 +233,7 @@ class OfflineDownloadIntegrityTest {
         ResolvedTrack(1, "Two", 1_000L, "http://offline.test/two.mp3", sizeBytes = 6L, assetId = "ino-two"),
     )
 
-    private fun trackFile(): File = checkNotNull(storage.existingTrackFinalFile(book.id, 0))
+    private fun trackFile(): File = checkNotNull(storage.existingTrackFinalFile(key, 0))
 
     private fun manager(
         tracks: List<ResolvedTrack> = listOf(ResolvedTrack(0, "Track", 1_000L, "http://offline.test/track.mp3")),

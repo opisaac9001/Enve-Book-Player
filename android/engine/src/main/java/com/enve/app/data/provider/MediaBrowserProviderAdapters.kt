@@ -10,6 +10,7 @@ import com.enve.core.data.model.AppMediaType
 import com.enve.core.data.model.AudioTrack
 import com.enve.core.data.model.Book
 import com.enve.core.data.model.BookSource
+import com.enve.core.data.model.ProviderConnection
 import com.enve.core.data.model.Library
 import com.enve.core.data.provider.ProviderAdapter
 import com.enve.core.data.provider.PlaybackReportEvent
@@ -29,6 +30,7 @@ import java.util.concurrent.ConcurrentHashMap
 import kotlinx.serialization.json.booleanOrNull
 import kotlinx.serialization.json.jsonPrimitive
 import com.enve.app.data.repository.durationMs
+import okhttp3.HttpUrl.Companion.toHttpUrl
 import retrofit2.Response
 import javax.inject.Inject
 import javax.inject.Singleton
@@ -79,7 +81,7 @@ abstract class MediaBrowserProviderAdapter(
 
     override suspend fun getAudioTracks(book: Book): Result<List<AudioTrack>> = runSuspendCatching {
         if (book.mediaType != AppMediaType.AUDIOBOOK) return@runSuspendCatching emptyList()
-        val ctx = requestContext()
+        val ctx = requestContext() ?: error("Reconnect to ${providerSource.displayName}")
         val userId = currentUserId() ?: return@runSuspendCatching singleTrack(book, ctx)
         val response = audioChildren(userId, book.id)
         val children = response.body()?.items.orEmpty().filter { it.type == "Audio" }
@@ -117,17 +119,18 @@ abstract class MediaBrowserProviderAdapter(
     }
 
     private data class ChildSpan(val id: String, val startMs: Long, val durationMs: Long)
-    private val childSpans = ConcurrentHashMap<String, List<ChildSpan>>()
+    private val childSpans = ConcurrentHashMap<Pair<String, String>, List<ChildSpan>>()
 
     private suspend fun saveChildPosition(bookId: String, positionSec: Long) {
-        val spans = childSpans[bookId] ?: run {
+        val cacheKey = requestConnection().id to bookId
+        val spans = childSpans[cacheKey] ?: run {
             val userId = cachedUserId() ?: return
             val response = audioChildren(userId, bookId)
             if (!response.isSuccessful) return
             var start = 0L
             response.body()?.items.orEmpty().filter { it.type == "Audio" }
                 .map { item -> ChildSpan(item.id, start, item.durationMs).also { start += item.durationMs } }
-                .also { childSpans[bookId] = it }
+                .also { childSpans[cacheKey] = it }
         }
         if (spans.size < 2) return
         val positionMs = positionSec * 1000L
@@ -178,7 +181,7 @@ abstract class MediaBrowserProviderAdapter(
     }
 
     private suspend fun cachedUserId(): String? {
-        val key = ConnectionScope.getConnectionId().orEmpty()
+        val key = requestConnection().id
         userIds[key]?.let { return it }
         return currentUserId()?.also { userIds[key] = it }
     }
@@ -199,11 +202,15 @@ abstract class MediaBrowserProviderAdapter(
     }
 
     override suspend fun getEbookDownloadUrl(bookId: String): String? {
-        val ctx = requestContext()
-        return "${ctx.serverUrl.trimEnd('/')}/Items/$bookId/Download?${tokenQueryParameter}=${ctx.token}"
+        val ctx = requestContext() ?: return null
+        return ctx.serverUrl.toHttpUrl().newBuilder()
+            .addPathSegment("Items").addPathSegment(bookId).addPathSegment("Download")
+            .addQueryParameter(tokenQueryParameter, ctx.token).build().toString()
     }
 
     override fun invalidateCaches() {
+        childSpans.clear()
+        userIds.clear()
         repository.invalidateListCaches()
     }
 
@@ -220,36 +227,25 @@ abstract class MediaBrowserProviderAdapter(
     )
 
     private fun streamUrl(ctx: ProviderRequestContext, itemId: String): String =
-        "${ctx.serverUrl.trimEnd('/')}/Audio/$itemId/stream?static=true&${tokenQueryParameter}=${ctx.token}"
+        ctx.serverUrl.toHttpUrl().newBuilder()
+            .addPathSegment("Audio").addPathSegment(itemId).addPathSegment("stream")
+            .addQueryParameter("static", "true").addQueryParameter(tokenQueryParameter, ctx.token)
+            .build().toString()
 
-    private fun requestContext(): ProviderRequestContext {
-        val scopedId = ConnectionScope.getConnectionId()
-        if (scopedId != null) {
-            val connection = connectionRegistry.getConnectionsSync().find { it.id == scopedId }
-            if (connection != null) {
-                val token = vault.get(CredentialVault.accessTokenKey(scopedId))
-                    ?: vault.get(CredentialVault.passwordKey(scopedId))
-                    ?: prefs.getAccessTokenSync()
-                    ?: ""
-                return ProviderRequestContext(connection.serverUrl, token)
-            }
-        }
-        return ProviderRequestContext(
-            serverUrl = prefs.getServerUrlSync() ?: "",
-            token = prefs.getAccessTokenSync() ?: "",
-        )
+    private fun requestConnection(): ProviderConnection {
+        val id = ConnectionScope.getConnectionId() ?: prefs.getActiveConnectionIdSync()
+        return connectionRegistry.getConnectionsSync().firstOrNull {
+            it.id == id && it.enabled && it.source == providerSource
+        } ?: error("Reconnect to ${providerSource.displayName}")
     }
 
-    protected fun requestUsername(): String? {
-        val scopedId = ConnectionScope.getConnectionId()
-        if (scopedId != null) {
-            connectionRegistry.getConnectionsSync()
-                .find { it.id == scopedId }
-                ?.username
-                ?.let { return it }
-        }
-        return prefs.getUsernameSync()
+    private fun requestContext(): ProviderRequestContext? {
+        val connection = requestConnection()
+        val token = vault.get(CredentialVault.accessTokenKey(connection.id))?.takeIf { it.isNotBlank() } ?: return null
+        return ProviderRequestContext(connection.serverUrl, token)
     }
+
+    protected fun requestUsername(): String = requestConnection().username
 }
 
 @Singleton
@@ -292,7 +288,7 @@ class EmbyProviderAdapter @Inject constructor(
     override val providerSource: BookSource = BookSource.EMBY
 
     override suspend fun currentUserId(): String? {
-        val username = requestUsername() ?: return null
+        val username = requestUsername()
         val response = api.embyUsers()
         if (!response.isSuccessful) return null
         return response.body()

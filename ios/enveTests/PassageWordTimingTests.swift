@@ -38,7 +38,7 @@ struct PassageWordTimingTests {
     }
 
     @Test func malformedWordTimingsAreRejectedWhole() {
-        let text = "Ok 👩‍👩‍👧 naïve café."
+        let text = "Ok \u{1F469}\u{200D}\u{1F469}\u{200D}\u{1F467} naïve café."
         let good = PassageWordTiming(location: 0, length: 2, start: 10, end: 10.3)
         let validated = { (words: [PassageWordTiming]) in PassageWordTiming.validated(words, in: text, start: 10, end: 14) }
         #expect(validated([good]) == [good])
@@ -81,12 +81,12 @@ struct PassageWordTimingTests {
         func printed(_ text: String) -> [String] {
             PassageWordMatcher.printedWords(text).map(\.text)
         }
-        let text = "“Café”—naïve 👩‍👩‍👧 don’t well-known."
+        let text = "“Café”—naïve \u{1F469}\u{200D}\u{1F469}\u{200D}\u{1F467} don’t well-known."
         #expect(printed(text) == ["Café", "naïve", "don’t", "well-known"])
         #expect(printed("harbor—Mira watched/waited,quietly; it's 3.5 miles—and the sea-wall held.") == [
             "harbor", "Mira", "watched", "waited", "quietly", "it's", "3.5", "miles", "and", "the", "sea-wall", "held",
         ])
-        #expect(printed("— … 👩‍👩‍👧 !") == [])
+        #expect(printed("— … \u{1F469}\u{200D}\u{1F469}\u{200D}\u{1F467} !") == [])
         #expect(PassageWordMatcher.words("Café’s") == PassageWordMatcher.words("cafe's"))
         for word in PassageWordMatcher.printedWords(text) {
             #expect(String(text.utf16.dropFirst(word.location).prefix(word.length)) == word.text)
@@ -97,7 +97,7 @@ struct PassageWordTimingTests {
         let locator = try #require(mapping.locatorJSON(for: words[2]))
         let quote = try #require(try JSONSerialization.jsonObject(with: Data(locator.utf8)) as? [String: Any])["text"] as? [String: String]
         #expect(quote?["highlight"] == "don’t")
-        #expect(quote?["before"] == "“Café”—naïve 👩‍👩‍👧 ")
+        #expect(quote?["before"] == "“Café”—naïve \u{1F469}\u{200D}\u{1F469}\u{200D}\u{1F467} ")
         let cafe = try #require(mapping.locatorJSON(for: words[0]))
         #expect(cafe.contains("\"highlight\":\"Café\""))
         #expect(quote?["after"] == " well-known.")

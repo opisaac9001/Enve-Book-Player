@@ -37,10 +37,10 @@ class GrimmoryRecommendationsTest {
         val name = "recommendations-${UUID.randomUUID()}"
         val root = File(context.cacheDir, name).also { it.mkdirs() }
         val job = SupervisorJob()
+        val vault = CredentialVault.forProfile(context, name)
         val registry = ConnectionRegistry(PreferenceDataStoreFactory.create(scope = CoroutineScope(job + Dispatchers.IO)) {
             File(root, "connections.preferences_pb")
-        })
-        val vault = CredentialVault.forProfile(context, name)
+        }, vault)
         val db = Room.inMemoryDatabaseBuilder(context, ReaderDatabase::class.java).build()
         val scopes = mutableListOf<String?>()
         var payload = "[]"

@@ -87,8 +87,10 @@ import androidx.compose.foundation.layout.widthIn
 import com.enve.app.data.reader.ReaderPreferences
 import com.enve.app.readium.narrator.NarratorPack
 import com.enve.app.viewmodel.ReaderNarratorPackState
+import com.enve.app.viewmodel.ReaderSearchState
 import com.enve.app.viewmodel.ReaderUiState
 import com.enve.app.viewmodel.ReaderViewModel
+import com.enve.core.data.local.ReaderPageTurnStyle
 import com.enve.core.data.model.AnnotationKind
 import com.enve.core.data.model.AnnotationStyle
 import com.enve.core.data.model.ReaderAnnotation
@@ -106,7 +108,12 @@ import kotlin.math.roundToInt
 
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
-fun HearthReaderSheets(vm: ReaderViewModel, state: ReaderUiState) {
+fun HearthReaderSheets(
+    vm: ReaderViewModel,
+    state: ReaderUiState,
+    pageTurnStyle: ReaderPageTurnStyle,
+    onPageTurnStyleChange: (ReaderPageTurnStyle) -> Unit,
+) {
     val palette = Hearth.palette
     val customFonts by vm.customFonts.collectAsStateWithLifecycle()
 
@@ -117,7 +124,7 @@ fun HearthReaderSheets(vm: ReaderViewModel, state: ReaderUiState) {
     }
     if (state.showAppearanceSheet) {
         ModalBottomSheet(onDismissRequest = { vm.showAppearance(false) }, shape = sheetShape, containerColor = palette.bgElevated) {
-            AppearanceSheet(vm, state, customFonts)
+            AppearanceSheet(vm, state, customFonts, pageTurnStyle, onPageTurnStyleChange)
         }
     }
     if (state.showTocSheet) {
@@ -132,7 +139,7 @@ fun HearthReaderSheets(vm: ReaderViewModel, state: ReaderUiState) {
             shape = sheetShape,
             containerColor = palette.bgElevated,
         ) {
-            SearchSheet(vm, state)
+            SearchSheet(vm, state.search)
         }
     }
     if (state.showReadAloudSheet) {
@@ -702,7 +709,13 @@ private fun clipTime(ms: Long): String {
 }
 
 @Composable
-private fun AppearanceSheet(vm: ReaderViewModel, state: ReaderUiState, customFonts: List<CustomFont>) {
+private fun AppearanceSheet(
+    vm: ReaderViewModel,
+    state: ReaderUiState,
+    customFonts: List<CustomFont>,
+    pageTurnStyle: ReaderPageTurnStyle,
+    onPageTurnStyleChange: (ReaderPageTurnStyle) -> Unit,
+) {
     val palette = Hearth.palette
     val prefs = state.prefs
     val haptics = rememberReaderHaptics()
@@ -781,6 +794,25 @@ private fun AppearanceSheet(vm: ReaderViewModel, state: ReaderUiState, customFon
 
         AppearanceSection("Page turns")
         HearthToggleRow("Animate page turns", prefs.animatedPageTurns) { update(prefs.copy(animatedPageTurns = it)) }
+        if (prefs.animatedPageTurns) {
+            Row(horizontalArrangement = Arrangement.spacedBy(Hearth.Spacing.S)) {
+                HearthChip("Standard", selected = pageTurnStyle == ReaderPageTurnStyle.STANDARD, onClick = {
+                    if (pageTurnStyle != ReaderPageTurnStyle.STANDARD) haptics.tick()
+                    onPageTurnStyleChange(ReaderPageTurnStyle.STANDARD)
+                })
+                HearthChip("Page curl", selected = pageTurnStyle == ReaderPageTurnStyle.CURL, onClick = {
+                    if (pageTurnStyle != ReaderPageTurnStyle.CURL) haptics.tick()
+                    onPageTurnStyleChange(ReaderPageTurnStyle.CURL)
+                })
+            }
+            if (pageTurnStyle == ReaderPageTurnStyle.CURL) {
+                Text(
+                    "Curls when you tap an edge or press a page key. Swipes keep the standard motion. Off in scrolled layout, on e-ink, and with reduced motion.",
+                    style = HearthText.Caption,
+                    color = palette.textSecondary,
+                )
+            }
+        }
         HearthToggleRow("Volume buttons turn pages", prefs.volumeButtonNavigation) { update(prefs.copy(volumeButtonNavigation = it)) }
         Text(
             "Volume down: next page. Volume up: previous page. During audio playback, the buttons control volume.",
@@ -1065,13 +1097,13 @@ private fun ReaderAnnotation.matchesAnnotationQuery(query: String): Boolean {
 }
 
 @Composable
-private fun SearchSheet(vm: ReaderViewModel, state: ReaderUiState) {
+private fun SearchSheet(vm: ReaderViewModel, search: ReaderSearchState) {
     val palette = Hearth.palette
     val shape = RoundedCornerShape(Hearth.Radius.Inner)
     val keyboard = LocalSoftwareKeyboardController.current
     val focus = remember { androidx.compose.ui.focus.FocusRequester() }
     LaunchedEffect(Unit) {
-        if (state.searchQuery.isEmpty()) {
+        if (search.query.isEmpty()) {
             focus.requestFocus()
             keyboard?.show()
         }
@@ -1081,11 +1113,11 @@ private fun SearchSheet(vm: ReaderViewModel, state: ReaderUiState) {
             Overline("Search book")
             Spacer(Modifier.weight(1f))
             IconButton(onClick = {
-                if (state.searchLoading) vm.cancelSearch() else { vm.runSearch(); keyboard?.hide() }
+                if (search.loading) vm.cancelSearch() else { vm.runSearch(); keyboard?.hide() }
             }) {
                 Icon(
-                    if (state.searchLoading) Icons.Outlined.Close else Icons.Outlined.Search,
-                    contentDescription = if (state.searchLoading) "Cancel search" else "Search",
+                    if (search.loading) Icons.Outlined.Close else Icons.Outlined.Search,
+                    contentDescription = if (search.loading) "Cancel search" else "Search",
                     tint = palette.ember,
                 )
             }
@@ -1094,9 +1126,9 @@ private fun SearchSheet(vm: ReaderViewModel, state: ReaderUiState) {
             }
         }
         Box(Modifier.fillMaxWidth().clip(shape).background(palette.bg).border(1.dp, palette.hairline, shape).padding(Hearth.Spacing.M)) {
-            if (state.searchQuery.isEmpty()) Text("Find in this book…", style = hearthDisplay(16.sp, FontWeight.Normal), color = palette.textTertiary)
+            if (search.query.isEmpty()) Text("Find in this book…", style = hearthDisplay(16.sp, FontWeight.Normal), color = palette.textTertiary)
             BasicTextField(
-                value = state.searchQuery, onValueChange = vm::updateSearchQuery, singleLine = true,
+                value = search.query, onValueChange = vm::updateSearchQuery, singleLine = true,
                 textStyle = hearthDisplay(16.sp, FontWeight.Normal).copy(color = palette.text),
                 cursorBrush = SolidColor(palette.ember),
                 keyboardActions = androidx.compose.foundation.text.KeyboardActions(onSearch = { vm.runSearch(); keyboard?.hide() }),
@@ -1104,19 +1136,19 @@ private fun SearchSheet(vm: ReaderViewModel, state: ReaderUiState) {
                 modifier = Modifier.fillMaxWidth().focusRequester(focus).semantics { contentDescription = "Search text" },
             )
         }
-        if (state.searchOptionsAvailable) {
-            HearthToggleRow("Whole words", state.searchWholeWords, vm::updateSearchWholeWords)
+        if (search.optionsAvailable) {
+            HearthToggleRow("Whole words", search.wholeWords, vm::updateSearchWholeWords)
             Text(
-                if (state.searchWholeWords) "Word or exact phrase. Matching headings appear first."
+                if (search.wholeWords) "Word or exact phrase. Matching headings appear first."
                 else "Includes partial words. Large books may take longer.",
                 style = HearthText.Caption,
                 color = palette.textSecondary,
             )
         }
-        state.searchStatus?.let { Text(it, style = HearthText.Caption, color = palette.textSecondary) }
-        state.searchError?.let { Text(it, style = HearthText.Caption, color = palette.statusError) }
+        search.status?.let { Text(it, style = HearthText.Caption, color = palette.textSecondary) }
+        search.error?.let { Text(it, style = HearthText.Caption, color = palette.statusError) }
         LazyColumn(Modifier.heightIn(max = 400.dp).weight(1f, fill = false)) {
-            items(state.searchResults, key = { it.id }) { r ->
+            items(search.results, key = { it.id }) { r ->
                 Column(
                     Modifier.fillMaxWidth().clickable { vm.seekToSearchResult(r); vm.showSearch(false) }.padding(vertical = Hearth.Spacing.M),
                 ) {
@@ -1132,7 +1164,7 @@ private fun SearchSheet(vm: ReaderViewModel, state: ReaderUiState) {
                     Text(emphasized, style = HearthText.Body, color = palette.text, maxLines = 3, overflow = TextOverflow.Ellipsis)
                 }
             }
-            if (state.searchHasMore && !state.searchLoading) {
+            if (search.hasMore && !search.loading) {
                 item {
                     HearthChip("Load more results", selected = false, onClick = vm::loadMoreSearchResults)
                 }

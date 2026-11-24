@@ -69,6 +69,15 @@ final class LocalEbookImporter: @unchecked Sendable {
         }
     }
 
+    nonisolated func resolveExistingLocalEbookURL(for book: Book) -> URL? {
+        if book.source == .local {
+            return resolveExistingLocalEbookURL(bookIdentifier: book.id, ebookFileURL: book.ebookFileURL, filePath: book.filePath)
+        }
+        if let url = cachedEbook(for: book) { return url }
+        if let url = book.ebookFileURL, url.isFileURL, isExistingEbook(url) { return url }
+        return recordedRemoteEbook(for: book, roots: [readaloudCacheRoot])
+    }
+
     nonisolated func resolveExistingLocalEbookURL(bookIdentifier: String? = nil, ebookFileURL: URL?, filePath: String?) -> URL? {
         for url in [ebookFileURL, filePath.map { URL(fileURLWithPath: $0) }].compactMap({ $0 })
         where url.deletingLastPathComponent().lastPathComponent != "ConvertedEbooks" {
@@ -151,7 +160,7 @@ final class LocalEbookImporter: @unchecked Sendable {
     func cacheRemoteEbook(tempURL: URL, preferredFilename: String, bookIdentifier: String? = nil) throws -> URL {
         try ImportLimits.validateImportedMediaFile(tempURL)
         try fileManager.createDirectory(at: remoteReaderCacheRoot, withIntermediateDirectories: true)
-        let destinationURL = cachedRemoteEbookURL(preferredFilename: preferredFilename, bookIdentifier: bookIdentifier)
+        let destinationURL = storedRemoteEbookURL(root: remoteReaderCacheRoot, preferredFilename: preferredFilename, bookIdentifier: bookIdentifier)
         if fileManager.fileExists(atPath: destinationURL.path) {
             try? fileManager.removeItem(at: destinationURL)
         }
@@ -175,25 +184,42 @@ final class LocalEbookImporter: @unchecked Sendable {
             )
         }
         try fileManager.createDirectory(at: remoteReaderCacheRoot, withIntermediateDirectories: true)
-        let destinationURL = cachedRemoteEbookURL(preferredFilename: preferredFilename, bookIdentifier: bookIdentifier)
+        let destinationURL = storedRemoteEbookURL(root: remoteReaderCacheRoot, preferredFilename: preferredFilename, bookIdentifier: bookIdentifier)
         try data.write(to: destinationURL, options: .atomic)
         return destinationURL
     }
 
-    private func cachedRemoteEbookURL(preferredFilename: String, bookIdentifier: String?) -> URL {
-        let sanitizedName = sanitizeFilename(preferredFilename)
-        let fileName: String
-        if let bookIdentifier, !bookIdentifier.isEmpty {
-            let safeIdentifier = sanitizeFilename(bookIdentifier)
-            if safeIdentifier.isEmpty || Self.matchesRemoteBookIdentifier(sanitizedName, identifier: safeIdentifier) {
-                fileName = sanitizedName
-            } else {
-                fileName = "\(safeIdentifier)-\(sanitizedName)"
+    nonisolated func cachedEbook(for book: Book) -> URL? {
+        cachedEbook(forBookId: book.ebookStorageID) ?? recordedRemoteEbook(for: book, roots: [serverEbooksRoot, remoteReaderCacheRoot])
+    }
+
+    private nonisolated func recordedRemoteEbook(for book: Book, roots: [URL]) -> URL? {
+        guard let recorded = book.ebookFileURL, recorded.isFileURL else { return nil }
+        let directory = recorded.deletingLastPathComponent().standardizedFileURL
+        for root in roots {
+            if directory.path != root.standardizedFileURL.path {
+                // The sandbox UUID can change after an update. Preserve the profile-relative path.
+                let parts = directory.pathComponents
+                guard let app = parts.lastIndex(of: "Application"),
+                    parts.indices.contains(app + 1), UUID(uuidString: parts[app + 1]) != nil,
+                    let currentApp = root.pathComponents.lastIndex(of: "Application"),
+                    parts.dropFirst(app + 2).elementsEqual(root.pathComponents.dropFirst(currentApp + 2))
+                else { continue }
             }
-        } else {
-            fileName = sanitizedName
+            let candidate = root.appendingPathComponent(recorded.lastPathComponent)
+            guard candidate.resolvingSymlinksInPath().deletingLastPathComponent().standardizedFileURL.path
+                    == root.resolvingSymlinksInPath().standardizedFileURL.path, isExistingEbook(candidate) else { continue }
+            return candidate
         }
-        return remoteReaderCacheRoot.appendingPathComponent(fileName, isDirectory: false)
+        return nil
+    }
+
+    func deleteRecordedLegacyEbook(for book: Book, otherBooks: [Book]) throws {
+        let roots = [serverEbooksRoot, remoteReaderCacheRoot, readaloudCacheRoot]
+        guard let file = recordedRemoteEbook(for: book, roots: roots),
+            !otherBooks.contains(where: { $0.uniqueId != book.uniqueId && recordedRemoteEbook(for: $0, roots: roots) == file })
+        else { return }
+        try fileManager.removeItem(at: file)
     }
 
     nonisolated func cachedEbook(forBookId bookId: String) -> URL? {
@@ -237,7 +263,7 @@ final class LocalEbookImporter: @unchecked Sendable {
     private nonisolated func offlineEbookURL(for book: Book, retainedFiles: [URL]?) -> URL? {
         if book.source == .local {
             return resolveExistingLocalEbookURL(
-                bookIdentifier: book.id,
+                bookIdentifier: book.ebookStorageID,
                 ebookFileURL: book.ebookFileURL,
                 filePath: book.filePath
             )
@@ -251,7 +277,7 @@ final class LocalEbookImporter: @unchecked Sendable {
 
         let retained: URL?
         if let retainedFiles {
-            let identifier = sanitizeFilename(book.id)
+            let identifier = book.ebookStorageID
             retained = [identifier + "-", identifier + "."].lazy.compactMap { prefix -> URL? in
                 var lower = 0
                 var upper = retainedFiles.count
@@ -264,10 +290,11 @@ final class LocalEbookImporter: @unchecked Sendable {
                 return retainedFiles[lower]
             }.first
         } else {
-            retained = persistedRemoteEbook(forBookId: book.id)
+            retained = persistedRemoteEbook(forBookId: book.ebookStorageID)
         }
         return retained
-            ?? cachedReadaloudEpub(forBookId: book.id)
+            ?? recordedRemoteEbook(for: book, roots: [serverEbooksRoot, readaloudCacheRoot])
+            ?? cachedReadaloudEpub(forBookId: book.ebookStorageID)
     }
 
     func persistRemoteEbookForOffline(from sourceURL: URL, preferredFilename: String? = nil, bookIdentifier: String? = nil) throws -> URL {
@@ -285,6 +312,13 @@ final class LocalEbookImporter: @unchecked Sendable {
             try? fileManager.removeItem(at: destinationURL)
         }
 
+        let sourceDirectory = sourceURL.deletingLastPathComponent().standardizedFileURL
+        let isUnscopedCache = sourceDirectory.path == remoteReaderCacheRoot.standardizedFileURL.path
+            && bookIdentifier.map { !Self.matchesRemoteBookIdentifier(sourceURL.lastPathComponent, identifier: $0) } == true
+        if sourceDirectory.path == serverEbooksRoot.standardizedFileURL.path || isUnscopedCache {
+            try fileManager.copyItem(at: sourceURL, to: destinationURL)
+            return destinationURL
+        }
         do {
             try fileManager.moveItem(at: sourceURL, to: destinationURL)
         } catch {
@@ -297,21 +331,18 @@ final class LocalEbookImporter: @unchecked Sendable {
         return destinationURL
     }
 
-    func deleteRemoteEbookArtifacts(forBookId bookId: String) throws {
-        if let connectionDirs = try? fileManager.contentsOfDirectory(at: streamedEpubCacheRoot, includingPropertiesForKeys: nil) {
-            for connectionDir in connectionDirs {
-                guard isProfileOwnedURL(connectionDir),
-                    let bookDirs = try? fileManager.contentsOfDirectory(at: connectionDir, includingPropertiesForKeys: nil)
-                else {
-                    continue
-                }
-                for dir in bookDirs
-                where isProfileOwnedURL(dir)
-                    && (dir.lastPathComponent == "book-\(bookId)" || dir.lastPathComponent.hasPrefix("book-\(bookId)-file-")) {
-                    try? fileManager.removeItem(at: dir)
-                }
+    func deleteRemoteEbookArtifacts(for book: Book) throws {
+        let connectionDir = streamedEpubCacheRoot.appendingPathComponent(book.providerId.uuidString)
+        if let dirs = try? fileManager.contentsOfDirectory(at: connectionDir, includingPropertiesForKeys: nil) {
+            for dir in dirs where isProfileOwnedURL(dir)
+                && (dir.lastPathComponent == "book-\(book.id)" || dir.lastPathComponent.hasPrefix("book-\(book.id)-file-")) {
+                try fileManager.removeItem(at: dir)
             }
         }
+        try deleteRemoteEbookArtifacts(forBookId: book.ebookStorageID)
+    }
+
+    func deleteRemoteEbookArtifacts(forBookId bookId: String) throws {
         let urls = [persistedRemoteEbook(forBookId: bookId), existingRemoteEbook(forBookId: bookId, roots: [remoteReaderCacheRoot])]
             .compactMap { $0 }
         var lastError: Error?
@@ -383,7 +414,11 @@ final class LocalEbookImporter: @unchecked Sendable {
         } else {
             fileName = sanitizedName
         }
-        return root.appendingPathComponent(fileName, isDirectory: false)
+        guard fileName.utf8.count > 255 else { return root.appendingPathComponent(fileName, isDirectory: false) }
+        let ext = String(decoding: (fileName as NSString).pathExtension.utf8.prefix(14), as: UTF8.self)
+        let suffix = ext.isEmpty ? "" : "." + ext
+        let stem = (fileName as NSString).deletingPathExtension.utf8.prefix(255 - suffix.utf8.count)
+        return root.appendingPathComponent(String(decoding: stem, as: UTF8.self) + suffix, isDirectory: false)
     }
 
     nonisolated func readaloudEpubURL(forBookId bookId: String) -> URL {
@@ -397,27 +432,20 @@ final class LocalEbookImporter: @unchecked Sendable {
     }
 
     func resolveEbookForOverlay(book: Book) -> URL? {
-        if let readaloud = cachedReadaloudEpub(forBookId: book.id),
+        if let readaloud = cachedReadaloudEpub(forBookId: book.ebookStorageID),
             isExistingEbook(readaloud)
         {
             return readaloud
         }
         if book.source == .storyteller {
-            return nil
+            return recordedRemoteEbook(for: book, roots: [readaloudCacheRoot])
         }
-        if let offline = persistedRemoteEbook(forBookId: book.id),
+        if let offline = persistedRemoteEbook(forBookId: book.ebookStorageID),
             isExistingEbook(offline)
         {
             return offline
         }
-        if let url = book.ebookFileURL, isExistingEbook(url) {
-            return url
-        }
-        return resolveExistingLocalEbookURL(
-            bookIdentifier: book.id,
-            ebookFileURL: book.ebookFileURL,
-            filePath: book.mediaType == .ebook ? book.filePath : nil
-        )
+        return resolveExistingLocalEbookURL(for: book)
     }
 
     func cacheReadaloudEpub(tempURL: URL, bookId: String) throws -> URL {

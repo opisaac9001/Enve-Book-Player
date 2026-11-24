@@ -50,6 +50,7 @@ import kotlin.math.abs
 fun HearthInsightsScreen(
     onBack: () -> Unit,
     onSelectBook: (Book) -> Unit,
+    onOpenRecaps: () -> Unit,
 ) {
     val vm: HearthInsightsViewModel = profileViewModel()
     val insights by vm.insights.collectAsStateWithLifecycle()
@@ -103,6 +104,9 @@ fun HearthInsightsScreen(
                 item { CreatorsCard(insights) }
             }
             item { YearReviewCard(insights, vm::selectYear) }
+            item {
+                com.enve.hearth.design.QuietButton(text = "Monthly and yearly recaps", onClick = onOpenRecaps)
+            }
         }
     }
 }

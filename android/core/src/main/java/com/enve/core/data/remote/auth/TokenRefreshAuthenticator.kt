@@ -3,10 +3,8 @@ package com.enve.core.data.remote.auth
 
 import com.enve.core.data.local.ConnectionRegistry
 import com.enve.core.auth.CredentialVault
-import com.enve.core.data.remote.ConnectionScope
 import com.enve.core.data.remote.TokenRefreshContext
 import com.enve.core.data.remote.TokenRefreshStrategy
-import com.enve.core.data.local.PreferencesManager
 import com.enve.core.data.model.BookSource
 import kotlinx.coroutines.runBlocking
 import kotlinx.coroutines.sync.withLock
@@ -19,7 +17,6 @@ import javax.inject.Singleton
 
 @Singleton
 class TokenRefreshAuthenticator @Inject constructor(
-    private val preferencesManager: PreferencesManager,
     private val vault: CredentialVault,
     private val connectionRegistry: ConnectionRegistry,
     private val tokenRefreshStrategies: Map<BookSource, @JvmSuppressWildcards TokenRefreshStrategy>,
@@ -31,23 +28,19 @@ class TokenRefreshAuthenticator @Inject constructor(
         if (path.contains("auth/login") || path.contains("auth/refresh")) return null
         if (response.request.header("X-Retry-Auth") != null) return null
 
-        val scopedId = ConnectionScope.getConnectionId()
-        val connections = connectionRegistry.getConnectionsSync()
-        val activeConnectionId = scopedId ?: preferencesManager.getActiveConnectionIdSync()
-        val connection = activeConnectionId?.let { id -> connections.find { it.id == id } }
-        val source = connection?.source ?: preferencesManager.getActiveBookSourceSync()
-        val serverUrl = if (connection != null) {
-            connection.serverUrl
-        } else {
-            preferencesManager.getServerUrlSync()
-        }
+        val auth = response.request.tag(RequestAuthContext::class.java) ?: return null
+        if (!response.request.url.belongsTo(auth.serverUrl, auth.credentialScope)) return null
+        val activeConnectionId = auth.connectionId ?: return null
+        val connection = connectionRegistry.getConnectionsSync()
+            .find { it.id == activeConnectionId && it.enabled } ?: return null
+        if (connection.serverUrl != auth.serverUrl) return null
+        val source = connection.source
+        val serverUrl = connection.serverUrl
         val strategy = tokenRefreshStrategies[source] ?: return null
-        if (serverUrl.isNullOrBlank()) return null
 
         return runBlocking {
             tokenRefreshCoordinator.mutex.withLock {
-                val currentToken = activeConnectionId?.let { vault.get(CredentialVault.accessTokenKey(it)) }
-                    ?: preferencesManager.getAccessTokenSync()
+                val currentToken = vault.get(CredentialVault.accessTokenKey(activeConnectionId))
                 val requestToken = response.request.header("Authorization")
                     ?.removePrefix("Bearer ")?.trim()
 
@@ -64,12 +57,9 @@ class TokenRefreshAuthenticator @Inject constructor(
                         serverUrl = serverUrl,
                         connectionId = activeConnectionId,
                         connection = connection,
-                        refreshToken = activeConnectionId?.let { vault.get(CredentialVault.refreshTokenKey(it)) }
-                            ?: preferencesManager.getRefreshTokenSync(),
-                        username = activeConnectionId?.let { vault.get(CredentialVault.usernameKey(it)) }
-                            ?: preferencesManager.getUsernameSync(),
-                        password = activeConnectionId?.let { vault.get(CredentialVault.passwordKey(it)) }
-                            ?: vault.get(CredentialVault.KEY_PASSWORD),
+                        refreshToken = vault.get(CredentialVault.refreshTokenKey(activeConnectionId)),
+                        username = vault.get(CredentialVault.usernameKey(activeConnectionId)),
+                        password = vault.get(CredentialVault.passwordKey(activeConnectionId)),
                     ),
                 )
                 if (newToken != null) {

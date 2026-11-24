@@ -5,7 +5,6 @@ import kotlinx.coroutines.withContext
 import kotlinx.serialization.json.Json
 import kotlinx.serialization.json.JsonNull
 import kotlinx.serialization.json.JsonObject
-import kotlinx.serialization.json.JsonPrimitive
 import kotlinx.serialization.json.buildJsonObject
 import kotlinx.serialization.json.contentOrNull
 import kotlinx.serialization.json.doubleOrNull
@@ -42,26 +41,28 @@ class WatchGrimmoryClient(private val vault: CredentialVault) : WatchAudiobookPr
     }
 
     override suspend fun books(account: WatchAccount, libraryId: String, page: Int): WatchBookPage = withContext(Dispatchers.IO) {
-        val url = endpoint(account, "api/v1/app/books").newBuilder()
-            .addQueryParameter("libraryId", libraryId)
+        val url = endpoint(account, "api/v1/books/page").newBuilder()
+            .addQueryParameter("facet", "library:$libraryId")
+            .addQueryParameter("facet", "file_type:AUDIOBOOK")
+            .addQueryParameter("sort", "-addedOn")
             .addQueryParameter("page", page.toString())
             .addQueryParameter("size", "30")
-            .addQueryParameter("sort", "addedOn")
-            .addQueryParameter("dir", "desc")
             .build()
         val data = request(account, url).use(::parse).jsonObject
         val books = data["content"]?.jsonArray.orEmpty()
             .map { it.jsonObject }
-            .filter { it.hasAudio() }
-            .map { summary ->
+            .map { book ->
+                val metadata = book["metadata"]?.takeUnless { it is JsonNull }?.jsonObject
                 WatchBook(
                     account = account.key,
-                    id = summary.gString("id"),
-                    title = summary.gString("title"),
-                    author = summary["authors"]?.jsonArray.orEmpty().joinToString(", ") { it.jsonPrimitive.content },
+                    id = book.gString("id"),
+                    title = book.gString("title").ifBlank { metadata?.gString("title").orEmpty() },
+                    author = metadata?.get("authors")?.jsonArray.orEmpty().joinToString(", ") { it.jsonPrimitive.content },
                 )
             }
-        WatchBookPage(books, data.gBoolean("hasNext"))
+        val pageInfo = data["page"]?.jsonObject
+        val hasNext = pageInfo != null && pageInfo.gInt("number", 0) + 1 < pageInfo.gInt("totalPages", 0)
+        WatchBookPage(books, hasNext)
     }
 
     override suspend fun download(account: WatchAccount, bookId: String): WatchBookDownload = withContext(Dispatchers.IO) {
@@ -228,20 +229,11 @@ class WatchGrimmoryClient(private val vault: CredentialVault) : WatchAudiobookPr
     }
 }
 
-private fun JsonObject.hasAudio(): Boolean {
-    val types = buildList {
-        add(gString("primaryFileType"))
-        addAll(this@hasAudio["fileTypes"]?.jsonArray.orEmpty().map { it.jsonPrimitive.content })
-    }
-    return types.any { it.uppercase() in setOf("AUDIOBOOK", "MP3", "M4A", "M4B", "FLAC", "OGG", "OPUS", "WAV") }
-}
-
 private fun JsonObject.gString(key: String) = this[key]?.jsonPrimitive?.contentOrNull.orEmpty()
 private fun JsonObject.gLong(key: String) = gLongOrNull(key) ?: 0L
 private fun JsonObject.gLongOrNull(key: String) = this[key]?.jsonPrimitive?.longOrNull
     ?: this[key]?.jsonPrimitive?.doubleOrNull?.toLong()
 private fun JsonObject.gInt(key: String, fallback: Int) = gLongOrNull(key)?.toInt() ?: fallback
-private fun JsonObject.gBoolean(key: String) = (this[key] as? JsonPrimitive)?.content?.toBooleanStrictOrNull() ?: false
 private fun JsonObject.gEpochMillis(key: String): Long {
     val primitive = this[key]?.jsonPrimitive ?: return 0L
     primitive.longOrNull?.let { return it }

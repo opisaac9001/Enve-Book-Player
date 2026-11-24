@@ -4,6 +4,7 @@ import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
 import com.enve.app.data.offline.ComicOfflineService
 import com.enve.app.data.offline.OfflineDownloadManager
+import com.enve.app.data.offline.offlineDownloadKey
 import dagger.hilt.android.lifecycle.HiltViewModel
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.Dispatchers
@@ -50,7 +51,7 @@ class StorageHubViewModel @Inject constructor(
                 val audioCount = withContext(Dispatchers.IO) {
                     offlineDownloadManager.listDownloadedManifests().size
                 }
-                val comicCount = comicOfflineService.downloadedBookIds.value.size
+                val comicCount = comicOfflineService.downloadedKeys.value.size
                 val downloadedCount = audioCount + comicCount
                 val cacheBytes = withContext(Dispatchers.IO) { directorySize(locations.cacheDirectory) }
                 val downloadedBytes = withContext(Dispatchers.IO) {
@@ -109,9 +110,9 @@ class StorageHubViewModel @Inject constructor(
             try {
                 withContext(Dispatchers.IO) {
                     offlineDownloadManager.listDownloadedManifests()
-                        .forEach { offlineDownloadManager.removeDownload(it.bookId) }
+                        .forEach { offlineDownloadManager.removeDownload(it.downloadKey) }
                     comicOfflineService.listDownloadedManifests()
-                        .forEach { comicOfflineService.removeDownload(it.id) }
+                        .forEach { comicOfflineService.removeDownload(it.offlineDownloadKey) }
                 }
             } catch (e: CancellationException) {
                 throw e

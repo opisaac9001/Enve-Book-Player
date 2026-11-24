@@ -10,6 +10,8 @@ import dagger.hilt.android.qualifiers.ApplicationContext
 import kotlinx.serialization.encodeToString
 import kotlinx.serialization.json.Json
 import java.io.File
+import java.nio.file.StandardCopyOption
+import java.nio.file.Files
 import javax.inject.Inject
 import javax.inject.Singleton
 
@@ -35,18 +37,77 @@ class ComicOfflineStorage(
 
     private val json = Json { ignoreUnknownKeys = true; isLenient = true; encodeDefaults = true }
 
-    init {
-        CompletedDownloadImporter.recover(sharedDownloadsDirectory)
-    }
-
-    private fun safeId(bookId: String): String = bookId.replace(Regex("[^a-zA-Z0-9_-]"), "_")
-
-    private fun bookDirectory(bookId: String): File = File(rootDir, safeId(bookId))
-
     private val pendingDirectory = File(rootDir, ".pending").also { check(it.isDirectory || it.mkdirs()) }
 
+    @Volatile private var indexedDirectories: Map<String, String>? = null
+
+    init {
+        CompletedDownloadImporter.recover(sharedDownloadsDirectory)
+        migratePendingRequests()
+    }
+
+    private fun migratePendingRequests() {
+        pendingDirectory.listFiles().orEmpty().filter { it.extension == "json" }.forEach { file ->
+            val book = runCatching { json.decodeFromString<Book>(file.readText()) }.getOrNull() ?: return@forEach
+            if (file.nameWithoutExtension == book.offlineDownloadKey) return@forEach
+            if (!File(pendingDirectory, "${book.offlineDownloadKey}.json").exists()) savePendingRequest(book)
+            android.util.AtomicFile(file).delete()
+        }
+    }
+
+    private fun downloadDirectories(): List<File> =
+        rootDir.listFiles().orEmpty().filter { it.isDirectory && !it.name.startsWith(".") }
+
+    private fun decodeManifest(dir: File): Book? {
+        val file = File(dir, "book.json")
+        if (!file.exists()) return null
+        return runCatching { json.decodeFromString<Book>(file.readText()) }.getOrNull()
+    }
+
+    private fun readManifest(dir: File): Book? {
+        val manifest = decodeManifest(dir)
+        if (manifest != null && !isRecovered(dir, manifest)) return manifest
+        val file = dir.listFiles().orEmpty().firstOrNull { it.isCommittedBookFile() }
+        if (manifest == null && (file == null || dir.name.startsWith("dl-") || offlineDownloadKey(BookSource.LOCAL, null, dir.name) == dir.name)) {
+            return null
+        }
+        return Book(
+            id = recoveredLocalBookId("ebook", dir.name),
+            title = manifest?.title ?: dir.name,
+            author = manifest?.author,
+            coverUrl = manifest?.coverUrl?.takeIf { it.startsWith("file:") },
+            source = BookSource.LOCAL,
+            mediaType = AppMediaType.EBOOK,
+            primaryFileType = manifest?.primaryFileType ?: file?.extension,
+            readAlongAvailable = manifest?.readAlongAvailable == true,
+            hasEbook = true,
+            hasAudio = manifest?.hasAudio == true,
+            isDownloaded = true,
+        )
+    }
+
+    private fun isRecovered(dir: File, manifest: Book): Boolean =
+        manifest.source != BookSource.LOCAL && manifest.connectionId == null && dir.name == legacyOfflineDirectoryName(manifest.id)
+
+    private fun indexed(): Map<String, String> = indexedDirectories ?: downloadDirectories()
+        .mapNotNull { dir -> readManifest(dir)?.offlineDownloadKey?.takeIf { it != dir.name }?.let { it to dir.name } }
+        .toMap()
+        .also { indexedDirectories = it }
+
+    private fun bookDirectory(key: String): File {
+        require(SAFE_SEGMENT.matches(key))
+        return File(rootDir, indexed()[key] ?: key)
+    }
+
+    private fun keyOf(dir: File): String = readManifest(dir)?.offlineDownloadKey ?: dir.name
+
+    private fun legacySourceBookId(key: String): String? {
+        val dir = bookDirectory(key)
+        return decodeManifest(dir)?.id?.takeIf { dir.name == legacyOfflineDirectoryName(it) }
+    }
+
     fun savePendingRequest(book: Book) {
-        val atomic = android.util.AtomicFile(File(pendingDirectory, "${safeId(book.id)}.json"))
+        val atomic = android.util.AtomicFile(File(pendingDirectory, "${book.offlineDownloadKey}.json"))
         val output = atomic.startWrite()
         try {
             output.write(json.encodeToString(book).toByteArray())
@@ -58,84 +119,85 @@ class ComicOfflineStorage(
     }
 
     fun listPendingRequests(): List<Book> = pendingDirectory.listFiles().orEmpty()
-        .filter { it.extension == "json" }.map { json.decodeFromString<Book>(it.readText()) }
+        .filter { it.extension == "json" }
+        .mapNotNull { runCatching { json.decodeFromString<Book>(it.readText()) }.getOrNull() }
 
-    fun clearPendingRequest(bookId: String) {
-        android.util.AtomicFile(File(pendingDirectory, "${safeId(bookId)}.json")).delete()
+    fun hasPendingRequest(key: String): Boolean {
+        require(SAFE_SEGMENT.matches(key))
+        return File(pendingDirectory, "$key.json").isFile
     }
 
-    fun isDownloaded(bookId: String): Boolean {
-        val dir = bookDirectory(bookId)
+    fun clearPendingRequest(key: String) {
+        require(SAFE_SEGMENT.matches(key))
+        android.util.AtomicFile(File(pendingDirectory, "$key.json")).delete()
+    }
+
+    fun isDownloaded(key: String): Boolean {
+        val dir = bookDirectory(key)
         if (!dir.exists()) return false
         return dir.listFiles().orEmpty().any { it.isCommittedBookFile() }
     }
 
-    fun getDownloadedFile(bookId: String): File? {
-        val dir = bookDirectory(bookId)
+    fun getDownloadedFile(key: String): File? {
+        val dir = bookDirectory(key)
         if (!dir.exists()) return null
         return dir.listFiles().orEmpty().firstOrNull { it.isCommittedBookFile() }
     }
 
-    fun createTempFile(bookId: String, extension: String): File {
-        val dir = bookDirectory(bookId).also { it.mkdirs() }
+    fun createTempFile(key: String, extension: String): File {
+        val dir = bookDirectory(key).also { it.mkdirs() }
         val ext = extension.lowercase().ifBlank { "bin" }
         return File(dir, "book.$ext.part")
     }
 
-    fun existingTempFile(bookId: String): File? {
-        val dir = bookDirectory(bookId)
+    fun existingTempFile(key: String): File? {
+        val dir = bookDirectory(key)
         if (!dir.exists()) return null
         return dir.listFiles()?.firstOrNull {
             it.isFile && it.name.startsWith("book.") && it.name.endsWith(".part") && it.length() > 0L
         }
     }
 
+    fun resumeValidatorFile(key: String): File = File(bookDirectory(key), ".resume-validator")
+
     fun commit(temp: File): File {
         val final = File(temp.parentFile, temp.name.removeSuffix(".part"))
-        if (final.exists()) check(final.delete())
-        if (!temp.renameTo(final)) {
-            temp.copyTo(final)
-            temp.delete()
-        }
+        check(temp.renameTo(final)) { "Could not commit the completed book" }
         return final
     }
 
     fun saveManifest(book: Book) {
-        val dir = bookDirectory(book.id).also { it.mkdirs() }
-        File(dir, "book.json").writeText(json.encodeToString(book))
+        require(!isRecoveredLocalBookId(book.id))
+        val dir = bookDirectory(book.offlineDownloadKey).also { it.mkdirs() }
+        val staged = File(dir, ".book-manifest.tmp")
+        staged.outputStream().use { output ->
+            output.write(json.encodeToString(book).toByteArray(Charsets.UTF_8))
+            output.fd.sync()
+        }
+        Files.move(staged.toPath(), File(dir, "book.json").toPath(), StandardCopyOption.ATOMIC_MOVE, StandardCopyOption.REPLACE_EXISTING)
+        indexedDirectories = null
     }
 
-    fun getManifest(bookId: String): Book? {
-        val file = File(bookDirectory(bookId), "book.json")
-        if (!file.exists()) return null
-        return runCatching { json.decodeFromString<Book>(file.readText()) }.getOrNull()
-    }
+    fun getManifest(key: String): Book? = readManifest(bookDirectory(key))
 
     fun listManifests(): List<Book> =
-        rootDir.listFiles().orEmpty()
-            .filter { it.isDirectory && !it.name.startsWith(".") && isDownloadedDir(it) }
-            .mapNotNull { dir ->
-                val file = File(dir, "book.json")
-                if (!file.exists()) null
-                else runCatching { json.decodeFromString<Book>(file.readText()) }.getOrNull()
-            }
+        downloadDirectories().filter(::isDownloadedDir).mapNotNull(::readManifest)
 
-    fun removeDownload(bookId: String) {
-        CompletedDownloadImporter.revoke(sharedDownloadsDirectory, profileId, bookId, "ebook")
-        clearPendingRequest(bookId)
-        check(!bookDirectory(bookId).exists() || bookDirectory(bookId).deleteRecursively())
+    fun removeDownload(key: String) {
+        val dir = bookDirectory(key)
+        val legacyBookId = decodeManifest(dir)?.id?.takeIf { dir.name == legacyOfflineDirectoryName(it) }
+        CompletedDownloadImporter.revoke(sharedDownloadsDirectory, profileId, key, "ebook")
+        if (legacyBookId != null && legacyBookId != key) {
+            CompletedDownloadImporter.revoke(sharedDownloadsDirectory, profileId, legacyBookId, "ebook")
+        }
+        clearPendingRequest(key)
+        check(!dir.exists() || dir.deleteRecursively())
+        indexedDirectories = null
         collectUnusedSharedDownloads()
     }
 
-    fun listDownloadedBookIds(): Set<String> {
-        return rootDir.listFiles().orEmpty()
-            .filter { it.isDirectory && !it.name.startsWith(".") && isDownloadedDir(it) }
-            .mapNotNull { dir ->
-
-                getManifest(dir.name)?.id ?: dir.name
-            }
-            .toSet()
-    }
+    fun listDownloadedKeys(): Set<String> =
+        downloadDirectories().filter(::isDownloadedDir).map(::keyOf).toSet()
 
     private fun isDownloadedDir(dir: File): Boolean =
         dir.listFiles().orEmpty().any { it.isCommittedBookFile() }
@@ -148,27 +210,31 @@ class ComicOfflineStorage(
 
     fun sharedStorageBytes(): Long = CompletedDownloadImporter.physicalBytes(sharedDownloadsDirectory)
 
-    fun coverFile(bookId: String): File = File(bookDirectory(bookId).also { check(it.isDirectory || it.mkdirs()) }, "cover.img")
+    fun coverFile(key: String): File = File(bookDirectory(key).also { check(it.isDirectory || it.mkdirs()) }, "cover.img")
 
-    fun importedBookId(sourceProfileId: String, sourceBookId: String): String? =
-        CompletedDownloadImporter.findImported(sharedDownloadsDirectory, rootDir, profileId, sourceProfileId, sourceBookId, "ebook")?.name
+    fun importedBookId(source: ComicOfflineStorage, sourceKey: String): String? {
+        fun find(sourceBookId: String) =
+            CompletedDownloadImporter.findImported(sharedDownloadsDirectory, rootDir, profileId, source.profileId, sourceBookId, "ebook")
+        return (find(sourceKey) ?: source.legacySourceBookId(sourceKey)?.takeIf { it != sourceKey }?.let(::find))?.name
+    }
 
-    fun importCompletedDownload(source: ComicOfflineStorage, bookId: String, beforePublish: () -> Unit = {}): Book {
+    fun importCompletedDownload(source: ComicOfflineStorage, sourceKey: String, beforePublish: () -> Unit = {}): Book {
         require(source.profileId != profileId)
         require(source.sharedDownloadsDirectory == sharedDownloadsDirectory)
-        val book = requireNotNull(source.getManifest(bookId))
-        require(book.id == bookId)
-        val payload = requireNotNull(source.getDownloadedFile(bookId))
+        val book = requireNotNull(source.getManifest(sourceKey))
+        require(book.offlineDownloadKey == sourceKey)
+        importedBookId(source, sourceKey)?.let { return requireNotNull(getManifest(it)) }
+        val payload = requireNotNull(source.getDownloadedFile(sourceKey))
         val extension = payload.extension
         val readAlong = (extension.equals("epub", true) || extension.equals("kepub", true)) && hasEmbeddedReadAloud(payload)
-        val cover = source.coverFile(bookId).takeIf { it.isFile && it.length() > 0L }
+        val cover = source.coverFile(sourceKey).takeIf { it.isFile && it.length() > 0L }
         val payloads = listOf(CompletedDownloadFile(payload, "book.$extension")) +
             listOfNotNull(cover?.let { CompletedDownloadFile(it, "cover.img", it.length()) })
         val directory = CompletedDownloadImporter.importCompleted(
             shared = sharedDownloadsDirectory,
             sourceRoot = source.rootDir,
             sourceProfileId = source.profileId,
-            sourceBookId = bookId,
+            sourceBookId = sourceKey,
             format = "ebook",
             destinationRoot = rootDir,
             destinationProfileId = profileId,
@@ -189,8 +255,9 @@ class ComicOfflineStorage(
             )
             File(stage, "book.json").writeText(json.encodeToString(imported))
         }
+        indexedDirectories = null
         return requireNotNull(getManifest(directory.name)).also {
-            check(it.source == BookSource.LOCAL && isDownloaded(it.id))
+            check(it.source == BookSource.LOCAL && isDownloaded(it.offlineDownloadKey))
         }
     }
     private fun hasEmbeddedReadAloud(file: File): Boolean = runCatching {
@@ -250,4 +317,7 @@ class ComicOfflineStorage(
         }
     }.getOrDefault(false)
 
+    private companion object {
+        val SAFE_SEGMENT = Regex("[A-Za-z0-9_-]{1,255}")
+    }
 }

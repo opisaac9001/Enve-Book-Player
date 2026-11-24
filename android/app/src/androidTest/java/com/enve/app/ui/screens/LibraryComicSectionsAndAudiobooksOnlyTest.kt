@@ -8,7 +8,6 @@ import androidx.compose.runtime.CompositionLocalProvider
 import androidx.compose.ui.semantics.SemanticsProperties
 import androidx.compose.ui.test.SemanticsMatcher
 import androidx.compose.ui.test.assertIsDisplayed
-import androidx.compose.ui.test.hasAnySibling
 import androidx.compose.ui.test.hasContentDescription
 import androidx.compose.ui.test.hasText
 import androidx.compose.ui.test.isOff
@@ -221,7 +220,7 @@ class LibraryComicSectionsAndAudiobooksOnlyTest {
         await(hasText("Library & reading"))
         compose.onNodeWithText("Library & reading").performScrollTo().performClick()
         await(hasText(AUDIOBOOKS_ONLY))
-        val switch = audiobooksOnlySwitch()
+        val switch = hasText(AUDIOBOOKS_ONLY) and isToggleable()
         await(switch and if (on) isOff() else isOn())
         compose.onNode(switch).performClick()
         await(switch and if (on) isOn() else isOff())
@@ -230,12 +229,6 @@ class LibraryComicSectionsAndAudiobooksOnlyTest {
         compose.waitUntil(5_000) { !exists(hasText(AUDIOBOOKS_ONLY)) && exists(hasText("Library & reading")) }
         pressBack()
         compose.waitUntil(5_000) { !exists(hasContentDescription("Back")) && !exists(hasText("Library & reading")) }
-    }
-
-    private fun audiobooksOnlySwitch(): SemanticsMatcher {
-        val label = compose.onNodeWithText(AUDIOBOOKS_ONLY).fetchSemanticsNode().boundsInRoot
-        return isToggleable() and hasAnySibling(hasText(AUDIOBOOKS_ONLY)) and
-            SemanticsMatcher("in the $AUDIOBOOKS_ONLY row") { label.center.y in it.boundsInRoot.top..it.boundsInRoot.bottom }
     }
 
     private fun series(year: Int) = compose.onNodeWithContentDescription("$seriesName, $year", substring = true)

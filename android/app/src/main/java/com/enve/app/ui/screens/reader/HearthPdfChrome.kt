@@ -40,8 +40,11 @@ import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.geometry.Rect
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.RectangleShape
+import androidx.compose.ui.layout.boundsInWindow
+import androidx.compose.ui.layout.onGloballyPositioned
 import androidx.compose.ui.semantics.Role
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.text.style.TextOverflow
@@ -49,6 +52,7 @@ import androidx.compose.ui.unit.dp
 import com.enve.app.data.reader.ReaderTheme
 import com.enve.app.ui.screens.PdfReaderUiState
 import com.enve.app.ui.screens.pageLabel
+import com.enve.core.data.local.ReaderPageTurnStyle
 import com.enve.core.data.model.Book
 import com.enve.core.reader.PdfPageAdjust
 import com.enve.core.reader.PdfReadingLayout
@@ -75,6 +79,9 @@ internal fun HearthPdfChrome(
     onOpenAppearance: () -> Unit,
     onCloseAppearance: () -> Unit,
     onLayoutChange: (PdfReadingLayout) -> Unit,
+    pageTurnStyle: ReaderPageTurnStyle,
+    onPageTurnStyleChange: (ReaderPageTurnStyle) -> Unit,
+    onPageViewportChanged: (Rect) -> Unit,
     readNextEnabled: Boolean,
     readNextPosition: ReadNextPosition,
     onReadNext: (Book) -> Unit,
@@ -89,7 +96,8 @@ internal fun HearthPdfChrome(
             Column(Modifier.fillMaxSize()) {
                 PdfTopVeil(state.title, state.author, onBack, onOpenAppearance)
                 Box(
-                    Modifier.weight(1f).fillMaxWidth().padding(horizontal = Hearth.Spacing.L),
+                    Modifier.weight(1f).fillMaxWidth().padding(horizontal = Hearth.Spacing.L)
+                        .onGloballyPositioned { onPageViewportChanged(it.boundsInWindow()) },
                     contentAlignment = Alignment.Center,
                 ) {
                     val error = state.error
@@ -148,7 +156,7 @@ internal fun HearthPdfChrome(
                     .padding(horizontal = Hearth.Spacing.XL),
             )
             if (state.appearanceVisible) {
-                PdfAppearanceSheet(state.layout, onLayoutChange, onCloseAppearance)
+                PdfAppearanceSheet(state.layout, onLayoutChange, pageTurnStyle, onPageTurnStyleChange, onCloseAppearance)
             }
         }
     }
@@ -243,9 +251,12 @@ private fun PdfBottomVeil(
 private fun PdfAppearanceSheet(
     layout: PdfReadingLayout,
     onLayoutChange: (PdfReadingLayout) -> Unit,
+    pageTurnStyle: ReaderPageTurnStyle,
+    onPageTurnStyleChange: (ReaderPageTurnStyle) -> Unit,
     onDismiss: () -> Unit,
 ) {
     val palette = Hearth.palette
+    val haptics = rememberReaderHaptics()
     val sheetShape = if (Hearth.eink.sharpCorners) RectangleShape else BottomSheetDefaults.ExpandedShape
     ModalBottomSheet(
         onDismissRequest = onDismiss,
@@ -281,6 +292,29 @@ private fun PdfAppearanceSheet(
                             onClick = { onLayoutChange(layout.copy(pageAdjust = adjust)) },
                         )
                     }
+                }
+                Overline("Page Turns")
+                FlowRow(
+                    horizontalArrangement = Arrangement.spacedBy(Hearth.Spacing.S),
+                    verticalArrangement = Arrangement.spacedBy(Hearth.Spacing.S),
+                ) {
+                    listOf(ReaderPageTurnStyle.STANDARD to "Standard", ReaderPageTurnStyle.CURL to "Page curl").forEach { (style, label) ->
+                        HearthChip(
+                            label,
+                            selected = pageTurnStyle == style,
+                            onClick = {
+                                if (pageTurnStyle != style) haptics.tick()
+                                onPageTurnStyleChange(style)
+                            },
+                        )
+                    }
+                }
+                if (pageTurnStyle == ReaderPageTurnStyle.CURL) {
+                    Text(
+                        "Curls when you use the page arrows or press a page key. Off on e-ink and with reduced motion.",
+                        style = HearthText.Caption,
+                        color = palette.textSecondary,
+                    )
                 }
             }
             EmberButton("Done", onDismiss, Modifier.fillMaxWidth())

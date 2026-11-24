@@ -7,6 +7,63 @@ import Testing
 
 @MainActor
 struct ProfileSessionTests {
+    @Test func localScanCleanupKeepsProfileImportsAfterReopening() async throws {
+        let fixture = try Fixture()
+        defer { fixture.remove() }
+        let profile = FamilyProfile(id: UUID().uuidString, name: "Imports", role: .adult)
+        let session = try fixture.session(profile)
+        let scanned = LocalLibrary(name: "Scanned folder", folderPath: fixture.root.path)
+        session.localLibrary.saveLibrary(scanned)
+        let imported = Book(id: "imported", title: "Profile import", libraryId: "profile-imports", backendId: "profile-imports", source: .local)
+        let stale = Book(id: "stale", title: "Removed from scanned folder", libraryId: scanned.id, backendId: scanned.id, source: .local)
+        await session.bookStore.upsertBooks([imported, stale])
+        session.appState.ensureBookInMemory(imported)
+        session.appState.ensureBookInMemory(stale)
+        await session.catalog.refreshLocalLibraries()
+        await session.retire()
+        let reopened = try fixture.session(profile, libraryDatabase: session.libraryDatabase)
+        #expect(await reopened.bookStore.book(uniqueId: imported.uniqueId)?.title == imported.title)
+        #expect(await reopened.bookStore.book(uniqueId: stale.uniqueId) == nil)
+        await reopened.retire()
+    }
+
+    @Test func downloadPickerRequiresCompletedCompanionsAndRejectsRemovedSelection() async throws {
+        let fixture = try Fixture()
+        defer { fixture.remove() }
+        let catalog = try FamilyProfileStore(fileURL: fixture.root.appendingPathComponent("catalog.json"), pinStore: fixture.pin)
+        let profile = try catalog.addAdult(name: "Source")
+        let destination = try catalog.addAdult(name: "Destination")
+        let source = try fixture.session(profile)
+        let coordinator = try ProfileSwitchCoordinator(catalog: catalog, pinStore: fixture.pin,
+            defaults: fixture.defaults("coordinator"), initialSession: source,
+            sessionFactory: { try fixture.session($0, libraryDatabase: $1) })
+        let audio = Book(id: "audio", title: "Audio", backendId: "fixture", source: .local)
+        var ebook = Book(id: "ebook", title: "Ebook", mediaType: .ebook, backendId: "fixture", source: .local)
+        ebook.linkedAudiobookStableId = audio.stableId
+        let standalone = Book(id: "standalone", title: "Standalone", backendId: "fixture", source: .local)
+        var unlinkedEdition = ebook
+        unlinkedEdition.providerId = UUID()
+        unlinkedEdition.linkedAudiobookStableId = nil
+        await source.bookStore.upsertBooks([audio, ebook, unlinkedEdition, standalone])
+        source.downloads.recordCompletedImport(ebook)
+        #expect(try await coordinator.importCandidates(from: profile.id).map(\.sourceBook.uniqueId) == [unlinkedEdition.uniqueId])
+        source.downloads.recordCompletedImport(audio)
+        source.downloads.recordCompletedImport(standalone)
+        let candidates = try await coordinator.importCandidates(from: profile.id)
+        #expect(Set(candidates.map(\.sourceBook.uniqueId)) == Set([audio, ebook, unlinkedEdition, standalone].map(\.uniqueId)))
+        let selection = try #require(candidates.first { $0.sourceBook.uniqueId == standalone.uniqueId })
+        await source.bookStore.setDeleted(true, stableId: standalone.stableId)
+        await #expect(throws: ProfileDownloadImportError.self) {
+            try await coordinator.importCompleted(selection, into: destination.id)
+        }
+        #expect(!coordinator.isSwitching)
+        let canceled = Task { try await coordinator.importCandidates(from: profile.id) }
+        canceled.cancel()
+        await #expect(throws: CancellationError.self) { try await canceled.value }
+        #expect(!coordinator.isSwitching)
+        await source.retire()
+    }
+
     @Test func siloLoginsAtTheSameServerKeepSeparateConnectionIdentities() async throws {
         let fixture = try Fixture()
         defer { fixture.remove() }

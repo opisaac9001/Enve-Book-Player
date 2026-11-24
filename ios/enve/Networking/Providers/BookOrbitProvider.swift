@@ -6,8 +6,8 @@ import UIKit
 #endif
 
 final class BookOrbitProvider: IncrementalCatalogProvider, PlaybackSessionProvider, AudiobookProgressProvider,
-    EbookProgressProvider, EbookDownloadProvider, PersonalRatingProvider, SavedBooksProvider, HistorySessionSyncProvider,
-    @unchecked Sendable
+    EbookProgressProvider, EbookDownloadProvider, PersonalRatingProvider, ReadStatusEditingProvider, SavedBooksProvider,
+    HistorySessionSyncProvider, @unchecked Sendable
 {
     var connection: ServerConnection
     private let session: URLSession?
@@ -88,6 +88,272 @@ final class BookOrbitProvider: IncrementalCatalogProvider, PlaybackSessionProvid
         let syncToKobo: Bool
     }
 
+    struct SmartScope: Decodable, Sendable, Identifiable, Equatable {
+        let id: Int
+        let name: String
+        let icon: String?
+        let isOwner: Bool?
+        let displayOrder: Int?
+        /// Nil when the server could not evaluate the scope's saved filter.
+        let bookCount: Int?
+    }
+
+    struct SmartScopeQuery: Sendable, Equatable {
+        var page = 0
+        var size = 50
+        var search: String?
+
+        var body: [String: Any] {
+            var body: [String: Any] = [
+                "sort": [[String: String]](),
+                "pagination": ["page": max(0, page), "size": min(max(1, size), 200)],
+            ]
+            if let trimmed = search?.trimmingCharacters(in: .whitespacesAndNewlines), !trimmed.isEmpty {
+                body["q"] = String(trimmed.prefix(200))
+            }
+            return body
+        }
+    }
+
+    enum BookDockError: LocalizedError {
+        case accessDenied(String?)
+
+        var errorDescription: String? {
+            switch self {
+            case .accessDenied(let message):
+                let reason = message.map { " \($0)" } ?? ""
+                return "Your BookOrbit account isn't allowed to do this.\(reason)"
+            }
+        }
+    }
+
+    struct BookDockAccess: Sendable, Equatable {
+        /// `book_dock_access`: list, upload, edit, and discard the account's own staged files.
+        let canUse: Bool
+        /// Filing into a library additionally needs `library_upload`.
+        let canFinalize: Bool
+        /// `manage_book_dock` holders see every user's staged files.
+        let managesAll: Bool
+    }
+
+    struct BookDockMetadata: Decodable, Sendable, Equatable {
+        var title: String?
+        var subtitle: String?
+        var authors: [String]?
+        var narrators: [String]?
+        var description: String?
+        var publisher: String?
+        var publishedYear: Int?
+        var language: String?
+        var isbn13: String?
+        var seriesName: String?
+        var seriesIndex: String?
+        var genres: [String]?
+
+        private var clearedFields: Set<String> = []
+
+        private enum CodingKeys: String, CodingKey, CaseIterable {
+            case title, subtitle, authors, narrators, description, publisher, publishedYear, language, isbn13
+            case seriesName, seriesIndex, genres
+        }
+
+        init() {}
+
+        init(from decoder: Decoder) throws {
+            let container = try decoder.container(keyedBy: CodingKeys.self)
+            title = try container.decodeIfPresent(String.self, forKey: .title)
+            subtitle = try container.decodeIfPresent(String.self, forKey: .subtitle)
+            authors = try container.decodeIfPresent([String].self, forKey: .authors)
+            narrators = try container.decodeIfPresent([String].self, forKey: .narrators)
+            description = try container.decodeIfPresent(String.self, forKey: .description)
+            publisher = try container.decodeIfPresent(String.self, forKey: .publisher)
+            publishedYear = try container.decodeIfPresent(Int.self, forKey: .publishedYear)
+            language = try container.decodeIfPresent(String.self, forKey: .language)
+            isbn13 = try container.decodeIfPresent(String.self, forKey: .isbn13)
+            seriesName = try container.decodeIfPresent(String.self, forKey: .seriesName)
+            seriesIndex = try container.decodeIfPresent(SeriesIndex.self, forKey: .seriesIndex)?.value
+            genres = try container.decodeIfPresent([String].self, forKey: .genres)
+            for key in CodingKeys.allCases where container.contains(key) {
+                if try container.decodeNil(forKey: key) { clearedFields.insert(key.rawValue) }
+            }
+        }
+
+        /// Later layers win field by field, matching how the server merges embedded, fetched, and chosen metadata.
+        func merging(_ other: BookDockMetadata?) -> BookDockMetadata {
+            guard let other else { return self }
+            var merged = self
+            func value<Value>(_ key: CodingKeys, _ next: Value?, _ previous: Value?) -> Value? {
+                other.clearedFields.contains(key.rawValue) ? nil : (next ?? previous)
+            }
+            merged.title = value(.title, other.title, title)
+            merged.subtitle = value(.subtitle, other.subtitle, subtitle)
+            merged.authors = value(.authors, other.authors, authors)
+            merged.narrators = value(.narrators, other.narrators, narrators)
+            merged.description = value(.description, other.description, description)
+            merged.publisher = value(.publisher, other.publisher, publisher)
+            merged.publishedYear = value(.publishedYear, other.publishedYear, publishedYear)
+            merged.language = value(.language, other.language, language)
+            merged.isbn13 = value(.isbn13, other.isbn13, isbn13)
+            merged.seriesName = value(.seriesName, other.seriesName, seriesName)
+            merged.seriesIndex = value(.seriesIndex, other.seriesIndex, seriesIndex)
+            merged.genres = value(.genres, other.genres, genres)
+            return merged
+        }
+
+        /// JSON for the fields that differ from `base`; a cleared field is sent as null so it overrides lower layers.
+        func changes(from base: BookDockMetadata) -> [String: Any] {
+            var changes: [String: Any] = [:]
+            func set<Value: Equatable>(_ key: String, _ value: Value?, _ old: Value?) {
+                guard value != old else { return }
+                changes[key] = value.map { $0 as Any } ?? NSNull()
+            }
+            set("title", title, base.title)
+            set("subtitle", subtitle, base.subtitle)
+            set("authors", authors, base.authors)
+            set("narrators", narrators, base.narrators)
+            set("description", description, base.description)
+            set("publisher", publisher, base.publisher)
+            set("publishedYear", publishedYear, base.publishedYear)
+            set("language", language, base.language)
+            set("isbn13", isbn13, base.isbn13)
+            set("seriesName", seriesName, base.seriesName)
+            set("seriesIndex", seriesIndex, base.seriesIndex)
+            set("genres", genres, base.genres)
+            return changes
+        }
+    }
+
+    struct BookDockFile: Decodable, Sendable, Identifiable, Equatable {
+        struct HoldDetail: Decodable, Sendable, Equatable {
+            let libraryName: String?
+            let bookId: Int?
+        }
+
+        let id: Int
+        let fileName: String
+        let fileSize: Int64?
+        let format: String?
+        /// `pending`, `extracting`, `fetching`, `ready`, or `error`; newer servers may add values.
+        let status: String
+        let embeddedMetadata: BookDockMetadata?
+        let selectedMetadata: BookDockMetadata?
+        let fetchedMetadata: BookDockMetadata?
+        let targetLibraryId: Int?
+        let targetFolderId: Int?
+        let confidence: Double?
+        let errorMessage: String?
+        let metadataEditedAt: Date?
+        let holdReason: String?
+        let holdDetail: HoldDetail?
+        let alsoIn: [String]?
+        /// The chosen metadata exactly as the server sent it, so an edit keeps fields Enve does not model.
+        var selectedMetadataJSON: Data?
+
+        private enum CodingKeys: String, CodingKey {
+            case id, fileName, fileSize, format, status, embeddedMetadata, selectedMetadata, fetchedMetadata
+            case targetLibraryId, targetFolderId, confidence, errorMessage, metadataEditedAt, holdReason, holdDetail, alsoIn
+        }
+
+        var metadata: BookDockMetadata {
+            (embeddedMetadata ?? BookDockMetadata()).merging(fetchedMetadata).merging(selectedMetadata)
+        }
+
+        var isSettled: Bool { status == "ready" || status == "error" }
+    }
+
+    struct BookDockPage: Sendable {
+        let items: [BookDockFile]
+        let total: Int
+        let page: Int
+        let size: Int
+
+        var hasMore: Bool { page * size < total }
+    }
+
+    struct BookDockQuery: Sendable, Equatable {
+        var page = 1
+        var limit = 50
+        /// `pending`, `ready`, or `error`; nil lists everything.
+        var status: String?
+        var search: String?
+
+        var queryItems: [URLQueryItem] {
+            var items = [
+                URLQueryItem(name: "page", value: String(max(1, page))),
+                URLQueryItem(name: "limit", value: String(min(max(1, limit), 100))),
+            ]
+            if let status { items.append(URLQueryItem(name: "status", value: status)) }
+            if let trimmed = search?.trimmingCharacters(in: .whitespacesAndNewlines), !trimmed.isEmpty {
+                items.append(URLQueryItem(name: "search", value: String(trimmed.prefix(500))))
+            }
+            return items
+        }
+    }
+
+    struct BookDockSummary: Decodable, Sendable, Equatable {
+        let pending: Int
+        let ready: Int
+        let error: Int
+        let total: Int
+        let needsReview: Int?
+        let readyToFile: Int?
+        let paused: Bool?
+    }
+
+    struct BookDockDestination: Decodable, Sendable, Identifiable, Equatable {
+        struct Folder: Decodable, Sendable, Identifiable, Equatable {
+            let id: Int
+            let path: String
+        }
+
+        let id: Int
+        let name: String
+        let folders: [Folder]
+
+        private enum CodingKeys: String, CodingKey { case id, name, folders }
+
+        init(from decoder: Decoder) throws {
+            let container = try decoder.container(keyedBy: CodingKeys.self)
+            id = try container.decode(Int.self, forKey: .id)
+            name = try container.decode(String.self, forKey: .name)
+            folders = try container.decodeIfPresent([Folder].self, forKey: .folders) ?? []
+        }
+    }
+
+    struct BookDockApplyResult: Decodable, Sendable, Equatable {
+        let total: Int
+        let applied: Int
+        let skipped: Int
+        let skippedEdited: Int
+    }
+
+    struct BookDockTargetResult: Decodable, Sendable, Equatable {
+        let total: Int
+        let updated: Int
+        let failed: Int
+    }
+
+    struct BookDockFinalizeResult: Decodable, Sendable, Equatable {
+        struct FileResult: Decodable, Sendable, Identifiable, Equatable {
+            let fileId: Int
+            let fileName: String
+            let newName: String?
+            let success: Bool
+            let bookId: Int?
+            let isDuplicate: Bool?
+            let existingBookId: Int?
+            let message: String?
+            let errorCode: String?
+
+            var id: Int { fileId }
+        }
+
+        let total: Int
+        let succeeded: Int
+        let failed: Int
+        let results: [FileResult]
+    }
+
     var capabilities: ProviderCapabilities {
 
         [
@@ -117,8 +383,14 @@ final class BookOrbitProvider: IncrementalCatalogProvider, PlaybackSessionProvid
     private let appState: AppState
     private let rejectedContent: RejectedContentStore
     private let ebookImporter: LocalEbookImporter
+    private let pendingEdits: PendingBookEditStore
 
-    init(connection: ServerConnection, session: URLSession? = nil, profileSession: ProfileSession? = nil) {
+    init(
+        connection: ServerConnection,
+        session: URLSession? = nil,
+        profileSession: ProfileSession? = nil,
+        pendingEdits: PendingBookEditStore? = nil
+    ) {
         self.connection = connection
         self.session = session ?? profileSession?.networkSession ?? InsecureURLSession.shared
         certificateTransport = profileSession?.transport ?? (session?.delegate as? InsecureURLSession) ?? .delegateInstance
@@ -126,6 +398,38 @@ final class BookOrbitProvider: IncrementalCatalogProvider, PlaybackSessionProvid
         appState = profileSession?.appState ?? .shared
         rejectedContent = profileSession?.rejectedContent ?? .shared
         ebookImporter = profileSession?.ebooks ?? .shared
+        self.pendingEdits = pendingEdits ?? profileSession?.pendingBookEdits ?? .shared
+    }
+
+    private func pendingEdit(bookId: Int, kind: PendingBookEditKind) -> PendingBookEdit.Value? {
+        guard !pendingEdits.isEmpty else { return nil }
+        let key = PendingBookEditKey(
+            connectionId: connection.id,
+            accountKey: ServerMirrorFingerprint.accountKey(for: connection),
+            bookId: String(bookId),
+            kind: kind
+        )
+        return pendingEdits.entry(for: key)?.value
+    }
+
+    private func pendingRating(bookId: Int) -> Double? {
+        guard case .rating(let rating) = pendingEdit(bookId: bookId, kind: .rating) else { return nil }
+        return Double(rating)
+    }
+
+    private func pendingReadStatus(bookId: Int) -> BookOrbitReadStatus? {
+        guard case .readStatus(let raw) = pendingEdit(bookId: bookId, kind: .readStatus) else { return nil }
+        return BookOrbitReadStatus(rawValue: raw)
+    }
+
+    /// Books whose queued edit of `kind` has not reached this account on the server yet.
+    func pendingEditBookIds(_ kind: PendingBookEditKind) -> Set<String> {
+        guard !pendingEdits.isEmpty else { return [] }
+        return pendingEdits.bookIds(
+            connectionId: connection.id,
+            accountKey: ServerMirrorFingerprint.accountKey(for: connection),
+            kind: kind
+        )
     }
 
     private var refreshTokenKey: String { "bookorbit_refresh_\(connection.id.uuidString)" }
@@ -325,6 +629,42 @@ final class BookOrbitProvider: IncrementalCatalogProvider, PlaybackSessionProvid
         let (data, http) = try await perform(path, query: query)
         try Self.requireSuccess(http, data: data, path: path)
         return try Self.decoder.decode(T?.self, from: data)
+    }
+
+    func requestDashboardWidget<T: Decodable>(_ type: String) async throws -> T {
+        let path = "dashboard/widgets/batch"
+        let body = try JSONSerialization.data(withJSONObject: ["widgets": [type]])
+        let (data, http) = try await perform(path, method: "POST", body: body)
+        // Older servers expose only the individual widget routes.
+        if http.statusCode == 404 || http.statusCode == 405 {
+            return try await requestJSON("dashboard/widgets/\(type)")
+        }
+        try Self.requireSuccess(http, data: data, path: path)
+        let response = try Self.decoder.decode(DashboardWidgetResponse<T>.self, from: data)
+        guard response.items.count == 1, let item = response.items.first, item.type == type else {
+            throw ProviderError.invalidResponse
+        }
+        return item.data
+    }
+
+    private struct DashboardWidgetResponse<T: Decodable>: Decodable {
+        let items: [Item]
+
+        struct Item: Decodable {
+            let type: String
+            let data: T
+
+            private enum CodingKeys: String, CodingKey { case type, data, failed }
+
+            init(from decoder: Decoder) throws {
+                let container = try decoder.container(keyedBy: CodingKeys.self)
+                type = try container.decode(String.self, forKey: .type)
+                guard try !container.decode(Bool.self, forKey: .failed) else {
+                    throw ProviderError.serverError("BookOrbit could not load the \(type) widget. Try again.")
+                }
+                data = try container.decode(T.self, forKey: .data)
+            }
+        }
     }
 
     func requestVoid(
@@ -535,6 +875,7 @@ final class BookOrbitProvider: IncrementalCatalogProvider, PlaybackSessionProvid
 
     private struct BookCardDTO: Decodable, Sendable {
         let id: Int
+        let libraryId: Int?
         let title: String?
         let subtitle: String?
         let authors: [String]?
@@ -630,7 +971,10 @@ final class BookOrbitProvider: IncrementalCatalogProvider, PlaybackSessionProvid
 
     private struct CurrentlyReadingWidgetDTO: Decodable { let books: [CurrentlyReadingBookDTO] }
 
-    private struct MeDTO: Decodable { let isSuperuser: Bool }
+    private struct MeDTO: Decodable {
+        let isSuperuser: Bool
+        let permissions: [String]?
+    }
 
     private struct CollectionDTO: Decodable {
         let id: Int
@@ -1025,6 +1369,210 @@ final class BookOrbitProvider: IncrementalCatalogProvider, PlaybackSessionProvid
         }
     }
 
+    func fetchSmartScopes() async throws -> [SmartScope] {
+        let scopes: [SmartScope] = try await requestJSON("smart-scopes")
+        return scopes.sorted {
+            ($0.displayOrder ?? .max, $0.name.lowercased(), $0.id) < ($1.displayOrder ?? .max, $1.name.lowercased(), $1.id)
+        }
+    }
+
+    func fetchSmartScopeBooks(scopeId: Int, query: SmartScopeQuery) async throws -> CollectionPage {
+        let body = try JSONSerialization.data(withJSONObject: query.body)
+        let result: BooksPageDTO = try await requestJSON("smart-scopes/\(scopeId)/books/query", method: "POST", body: body)
+        return CollectionPage(
+            books: result.items.map { card($0, libraryId: $0.libraryId.map(String.init) ?? "") },
+            total: result.total,
+            page: result.page,
+            size: result.size
+        )
+    }
+
+    func fetchBookDockAccess() async throws -> BookDockAccess {
+        let (data, http) = try await perform("auth/me")
+        guard http.statusCode == 200 else {
+            throw ProviderError.serverError("BookOrbit returned HTTP \(http.statusCode) for account details")
+        }
+        let me = try Self.decoder.decode(MeDTO.self, from: data)
+        cachedAdminStatus = me.isSuperuser
+        let permissions = Set(me.permissions ?? [])
+        let all = me.isSuperuser || permissions.contains("*")
+        return BookDockAccess(
+            canUse: all || permissions.contains("book_dock_access"),
+            canFinalize: all || (permissions.contains("book_dock_access") && permissions.contains("library_upload")),
+            managesAll: all || permissions.contains("manage_book_dock")
+        )
+    }
+
+    func fetchBookDockFiles(_ query: BookDockQuery) async throws -> BookDockPage {
+        let data = try await bookDockRequest("book-dock/files", query: query.queryItems)
+        let page = try Self.decoder.decode(BookDockPageDTO.self, from: data)
+        let raw = (try? JSONSerialization.jsonObject(with: data) as? [String: Any])?["items"] as? [[String: Any]]
+        let items = page.items.enumerated().map { index, file in
+            Self.attachingSelectedMetadata(to: file, from: raw.flatMap { $0.indices.contains(index) ? $0[index] : nil })
+        }
+        return BookDockPage(items: items, total: page.total, page: page.page, size: page.size)
+    }
+
+    func fetchBookDockFile(id: Int) async throws -> BookDockFile {
+        try Self.bookDockFile(from: try await bookDockRequest("book-dock/files/\(id)"))
+    }
+
+    func fetchBookDockSummary() async throws -> BookDockSummary {
+        try Self.decoder.decode(BookDockSummary.self, from: try await bookDockRequest("book-dock/summary"))
+    }
+
+    func fetchBookDockDestinations() async throws -> [BookDockDestination] {
+        let libraries: [BookDockDestination] = try await requestJSON("libraries")
+        return libraries.sorted { $0.name.localizedCaseInsensitiveCompare($1.name) == .orderedAscending }
+    }
+
+    func uploadBookDockFile(at fileURL: URL, filename: String) async throws -> BookDockFile {
+        try await ensureValidToken()
+        let boundary = "enve-\(UUID().uuidString)"
+        let bodyURL = try await Task.detached(priority: .utility) {
+            try BookOrbitProvider.multipartBody(fileURL: fileURL, filename: filename, boundary: boundary)
+        }.value
+        defer { try? FileManager.default.removeItem(at: bodyURL) }
+
+        var (data, http) = try await sendUpload("book-dock/upload", bodyURL: bodyURL, boundary: boundary)
+        if http.statusCode == 401 {
+            try await refreshAccessToken()
+            (data, http) = try await sendUpload("book-dock/upload", bodyURL: bodyURL, boundary: boundary)
+        }
+        try guardJSON(data: data, response: http, endpoint: "book-dock/upload")
+        try Self.requireBookDockSuccess(http, data: data, path: "book-dock/upload")
+        return try Self.bookDockFile(from: data)
+    }
+
+    /// `selectedMetadata` replaces the server's chosen layer, so pass the previous raw object merged with the edits.
+    func updateBookDockFile(
+        id: Int,
+        selectedMetadata: [String: Any]? = nil,
+        target: (libraryId: Int, folderId: Int)? = nil
+    ) async throws -> BookDockFile {
+        var payload: [String: Any] = [:]
+        if let selectedMetadata { payload["selectedMetadata"] = selectedMetadata }
+        if let target {
+            payload["targetLibraryId"] = target.libraryId
+            payload["targetFolderId"] = target.folderId
+        }
+        let body = try JSONSerialization.data(withJSONObject: payload)
+        return try Self.bookDockFile(from: try await bookDockRequest("book-dock/files/\(id)", method: "PATCH", body: body))
+    }
+
+    func setBookDockTarget(ids: [Int], libraryId: Int, folderId: Int) async throws -> BookDockTargetResult {
+        let body = try JSONSerialization.data(withJSONObject: [
+            "fileIds": ids, "targetLibraryId": libraryId, "targetFolderId": folderId,
+        ])
+        return try Self.decoder.decode(
+            BookDockTargetResult.self,
+            from: try await bookDockRequest("book-dock/files/set-target", method: "POST", body: body)
+        )
+    }
+
+    func applyFetchedBookDockMetadata(ids: [Int]) async throws -> BookDockApplyResult {
+        let body = try JSONSerialization.data(withJSONObject: ["fileIds": ids])
+        return try Self.decoder.decode(
+            BookDockApplyResult.self,
+            from: try await bookDockRequest("book-dock/files/apply-fetched", method: "POST", body: body)
+        )
+    }
+
+    func refetchBookDockMetadata(id: Int) async throws {
+        _ = try await bookDockRequest("book-dock/files/\(id)/refetch-metadata", method: "POST")
+    }
+
+    /// Files each staged item into its own chosen library and folder. The server rejects an empty selection.
+    func finalizeBookDockFiles(ids: [Int]) async throws -> BookDockFinalizeResult {
+        let body = try JSONSerialization.data(withJSONObject: ["fileIds": ids])
+        return try Self.decoder.decode(
+            BookDockFinalizeResult.self,
+            from: try await bookDockRequest("book-dock/finalize", method: "POST", body: body)
+        )
+    }
+
+    func discardBookDockFiles(ids: [Int]) async throws {
+        guard !ids.isEmpty else { return }
+        let body = try JSONSerialization.data(withJSONObject: ["fileIds": ids])
+        _ = try await bookDockRequest("book-dock/files/discard", method: "POST", body: body)
+    }
+
+    private struct BookDockPageDTO: Decodable {
+        let items: [BookDockFile]
+        let total: Int
+        let page: Int
+        let size: Int
+    }
+
+    private func bookDockRequest(
+        _ path: String,
+        method: String = "GET",
+        body: Data? = nil,
+        query: [URLQueryItem]? = nil
+    ) async throws -> Data {
+        let (data, http) = try await perform(path, method: method, body: body, query: query)
+        try Self.requireBookDockSuccess(http, data: data, path: path)
+        return data
+    }
+
+    // A refused request must never read as an empty inbox.
+    private static func requireBookDockSuccess(_ http: HTTPURLResponse, data: Data, path: String) throws {
+        if http.statusCode == 403 { throw BookDockError.accessDenied(serverMessage(data: data)) }
+        try requireSuccess(http, data: data, path: path)
+    }
+
+    private static func bookDockFile(from data: Data) throws -> BookDockFile {
+        attachingSelectedMetadata(
+            to: try decoder.decode(BookDockFile.self, from: data),
+            from: try? JSONSerialization.jsonObject(with: data) as? [String: Any]
+        )
+    }
+
+    private static func attachingSelectedMetadata(to file: BookDockFile, from raw: [String: Any]?) -> BookDockFile {
+        guard let selected = raw?["selectedMetadata"] as? [String: Any] else { return file }
+        var file = file
+        file.selectedMetadataJSON = try? JSONSerialization.data(withJSONObject: selected)
+        return file
+    }
+
+    private func sendUpload(_ path: String, bodyURL: URL, boundary: String) async throws -> (Data, HTTPURLResponse) {
+        guard let url = apiBase?.appendingPathComponent(path) else { throw ProviderError.invalidURL }
+        var request = URLRequest(url: url)
+        request.httpMethod = "POST"
+        applyCustomHeaders(&request)
+        if let token = connection.token { request.setValue("Bearer \(token)", forHTTPHeaderField: "Authorization") }
+        request.setValue("multipart/form-data; boundary=\(boundary)", forHTTPHeaderField: "Content-Type")
+        let (data, response) = try await (session ?? InsecureURLSession.shared).upload(for: request, fromFile: bodyURL)
+        guard let http = response as? HTTPURLResponse else { throw ProviderError.invalidResponse }
+        return (data, http)
+    }
+
+    // Streamed to disk so a multi-gigabyte audiobook is never held in memory.
+    private nonisolated static func multipartBody(fileURL: URL, filename: String, boundary: String) throws -> URL {
+        let safeName = filename.components(separatedBy: CharacterSet(charactersIn: "\"\r\n\\/")).joined(separator: "_")
+        let bodyURL = FileManager.default.temporaryDirectory.appendingPathComponent("\(boundary).multipart")
+        guard FileManager.default.createFile(atPath: bodyURL.path, contents: nil) else {
+            throw CocoaError(.fileWriteUnknown)
+        }
+        do {
+            let output = try FileHandle(forWritingTo: bodyURL)
+            defer { try? output.close() }
+            let input = try FileHandle(forReadingFrom: fileURL)
+            defer { try? input.close() }
+            let header = "--\(boundary)\r\nContent-Disposition: form-data; name=\"file\"; filename=\"\(safeName)\"\r\n"
+                + "Content-Type: application/octet-stream\r\n\r\n"
+            try output.write(contentsOf: Data(header.utf8))
+            while let chunk = try input.read(upToCount: 1 << 20), !chunk.isEmpty {
+                try output.write(contentsOf: chunk)
+            }
+            try output.write(contentsOf: Data("\r\n--\(boundary)--\r\n".utf8))
+            return bodyURL
+        } catch {
+            try? FileManager.default.removeItem(at: bodyURL)
+            throw error
+        }
+    }
+
     func fetchSeries(libraryId: String) async throws -> [Series] { [] }
     func fetchUserMediaProgress(libraryId: String) async throws -> [UserMediaProgress] {
         let now = Date()
@@ -1032,12 +1580,7 @@ final class BookOrbitProvider: IncrementalCatalogProvider, PlaybackSessionProvid
             return cachedContinueProgress
         }
 
-        let (data, http) = try await perform("dashboard/widgets/currently-reading")
-        guard http.statusCode == 200 else {
-            throw ProviderError.serverError("BookOrbit returned HTTP \(http.statusCode) for /api/v1/dashboard/widgets/currently-reading")
-        }
-
-        let widget = try Self.decoder.decode(CurrentlyReadingWidgetDTO.self, from: data)
+        let widget: CurrentlyReadingWidgetDTO = try await requestDashboardWidget("currently-reading")
         var entries: [UserMediaProgress] = []
         entries.reserveCapacity(widget.books.count)
         for (index, item) in widget.books.enumerated() {
@@ -1331,7 +1874,7 @@ final class BookOrbitProvider: IncrementalCatalogProvider, PlaybackSessionProvid
             backendId: connection.id.uuidString,
             source: .bookOrbit,
             publishedYear: dto.publishedYear,
-            personalRating: dto.rating,
+            personalRating: pendingRating(bookId: dto.id) ?? dto.rating,
             language: dto.language
         )
         book.mediaType = isAudiobook ? .audiobook : .ebook
@@ -1340,17 +1883,16 @@ final class BookOrbitProvider: IncrementalCatalogProvider, PlaybackSessionProvid
         if !isAudiobook, let overlay = ebookFile?.mediaOverlay, overlay.available {
             book.epub3Features = EPUB3Features(hasMediaOverlay: true, estimatedAudioDuration: overlay.durationSeconds)
         }
-        if let rawStatus = dto.readStatus?.status,
-            let status = BookOrbitReadStatus(rawValue: rawStatus)
-        {
+        let pendingStatus = pendingReadStatus(bookId: dto.id)
+        if let status = pendingStatus ?? dto.readStatus?.status.flatMap(BookOrbitReadStatus.init(rawValue:)) {
             let progress = Book.normalizedFractionProgress(dto.readingProgress.map { $0 / 100 }) ?? 0
             book.serverReadStatus = status.rawValue.uppercased()
             book.isFinished = status == .read || status == .skimmed
             book.hideFromContinue = ![.unread, .reading, .rereading].contains(status)
             if !isAudiobook {
-                book.ebookProgress = book.isFinished ? 1 : progress
+                book.ebookProgress = book.isFinished ? 1 : (pendingStatus == .unread ? 0 : progress)
             }
-            if let updatedAt = dto.readStatus?.updatedAt {
+            if pendingStatus == nil, let updatedAt = dto.readStatus?.updatedAt {
                 book.lastUpdate = updatedAt
             }
         }
@@ -1398,7 +1940,7 @@ final class BookOrbitProvider: IncrementalCatalogProvider, PlaybackSessionProvid
             backendId: connection.id.uuidString,
             source: .bookOrbit,
             publishedYear: dto.publishedYear,
-            personalRating: dto.rating,
+            personalRating: pendingRating(bookId: dto.id) ?? dto.rating,
             language: dto.language
         )
         book.mediaType = isAudiobook ? .audiobook : .ebook
@@ -1407,13 +1949,12 @@ final class BookOrbitProvider: IncrementalCatalogProvider, PlaybackSessionProvid
         if !isAudiobook, let overlay = ebookFile?.mediaOverlay, overlay.available {
             book.epub3Features = EPUB3Features(hasMediaOverlay: true, estimatedAudioDuration: overlay.durationSeconds)
         }
-        if let rawStatus = dto.readStatus?.status,
-            let status = BookOrbitReadStatus(rawValue: rawStatus)
-        {
+        let pendingStatus = pendingReadStatus(bookId: dto.id)
+        if let status = pendingStatus ?? dto.readStatus?.status.flatMap(BookOrbitReadStatus.init(rawValue:)) {
             book.serverReadStatus = status.rawValue.uppercased()
             book.isFinished = status == .read || status == .skimmed
             book.hideFromContinue = ![.unread, .reading, .rereading].contains(status)
-            if let updatedAt = dto.readStatus?.updatedAt {
+            if pendingStatus == nil, let updatedAt = dto.readStatus?.updatedAt {
                 book.lastUpdate = updatedAt
             }
         }
@@ -1813,6 +2354,11 @@ final class BookOrbitProvider: IncrementalCatalogProvider, PlaybackSessionProvid
         invalidateContinueCache()
     }
 
+    func updateReadStatus(for book: Book, rawStatus: String) async throws {
+        guard let status = BookOrbitReadStatus(rawValue: rawStatus) else { throw ProviderError.invalidResponse }
+        try await updateReadStatus(for: book, status: status)
+    }
+
     func updatePersonalRating(for book: Book, rating: Int) async throws {
         guard let bookId = Int(book.id) else { throw ProviderError.invalidURL }
         let body = try JSONSerialization.data(withJSONObject: [
@@ -1826,6 +2372,7 @@ final class BookOrbitProvider: IncrementalCatalogProvider, PlaybackSessionProvid
     }
 
     func fetchReadStatus(for book: Book) async -> BookOrbitReadStatus? {
+        if let idInt = Int(book.id), let pending = pendingReadStatus(bookId: idInt) { return pending }
         guard let idInt = Int(book.id),
             let (data, http) = try? await perform("books/\(idInt)"),
             http.statusCode == 200,
@@ -1866,10 +2413,18 @@ final class BookOrbitProvider: IncrementalCatalogProvider, PlaybackSessionProvid
     }
 
     func downloadEbook(for book: Book, onProgress: (@Sendable (Double) -> Void)? = nil) async throws -> URL {
-        if let cached = ebookImporter.cachedEbook(forBookId: book.id) {
+        if let cached = ebookImporter.cachedEbook(for: book) {
             if cached.pathExtension.lowercased() != "pdf", try Self.isPDF(cached) {
-                let corrected = cached.deletingPathExtension().appendingPathExtension("pdf")
-                try FileManager.default.moveItem(at: cached, to: corrected)
+                let corrected: URL
+                if LocalEbookImporter.matchesRemoteBookIdentifier(cached.lastPathComponent, identifier: book.ebookStorageID) {
+                    corrected = cached.deletingPathExtension().appendingPathExtension("pdf")
+                    try FileManager.default.moveItem(at: cached, to: corrected)
+                } else {
+                    let temporary = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+                    try FileManager.default.copyItem(at: cached, to: temporary)
+                    defer { try? FileManager.default.removeItem(at: temporary) }
+                    corrected = try ebookImporter.cacheRemoteEbook(tempURL: temporary, preferredFilename: "book.pdf", bookIdentifier: book.ebookStorageID)
+                }
                 onProgress?(1)
                 return corrected
             }
@@ -1912,7 +2467,7 @@ final class BookOrbitProvider: IncrementalCatalogProvider, PlaybackSessionProvid
             filename = (filename as NSString).deletingPathExtension + ".pdf"
         }
 
-        return try ebookImporter.cacheRemoteEbook(tempURL: tempURL, preferredFilename: filename, bookIdentifier: book.id)
+        return try ebookImporter.cacheRemoteEbook(tempURL: tempURL, preferredFilename: filename, bookIdentifier: book.ebookStorageID)
     }
 
     private func download(_ request: URLRequest, onProgress: (@Sendable (Double) -> Void)?) async throws -> (URL, HTTPURLResponse) {

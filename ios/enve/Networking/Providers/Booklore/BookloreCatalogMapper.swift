@@ -8,105 +8,8 @@ enum BookloreCatalogMapper {
         let serverURL: String
     }
 
-    static func book(from summary: BookloreBookSummary, context: Context) -> Book {
-        let seriesInfo = BookloreBookMapper.normalizedSeriesInfo(name: summary.seriesName, sequence: summary.seriesNumber.map { String($0) })
-
-        let knownEbookFileTypes: Set<String> = ["EPUB", "PDF", "CBX", "CBR", "CBZ", "FB2", "MOBI", "AZW3", "AZW"]
-        let resolvedType = resolvedFileType(primaryFileType: summary.primaryFileType, primaryFile: summary.primaryFile)
-        let primaryIsRealEbook = (resolvedType?.uppercased()).map(knownEbookFileTypes.contains) ?? false
-        let hasAudiobookSignal = summary.audiobookCoverUpdatedOn != nil || (summary.thumbnailUrl?.contains("/audiobook-") == true)
-
-        var detectedMediaType = BookloreBookMapper.mediaType(from: resolvedType)
-        var isDualFormatEbook = false
-        if detectedMediaType != .audiobook, hasAudiobookSignal {
-            if primaryIsRealEbook {
-                isDualFormatEbook = true
-            } else {
-                detectedMediaType = .audiobook
-            }
-        }
-        let readProg =
-            BookloreBookMapper.fraction(fromReadProgress: summary.readProgress)
-            ?? BookloreBookMapper.fraction(fromPercent: summary.epubProgress?.percentage)
-            ?? 0
-        let duration: Double? = summary.durationSeconds.map { Double($0) } ?? summary.duration.flatMap { $0 > 0 ? $0 : nil }
-        let currentTime =
-            detectedMediaType == .audiobook && (duration ?? 0) > 0
-            ? readProg * (duration ?? 0)
-            : 0
-        let serverReadStatus = summary.readStatus?.uppercased()
-        let isFinished = readProg >= Book.finishedProgressThreshold || serverReadStatus == "READ" || summary.dateFinished != nil
-        let hideFromContinue = BookloreBookMapper.statusSuppressesContinue(serverReadStatus)
-
-        let lastUpdate =
-            FlexibleDate.parse(summary.dateFinished)
-            ?? FlexibleDate.parse(summary.lastReadTime)
-            ?? summary.addedOn?.date
-            ?? Date()
-
-        let resolvedFilePath = summary.primaryFile?.filePath ?? summary.primaryFileName
-        let resolvedTitle: String = {
-            if detectedMediaType == .audiobook,
-                let titleFromFile = BookloreBookMapper.title(fromPrimaryFileName: summary.primaryFileName ?? summary.primaryFile?.fileName)
-            {
-                return titleFromFile
-            }
-            return summary.title
-        }()
-
-        let coverURL = BookloreBookMapper.absoluteURL(
-            from: summary.thumbnailUrl,
-            serverURL: context.serverURL,
-            mediaType: detectedMediaType
-        )
-        let versionedCoverURL = BookloreBookMapper.versionedCoverURL(
-            coverURL,
-            updatedOn: detectedMediaType == .audiobook ? summary.audiobookCoverUpdatedOn : nil
-        )
-
-        var result = Book(
-            id: summary.id.stringValue,
-            title: resolvedTitle,
-            author: BookloreBookMapper.displayAuthor(from: summary.authors),
-            authors: summary.authors,
-            narrator: summary.narrator,
-            seriesInfo: seriesInfo,
-            duration: duration,
-            coverURL: versionedCoverURL,
-            mediaType: detectedMediaType,
-            epubLocator: nil,
-            ebookProgress: detectedMediaType == .ebook ? readProg : nil,
-            hideFromContinue: hideFromContinue,
-            dateAdded: summary.addedOn?.date,
-            description: nil,
-            genres: summary.categories,
-            chapters: [],
-            publisher: summary.publisher,
-            currentTime: currentTime,
-            isFinished: isFinished,
-            lastUpdate: lastUpdate,
-            libraryId: summary.libraryId?.stringValue ?? context.libraryId,
-            providerId: context.providerId,
-            source: context.source,
-            rawMetadata: nil,
-            filePath: resolvedFilePath,
-            publishedYear: BookloreBookMapper.publishedYear(from: summary.publishedDate),
-            personalRating: summary.personalRating.map { $0 / 2 },
-            goodreadsRating: summary.goodreadsRating,
-            language: summary.language
-        )
-        result.isbn = summary.isbn13 ?? summary.isbn10
-        result.serverReadStatus = serverReadStatus
-        if detectedMediaType == .ebook {
-            result.ebookFormat = BookloreBookMapper.normalizedEbookFormat(resolvedType)
-        }
-        if isDualFormatEbook {
-            result.hasAlternateFormat = true
-        }
-        return result
-    }
-
     static func book(from legacy: BookloreLegacyBook, context: Context) -> Book {
+        let metadata = legacy.metadata
         let resolvedType = resolvedFileType(file: legacy.primaryFile)
         let mediaType = BookloreBookMapper.mediaType(from: resolvedType)
         let title = {
@@ -115,47 +18,60 @@ enum BookloreCatalogMapper {
             {
                 return titleFromFile
             }
-            return legacy.title ?? legacy.metadata?.title ?? legacy.name ?? "Unknown"
+            return legacy.title ?? metadata?.title ?? legacy.name ?? "Unknown"
         }()
-        let author = BookloreBookMapper.displayAuthor(from: legacy.metadata?.authors)
-        let legacyAuthors: [String]? = legacy.metadata?.authors
-        let narrator = legacy.metadata?.narrator
         let seriesInfo = BookloreBookMapper.normalizedSeriesInfo(
-            name: legacy.metadata?.seriesName,
-            sequence: legacy.metadata?.seriesNumber.map { String($0) }
+            name: metadata?.seriesName,
+            sequence: metadata?.seriesNumber.map { String($0) }
         )
+        // Like Grimmory's own readProgress, catalog progress never includes audiobook progress.
+        let readProgress = BookloreBookMapper.fraction(fromPercent: legacy.readProgressPercent) ?? 0
         let serverReadStatus = legacy.readStatus?.uppercased()
-        let isAudiobook = mediaType == .audiobook
-        let coverPath =
-            isAudiobook
-            ? "/api/books/\(legacy.id.stringValue)/audiobook-cover"
-            : "/api/books/\(legacy.id.stringValue)/cover"
-        let coverURL = BookloreBookMapper.absoluteURL(from: coverPath, serverURL: context.serverURL)
+        let coverURL = BookloreBookMapper.versionedCoverURL(
+            BookloreBookMapper.absoluteURL(
+                from: "/api/books/\(legacy.id.stringValue)/cover",
+                serverURL: context.serverURL,
+                mediaType: mediaType
+            ),
+            updatedOn: mediaType == .audiobook ? metadata?.audiobookCoverUpdatedOn : nil
+        )
         var result = Book(
             id: legacy.id.stringValue,
             title: title,
-            author: author,
-            authors: legacyAuthors,
-            narrator: narrator,
+            author: BookloreBookMapper.displayAuthor(from: metadata?.authors),
+            authors: metadata?.authors,
+            narrator: metadata?.narrator,
             seriesInfo: seriesInfo,
-            duration: 0,
+            duration: nil,
             coverURL: coverURL,
             mediaType: mediaType,
+            epubLocator: nil,
+            ebookProgress: mediaType == .ebook ? readProgress : nil,
             hideFromContinue: BookloreBookMapper.statusSuppressesContinue(serverReadStatus),
             dateAdded: legacy.addedOn?.date,
-            description: legacy.metadata?.description,
-            genres: [],
+            description: metadata?.description,
+            genres: metadata?.categories?.sorted(),
             chapters: [],
-            publisher: legacy.metadata?.publisher,
-            progress: 0,
+            publisher: metadata?.publisher,
             currentTime: 0,
-            isFinished: serverReadStatus == "READ",
-            lastUpdate: legacy.addedOn?.date ?? Date(),
+            isFinished: readProgress >= Book.finishedProgressThreshold
+                || serverReadStatus == "READ"
+                || legacy.dateFinished != nil,
+            lastUpdate: FlexibleDate.parse(legacy.dateFinished)
+                ?? FlexibleDate.parse(legacy.lastReadTime)
+                ?? legacy.addedOn?.date
+                ?? Date(),
             libraryId: legacy.libraryId?.stringValue ?? context.libraryId,
             providerId: context.providerId,
             source: context.source,
-            rawMetadata: nil
+            rawMetadata: nil,
+            filePath: legacy.primaryFile?.fileName ?? legacy.primaryFile?.filePath,
+            publishedYear: BookloreBookMapper.publishedYear(from: metadata?.publishedDate),
+            personalRating: legacy.personalRating.map { $0 / 2 },
+            goodreadsRating: metadata?.goodreadsRating,
+            language: metadata?.language
         )
+        result.isbn = metadata?.isbn13 ?? metadata?.isbn10
         result.serverReadStatus = serverReadStatus
 
         if mediaType == .ebook, legacy.hasAudiobookAlternative {
@@ -173,7 +89,7 @@ enum BookloreCatalogMapper {
     }
 
     static func applyingFormats(_ legacy: BookloreLegacyBook, to book: Book) -> Book {
-        let files = [legacy.primaryFile].compactMap { $0 } + (legacy.alternativeFormats ?? [])
+        let files = legacy.files
         guard let ebookFile = files.first(where: { isEbookType(resolvedFileType(file: $0)) }),
             files.contains(where: { BookloreBookMapper.mediaType(from: resolvedFileType(file: $0)) == .audiobook })
         else { return book }
@@ -218,19 +134,7 @@ enum BookloreCatalogMapper {
         return result
     }
 
-    static func resolvedFileType(primaryFileType: String?, primaryFile: BooklorePrimaryFile?) -> String? {
-        BookloreBookMapper.resolvedFileType([
-            primaryFile?.fileType,
-            primaryFile?.fileExtension,
-            primaryFile?.bookType,
-            primaryFileType,
-            BookloreBookMapper.fileExtension(from: primaryFile?.fileName),
-            BookloreBookMapper.fileExtension(from: primaryFile?.filePath),
-            BookloreBookMapper.fileExtension(from: primaryFile?.fileSubPath),
-        ])
-    }
-
-    private static func resolvedFileType(file: BookloreLegacyBookFile?) -> String? {
+    static func resolvedFileType(file: BookloreLegacyBookFile?) -> String? {
         BookloreBookMapper.resolvedFileType([
             file?.fileType,
             file?.fileExtension,

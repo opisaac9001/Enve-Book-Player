@@ -421,8 +421,7 @@ final class LinkedBookProgressCoordinator {
         narrationDuration > 0 && audioDuration > 0 && abs(narrationDuration - audioDuration) <= audioDuration * 0.01
     }
 
-    /// Within prepared coverage the listening position maps to a sentence of the original EPUB and is saved as a
-    /// precise locator. Elsewhere the existing estimate replaces any older precise locator so it cannot go stale.
+    // Outside prepared coverage, mark the estimate as text progression so narrated EPUBs can restore it.
     private func applyListeningObservation(_ audio: AudioObservation, pair: Pair, forceRemote: Bool) async {
         if !audio.isFinished, let mapping = await preparedEbookPassage(pair: pair, audioTime: audio.time) {
             _ = await applyEbookProgress(
@@ -431,9 +430,15 @@ final class LinkedBookProgressCoordinator {
             )
             return
         }
+        let progression = audio.isFinished ? 1 : mappedEbookProgress(for: audio.progress, pair: pair)
+        let locator = pair.ebook.ebookFormat == EbookFormat.epub.rawValue
+            ? SharedReadingLocator.encoded([
+                "enveSharedPosition": true,
+                "locations": ["totalProgression": progression],
+            ]) : nil
         _ = await applyEbookProgress(
-            mappedEbookProgress(for: audio.progress, pair: pair), to: pair.ebook, isFinished: audio.isFinished,
-            locator: nil, observedAt: audio.observedAt, forceRemote: forceRemote
+            progression, to: pair.ebook, isFinished: audio.isFinished,
+            locator: locator, observedAt: audio.observedAt, forceRemote: forceRemote
         )
     }
 

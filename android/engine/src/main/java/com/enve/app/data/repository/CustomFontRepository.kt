@@ -11,8 +11,19 @@ import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.withContext
 import java.io.File
+import java.io.InputStream
+import java.io.OutputStream
+import java.io.RandomAccessFile
 import javax.inject.Inject
 import javax.inject.Singleton
+
+internal const val MAX_CUSTOM_FONT_BYTES = 16L * 1024 * 1024
+private const val SFNT_HEADER_BYTES = 12
+private const val SFNT_TABLE_RECORD_BYTES = 16
+private const val MAX_SFNT_TABLES = 128
+private const val HEAD_TABLE_MIN_BYTES = 54L
+private const val HEAD_MAGIC = 0x5F0F3CF5
+private val REQUIRED_SFNT_TABLES = listOf("cmap", "head", "hhea", "hmtx", "maxp")
 
 internal fun detectCustomFontExtension(file: File): String? {
     val header = ByteArray(4)
@@ -24,6 +35,55 @@ internal fun detectCustomFontExtension(file: File): String? {
         signature == "true" || signature == "typ1" -> "ttf"
         signature == "OTTO" -> "otf"
         else -> null
+    }
+}
+
+internal fun validatedCustomFontExtension(file: File): String? {
+    val length = file.length()
+    if (length < SFNT_HEADER_BYTES || length > MAX_CUSTOM_FONT_BYTES) return null
+    val extension = detectCustomFontExtension(file) ?: return null
+    return RandomAccessFile(file, "r").use { font ->
+        font.seek(4)
+        val tableCount = font.readUnsignedShort()
+        if (tableCount !in 1..MAX_SFNT_TABLES) return@use null
+        val directoryEnd = SFNT_HEADER_BYTES + tableCount.toLong() * SFNT_TABLE_RECORD_BYTES
+        if (directoryEnd > length) return@use null
+        font.seek(SFNT_HEADER_BYTES.toLong())
+        val tables = HashMap<String, Pair<Long, Long>>(tableCount)
+        val tag = ByteArray(4)
+        repeat(tableCount) {
+            font.readFully(tag)
+            if (tag.any { it < 0x20 || it > 0x7E }) return@use null
+            font.skipBytes(4)
+            val offset = font.readInt().toLong() and 0xFFFFFFFFL
+            val size = font.readInt().toLong() and 0xFFFFFFFFL
+            if (offset < directoryEnd || offset + size > length) return@use null
+            tables[String(tag, Charsets.US_ASCII)] = offset to size
+        }
+        if (!REQUIRED_SFNT_TABLES.all(tables::containsKey)) return@use null
+        val hasOutlines = if (extension == "otf") {
+            "CFF " in tables || "CFF2" in tables
+        } else {
+            "glyf" in tables && "loca" in tables
+        }
+        if (!hasOutlines) return@use null
+        val (headOffset, headSize) = tables.getValue("head")
+        if (headSize < HEAD_TABLE_MIN_BYTES) return@use null
+        font.seek(headOffset + 12)
+        if (font.readInt() != HEAD_MAGIC) return@use null
+        extension
+    }
+}
+
+internal fun InputStream.copyFontBounded(output: OutputStream): Long {
+    val buffer = ByteArray(DEFAULT_BUFFER_SIZE)
+    var total = 0L
+    while (true) {
+        val read = read(buffer)
+        if (read < 0) return total
+        total += read
+        require(total <= MAX_CUSTOM_FONT_BYTES) { "Font files must be smaller than 16 MB" }
+        output.write(buffer, 0, read)
     }
 }
 
@@ -47,7 +107,7 @@ class CustomFontRepository @Inject constructor(
         variant: Variant,
         sourceUri: Uri,
     ): Result<CustomFont> = withContext(Dispatchers.IO) {
-        runCatching {
+        fontResult {
             val trimmedName = validateDisplayName(displayName)
             val generatedId = sanitizeId(trimmedName)
             val id = familyId ?: generatedId
@@ -71,10 +131,10 @@ class CustomFontRepository @Inject constructor(
                 val input = context.contentResolver.openInputStream(sourceUri)
                     ?: error("Could not open the selected file")
                 input.use { source ->
-                    upload.outputStream().use { output -> source.copyTo(output) }
+                    upload.outputStream().use { output -> source.copyFontBounded(output) }
                 }
                 require(upload.length() > 0L) { "The selected font file is empty" }
-                val extension = detectCustomFontExtension(upload)
+                val extension = validatedCustomFontExtension(upload)
                     ?: error("Select a TrueType (.ttf) or OpenType (.otf) font file")
                 destination = File(familyDir, "${variant.fileBase}-$revision.$extension")
                 if (!upload.renameTo(destination)) {
@@ -102,8 +162,39 @@ class CustomFontRepository @Inject constructor(
         }
     }
 
+    suspend fun installFamily(displayName: String, faces: Map<Variant, File>): Result<CustomFont> =
+        withContext(Dispatchers.IO) {
+            fontResult {
+                val name = validateDisplayName(displayName)
+                val id = sanitizeId(name)
+                require(id.isNotBlank()) { "Font name must contain alphanumerics" }
+                require(Variant.REGULAR in faces) { "$name has no regular style" }
+                if (dao.get(id) != null || dao.getAll().any { it.displayName.equals(name, ignoreCase = true) }) {
+                    error("$name is already installed")
+                }
+                val familyDir = File(fontRoot(), id).apply { mkdirs() }
+                val revision = System.nanoTime()
+                try {
+                    val installed = faces.entries.fold(
+                        CustomFont(id = id, displayName = name, addedAt = System.currentTimeMillis()),
+                    ) { font, (variant, source) ->
+                        val extension = validatedCustomFontExtension(source)
+                            ?: error("$name did not download as a valid TrueType or OpenType font")
+                        val destination = File(familyDir, "${variant.fileBase}-$revision.$extension")
+                        source.copyTo(destination, overwrite = true)
+                        font.withVariant(variant, destination.absolutePath)
+                    }
+                    dao.upsert(installed)
+                    installed
+                } catch (error: Exception) {
+                    familyDir.deleteRecursively()
+                    throw error
+                }
+            }
+        }
+
     suspend fun rename(id: String, newDisplayName: String): Result<Unit> = withContext(Dispatchers.IO) {
-        runCatching {
+        fontResult {
             val trimmed = validateDisplayName(newDisplayName)
             val existing = dao.get(id) ?: error("Font not found")
             require(dao.getAll().none { it.id != id && it.displayName.equals(trimmed, ignoreCase = true) }) {
@@ -115,7 +206,7 @@ class CustomFontRepository @Inject constructor(
     }
 
     suspend fun deleteFamily(id: String): Result<Unit> = withContext(Dispatchers.IO) {
-        runCatching {
+        fontResult {
             dao.delete(id)
             File(fontRoot(), id).deleteRecursively()
             Unit
@@ -124,8 +215,8 @@ class CustomFontRepository @Inject constructor(
 
     suspend fun deleteVariant(id: String, variant: Variant): Result<CustomFont?> =
         withContext(Dispatchers.IO) {
-            runCatching {
-                val existing = dao.get(id) ?: return@runCatching null
+            fontResult {
+                val existing = dao.get(id) ?: return@fontResult null
                 require(
                     variant != Variant.REGULAR ||
                         existing.boldPath == null && existing.italicPath == null && existing.boldItalicPath == null,
@@ -186,4 +277,12 @@ class CustomFontRepository @Inject constructor(
             Variant.BOLD_ITALIC -> boldItalicPath
         }
     }
+}
+
+private suspend inline fun <T> fontResult(block: () -> T): Result<T> = try {
+    Result.success(block())
+} catch (error: kotlinx.coroutines.CancellationException) {
+    throw error
+} catch (error: Exception) {
+    Result.failure(error)
 }

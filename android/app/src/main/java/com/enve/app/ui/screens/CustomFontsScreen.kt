@@ -1,5 +1,8 @@
 package com.enve.app.ui.screens
 
+import android.content.ActivityNotFoundException
+import android.content.Intent
+import android.graphics.Typeface
 import android.net.Uri
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
@@ -22,8 +25,10 @@ import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Add
 import androidx.compose.material.icons.filled.Delete
+import androidx.compose.material.icons.filled.Download
 import androidx.compose.material.icons.filled.Edit
 import androidx.compose.material.icons.filled.FileUpload
+import androidx.compose.material.icons.filled.Search
 import androidx.compose.material.icons.filled.TextFields
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Icon
@@ -44,11 +49,18 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.semantics.contentDescription
+import androidx.compose.ui.semantics.heading
+import androidx.compose.ui.semantics.semantics
+import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import com.enve.hearth.shell.profileViewModel
 import com.enve.app.data.reader.CustomFont
+import com.enve.app.data.reader.fonts.ReaderFontCategory
+import com.enve.app.data.reader.fonts.ReaderFontFamily
 import com.enve.app.data.repository.CustomFontRepository
 import com.enve.app.ui.components.ScreenBackButton
 import com.enve.app.ui.components.SettingsCard
@@ -56,6 +68,7 @@ import com.enve.app.ui.components.SettingsHeroHeader
 import com.enve.app.ui.components.SettingsScreenLayout
 import com.enve.app.ui.theme.DS
 import com.enve.app.ui.theme.EnveTheme
+import com.enve.app.ui.theme.eink
 import com.enve.app.ui.theme.rememberAdaptiveMetrics
 import com.enve.app.ui.theme.scaled
 import com.enve.app.viewmodel.CustomFontsViewModel
@@ -69,7 +82,13 @@ fun CustomFontsScreen(
     val colors = EnveTheme.colors
     val metrics = rememberAdaptiveMetrics()
     val fonts by viewModel.fonts.collectAsState()
-    val error by viewModel.error.collectAsState()
+    val message by viewModel.message.collectAsState()
+    val selectedFontName by viewModel.selectedFontName.collectAsState()
+    val query by viewModel.query.collectAsState()
+    val catalog by viewModel.catalog.collectAsState()
+    val previews by viewModel.previews.collectAsState()
+    val busy by viewModel.busy.collectAsState()
+    val context = LocalContext.current
 
     var pendingAdd: PendingAdd? by remember { mutableStateOf(null) }
     var renameTarget: CustomFont? by remember { mutableStateOf(null) }
@@ -77,10 +96,10 @@ fun CustomFontsScreen(
     var addToFamily: CustomFont? by remember { mutableStateOf(null) }
     val snackbarState = remember { SnackbarHostState() }
 
-    LaunchedEffect(error) {
-        val message = error ?: return@LaunchedEffect
-        snackbarState.showSnackbar(message)
-        viewModel.consumeError()
+    LaunchedEffect(message) {
+        val text = message ?: return@LaunchedEffect
+        snackbarState.showSnackbar(text)
+        viewModel.consumeMessage()
     }
 
     val pickFontLauncher = rememberLauncherForActivityResult(
@@ -119,7 +138,7 @@ fun CustomFontsScreen(
 
             SettingsHeroHeader(
                 title = "Custom Fonts",
-                subtitle = "Upload TTF or OTF files to use any typeface while reading. Add bold and italic variants for the best results.",
+                subtitle = "Download free typefaces from Google Fonts or upload your own TTF or OTF files. Installed fonts work offline.",
                 modifier = Modifier.padding(horizontal = DS.Spacing.LG.scaled(metrics)),
             )
 
@@ -166,6 +185,8 @@ fun CustomFontsScreen(
                         fonts.forEach { font ->
                             FontFamilyRow(
                                 font = font,
+                                inUse = font.displayName == selectedFontName,
+                                onUse = { viewModel.use(font) },
                                 onAddVariant = { variant ->
                                     addToFamily = font
                                     pendingAdd = PendingAdd(font.id, font.displayName, variant)
@@ -175,6 +196,54 @@ fun CustomFontsScreen(
                                 onDeleteVariant = { variant -> viewModel.deleteVariant(font.id, variant) },
                             )
                         }
+                    }
+                }
+            }
+
+            SettingsCard(modifier = Modifier.padding(horizontal = DS.Spacing.LG.scaled(metrics))) {
+                Column(
+                    modifier = Modifier.fillMaxWidth().padding(DS.Spacing.LG.scaled(metrics)),
+                    verticalArrangement = Arrangement.spacedBy(DS.Spacing.MD.scaled(metrics)),
+                ) {
+                    Text(
+                        "Google Fonts",
+                        color = colors.primaryText,
+                        fontSize = 16.sp,
+                        fontWeight = FontWeight.SemiBold,
+                        modifier = Modifier.semantics { heading() },
+                    )
+                    Text(
+                        "Openly licensed typefaces chosen for long reading. Nothing is downloaded until you tap Preview or Download.",
+                        color = colors.secondaryText,
+                        fontSize = 13.sp,
+                    )
+                    OutlinedTextField(
+                        value = query,
+                        onValueChange = viewModel::search,
+                        singleLine = true,
+                        placeholder = { Text("Search fonts") },
+                        leadingIcon = { Icon(Icons.Default.Search, contentDescription = null) },
+                        modifier = Modifier.fillMaxWidth(),
+                    )
+                    if (catalog.isEmpty()) {
+                        Text("No fonts match “${query.trim()}”.", color = colors.secondaryText, fontSize = 13.sp)
+                    }
+                    catalog.forEach { family ->
+                        CatalogFontRow(
+                            family = family,
+                            preview = previews[family.name],
+                            installed = fonts.any { it.displayName.equals(family.name, ignoreCase = true) },
+                            busy = family.name in busy,
+                            onPreview = { viewModel.preview(family) },
+                            onInstall = { viewModel.install(family) },
+                            onLicense = {
+                                try {
+                                    context.startActivity(Intent(Intent.ACTION_VIEW, Uri.parse(family.licenseUrl)))
+                                } catch (_: ActivityNotFoundException) {
+                                    viewModel.showMessage("No browser is available to open the license")
+                                }
+                            },
+                        )
                     }
                 }
             }
@@ -286,8 +355,85 @@ private val FONT_MIME_TYPES = arrayOf(
 )
 
 @Composable
+private fun CatalogFontRow(
+    family: ReaderFontFamily,
+    preview: Typeface?,
+    installed: Boolean,
+    busy: Boolean,
+    onPreview: () -> Unit,
+    onInstall: () -> Unit,
+    onLicense: () -> Unit,
+) {
+    val colors = EnveTheme.colors
+    val shape = RoundedCornerShape(if (EnveTheme.eink.sharpCorners) 2.dp else 14.dp)
+    val previewFamily = remember(preview) { preview?.let { FontFamily(it) } }
+    val nameFamily = previewFamily ?: when (family.category) {
+        ReaderFontCategory.SERIF -> FontFamily.Serif
+        ReaderFontCategory.SANS_SERIF -> FontFamily.SansSerif
+        ReaderFontCategory.MONOSPACE -> FontFamily.Monospace
+    }
+    Column(
+        modifier = Modifier
+            .fillMaxWidth()
+            .clip(shape)
+            .background(colors.secondaryBackground)
+            .padding(14.dp),
+        verticalArrangement = Arrangement.spacedBy(6.dp),
+    ) {
+        Row(verticalAlignment = Alignment.CenterVertically) {
+            Column(Modifier.weight(1f)) {
+                Text(
+                    family.name,
+                    color = colors.primaryText,
+                    fontSize = 17.sp,
+                    fontFamily = nameFamily,
+                    fontWeight = FontWeight.SemiBold,
+                )
+                Text(family.category.label, color = colors.tertiaryText, fontSize = 12.sp)
+            }
+            when {
+                busy -> Text("Downloading…", color = colors.secondaryText, fontSize = 12.sp)
+                installed -> Text("Installed", color = colors.accent, fontSize = 12.sp, fontWeight = FontWeight.Medium)
+            }
+        }
+        if (previewFamily != null) {
+            Text(
+                FONT_PREVIEW_SAMPLE,
+                color = colors.primaryText,
+                fontSize = 16.sp,
+                fontFamily = previewFamily,
+                lineHeight = 22.sp,
+            )
+        }
+        Row(horizontalArrangement = Arrangement.spacedBy(4.dp), verticalAlignment = Alignment.CenterVertically) {
+            if (previewFamily == null) {
+                TextButton(enabled = !busy, onClick = onPreview, modifier = Modifier.semantics {
+                    contentDescription = "Preview ${family.name}"
+                }) { Text("Preview", color = colors.accent, fontSize = 13.sp) }
+            }
+            if (!installed) {
+                TextButton(enabled = !busy, onClick = onInstall, modifier = Modifier.semantics {
+                    contentDescription = "Download ${family.name}"
+                }) {
+                    Icon(Icons.Default.Download, null, tint = colors.accent, modifier = Modifier.size(16.dp))
+                    Spacer(Modifier.width(4.dp))
+                    Text("Download", color = colors.accent, fontSize = 13.sp)
+                }
+            }
+            TextButton(onClick = onLicense, modifier = Modifier.semantics {
+                contentDescription = "Open the ${family.name} license"
+            }) { Text("License", color = colors.secondaryText, fontSize = 13.sp) }
+        }
+    }
+}
+
+private const val FONT_PREVIEW_SAMPLE = "The quick brown fox jumps over the lazy dog. 0123456789"
+
+@Composable
 private fun FontFamilyRow(
     font: CustomFont,
+    inUse: Boolean,
+    onUse: () -> Unit,
     onAddVariant: (CustomFontRepository.Variant) -> Unit,
     onRename: () -> Unit,
     onDelete: () -> Unit,
@@ -317,6 +463,13 @@ private fun FontFamilyRow(
                 fontWeight = FontWeight.SemiBold,
                 modifier = Modifier.weight(1f),
             )
+            if (inUse) {
+                Text("In use", color = colors.accent, fontSize = 12.sp, fontWeight = FontWeight.Medium)
+            } else {
+                TextButton(onClick = onUse, modifier = Modifier.semantics {
+                    contentDescription = "Use ${font.displayName} in the reader"
+                }) { Text("Use", color = colors.accent, fontSize = 13.sp) }
+            }
             IconButton(onClick = onRename) {
                 Icon(Icons.Default.Edit, "Rename", tint = colors.secondaryText)
             }

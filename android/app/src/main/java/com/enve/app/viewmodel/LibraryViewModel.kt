@@ -2,6 +2,7 @@ package com.enve.app.viewmodel
 
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
+import com.enve.app.data.offline.offlineDownloadKey
 import androidx.paging.LoadState
 import androidx.paging.LoadStates
 import androidx.paging.Pager
@@ -278,7 +279,7 @@ class LibraryViewModel @Inject constructor(
 
     private val allLibrariesBooks: Flow<PagingData<Book>> = combine(
         allLibraryCacheBooks,
-        bookloreRepository.downloadedIds,
+        bookloreRepository.downloadedKeys,
 
         _state.map {
             val inSeries = it.seriesFilter?.isNotBlank() == true
@@ -309,7 +310,7 @@ class LibraryViewModel @Inject constructor(
         val filteredList = books
             .visibleLibraryBooks(filter.excludedLibraryIds)
             .asSequence()
-            .map { book -> book.copy(isDownloaded = book.id in downloaded) }
+            .map { book -> book.copy(isDownloaded = book.offlineDownloadKey in downloaded) }
             .filter { book ->
                 if (book.id in filter.hiddenIds) return@filter false
                 if (book.mediaType != filter.mediaType) return@filter false
@@ -360,7 +361,7 @@ class LibraryViewModel @Inject constructor(
             } else {
                 combine(
                     singleLibraryBooks,
-                    bookloreRepository.downloadedIds,
+                    bookloreRepository.downloadedKeys,
                     _state.map {
                         val inSeries = it.seriesFilter?.isNotBlank() == true
                         it.mediaType to (it.showDownloadedOnly && !inSeries)
@@ -379,7 +380,7 @@ class LibraryViewModel @Inject constructor(
                     }.distinctUntilChanged(),
                 ) { pagingData, downloaded, mediaPair, prog ->
                     pagingData
-                        .map { book -> book.copy(isDownloaded = book.id in downloaded) }
+                        .map { book -> book.copy(isDownloaded = book.offlineDownloadKey in downloaded) }
                         .filter { book ->
                             if (book.id in prog.hiddenIds) return@filter false
                             if (book.libraryId != null && book.libraryId in prog.excludedLibraryIds) return@filter false
@@ -892,7 +893,7 @@ private class SummaryToBookSource(
                     onTotalCountChanged.invoke(approximateTotal.coerceAtLeast(result.data.size))
                 }
                 LoadResult.Page(
-                    data = result.data.map { it.toShallowBook(isDownloaded(it.id)) },
+                    data = result.data.map { it.toShallowBook(isDownloaded(offlineDownloadKey(it.source, it.connectionId, it.id))) },
                     prevKey = result.prevKey,
                     nextKey = result.nextKey,
                 )
@@ -929,7 +930,7 @@ private class WrappedBookloreSource(
                 onSuccess = { result ->
                     if (page == 0) onTotalCountChanged(result.totalElements.toInt())
                     LoadResult.Page(
-                        data = result.items.map { it.toShallowBook(isDownloaded(it.id)) },
+                        data = result.items.map { it.toShallowBook(isDownloaded(offlineDownloadKey(it.source, it.connectionId, it.id))) },
                         prevKey = if (page == 0) null else page - 1,
                         nextKey = if (result.hasNext) page + 1 else null,
                     )
@@ -947,15 +948,11 @@ private class WrappedBookloreSource(
             dir = this.params.dir,
             status = this.params.status,
             search = this.params.search,
-            authors = this.params.authors,
-            language = this.params.language,
-            minRating = this.params.minRating,
-            maxRating = this.params.maxRating,
         ).fold(
             onSuccess = { result ->
                 if (page == 0) onTotalCountChanged(result.totalElements.toInt())
                 LoadResult.Page(
-                    data = result.items.map { it.toShallowBook(isDownloaded(it.id)) },
+                    data = result.items.map { it.toShallowBook(isDownloaded(offlineDownloadKey(it.source, it.connectionId, it.id))) },
                     prevKey = if (page == 0) null else page - 1,
                     nextKey = if (result.hasNext) page + 1 else null,
                 )

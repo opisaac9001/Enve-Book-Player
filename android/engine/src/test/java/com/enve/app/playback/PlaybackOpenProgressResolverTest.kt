@@ -96,6 +96,32 @@ class PlaybackOpenProgressResolverTest {
     )
 
     @Test
+    fun pausedSessionPullsNewServerPositionWithItsConnectionScope() = runBlocking {
+        pull = {
+            assertEquals("one", com.enve.core.data.remote.ConnectionScope.getConnectionId())
+            remote()
+        }
+        assertEquals(250_000L, resolver.resolveResumePositionMs(book, PlaybackState(currentPositionMs = 120_000L)))
+        assertEquals(250L, stored.currentTime)
+        assertEquals(1, pulls)
+    }
+
+    @Test
+    fun playingOrBufferingSessionDoesNotPullOrSeek() = runBlocking {
+        assertEquals(null, resolver.resolveResumePositionMs(book, PlaybackState(isPlaying = true)))
+        assertEquals(null, resolver.resolveResumePositionMs(book, PlaybackState(isBuffering = true)))
+        assertEquals(0, pulls)
+    }
+
+    @Test
+    fun pausedSessionKeepsPendingLocalCheckpoint() = runBlocking {
+        dirty = PendingProgressPush(book.id, book.source.name, book.connectionId.orEmpty(),
+            AppMediaType.AUDIOBOOK.name, 0.12f, false, 2000L)
+        assertEquals(120_000L, resolver.resolveResumePositionMs(book, PlaybackState(currentPositionMs = 90_000L)))
+        assertEquals(0, pulls)
+    }
+
+    @Test
     fun pendingZeroCommittedBetweenCacheAndPendingQueriesReturnsCurrentZero() = runBlocking {
         beforePendingRead = {
             stored = stored.copy(currentTime = 0L, readProgress = 0f, lastReadTime = 2000L)

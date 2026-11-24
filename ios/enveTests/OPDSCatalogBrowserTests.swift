@@ -374,6 +374,7 @@ struct StubProviderMaker: OPDSProviderMaking {
 
 @MainActor
 final class StubConnectionEditor: ProviderConnectionEditing {
+    var isConfigurationAuthoritative = true
     var connections: [ServerConnection]
 
     init(connections: [ServerConnection]) {

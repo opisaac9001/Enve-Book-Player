@@ -4,7 +4,6 @@ import com.enve.app.data.remote.dto.BookSummaryDto
 import com.enve.app.data.remote.dto.BookFileDto
 import com.enve.app.data.remote.dto.LegacyBookloreBookDto
 import com.enve.core.data.model.AppMediaType
-import kotlinx.coroutines.runBlocking
 import kotlinx.serialization.json.Json
 import org.junit.Assert.assertEquals
 import org.junit.Test
@@ -84,12 +83,23 @@ class GrimmorySummaryMappingTest {
         val summaries = batch.map { it.toBookSummaryDto(fallbackLibraryId = "1") }
 
         assertEquals(listOf(25f, 60f, 100f, null), summaries.map { it.readProgress })
-        val fractions = runBlocking {
-            resolveGrimmoryListProgress("test", summaries.map { it.listProgress() }, mutableMapOf()) { null }
-        }
+        val fractions = summaries.associate { it.id to (grimmoryPercentFraction(it.readProgress) ?: 0f) }
         assertEquals(0.25f, fractions.getValue("30260"), 0.0001f)
         assertEquals(0.6f, fractions.getValue("30279"), 0.0001f)
         assertEquals(1f, fractions.getValue("30274"), 0.0001f)
         assertEquals(0f, fractions.getValue("30293"), 0.0001f)
+    }
+
+    @Test
+    fun koreaderOnlyBrowseRecordUsesItsPercentScale() {
+        val json = Json { ignoreUnknownKeys = true }
+        val record = json.decodeFromString<LegacyBookloreBookDto>(
+            """{"id":7,"metadata":{"title":"Nested Only"},"primaryFile":{"id":70,"bookType":"EPUB"},"koreaderProgress":{"percentage":42.5}}""",
+        )
+
+        val summary = record.toCatalogSummary(fallbackLibraryId = "1")
+
+        assertEquals("Nested Only", summary.title)
+        assertEquals(0.425f, grimmoryPercentFraction(summary.readProgress) ?: 0f, 0.0001f)
     }
 }

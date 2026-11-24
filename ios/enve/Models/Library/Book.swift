@@ -1,3 +1,4 @@
+import CryptoKit
 import Foundation
 
 nonisolated public struct Book: Identifiable, Codable, Equatable, Sendable {
@@ -206,6 +207,11 @@ nonisolated public struct Book: Identifiable, Codable, Equatable, Sendable {
 
     nonisolated var uniqueId: String {
         "\(providerId)_\(id)"
+    }
+
+    nonisolated var ebookStorageID: String {
+        guard source != .local else { return id }
+        return "ebook-" + SHA256.hash(data: Data(uniqueId.utf8)).map { String(format: "%02x", $0) }.joined()
     }
 
     nonisolated var canonicalAuthorKey: String {

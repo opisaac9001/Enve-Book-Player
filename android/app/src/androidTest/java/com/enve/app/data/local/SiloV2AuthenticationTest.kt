@@ -53,7 +53,7 @@ class SiloV2AuthenticationTest {
         val data = PreferenceDataStoreFactory.create(scope = scope) { File(root, "test.preferences_pb") }
         val vault = CredentialVault.forProfile(context, profile)
         val prefs = PreferencesManager(data, vault, scope)
-        val registry = ConnectionRegistry(data)
+        val registry = ConnectionRegistry(data, vault)
         val server = MockWebServer()
         server.start()
         val base = server.url("/silo/").toString().trimEnd('/')

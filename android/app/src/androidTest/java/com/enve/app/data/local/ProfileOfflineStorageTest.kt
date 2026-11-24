@@ -7,10 +7,14 @@ import com.enve.app.data.offline.ComicOfflineStorage
 import com.enve.app.data.offline.OfflineAudioManifest
 import com.enve.app.data.offline.OfflineAudioStorage
 import com.enve.app.data.offline.OfflineAudioTrackManifest
+import com.enve.app.data.offline.offlineDownloadKey
 import com.enve.core.data.local.DEFAULT_ADULT_PROFILE_ID
 import com.enve.core.data.local.ProfileStorageLocations
 import com.enve.core.data.model.AppMediaType
 import com.enve.core.data.model.Book
+import com.enve.core.data.model.BookSource
+import kotlinx.serialization.encodeToString
+import kotlinx.serialization.json.Json
 import java.io.File
 import java.util.UUID
 import org.junit.After
@@ -45,43 +49,43 @@ class ProfileOfflineStorageTest {
         val owner = OfflineAudioStorage(ownerLocations)
         val ownerBook = book("Owner audio")
         owner.savePendingRequest(ownerBook)
-        val ownerTrack = owner.createTrackFinalFile("42", 0, "mp3")
-        assertEquals(File(root, "files/offline-audio/42/track_0.mp3"), ownerTrack)
+        val ownerTrack = owner.createTrackFinalFile(KEY, 0, "mp3")
+        assertEquals(File(root, "files/offline-audio/$KEY/track_0.mp3"), ownerTrack)
         ownerTrack.writeText("owner media")
-        owner.coverFile("42").writeText("owner cover")
+        owner.coverFile(KEY).writeText("owner cover")
         owner.saveManifest(manifest(ownerBook, owner.relativePath(ownerTrack)))
-        assertTrue(File(root, "files/offline-audio/.pending/42.json").exists())
-        assertTrue(File(root, "files/offline-audio/42/manifest.json").exists())
+        assertTrue(File(root, "files/offline-audio/.pending/$KEY.json").exists())
+        assertTrue(File(root, "files/offline-audio/$KEY/manifest.json").exists())
 
         val child = OfflineAudioStorage(childLocations)
-        assertFalse(child.isDownloaded("42"))
+        assertFalse(child.isDownloaded(KEY))
         assertTrue(child.listManifests().isEmpty())
         assertTrue(child.listPendingRequests().isEmpty())
         val childBook = book("Child audio")
         child.savePendingRequest(childBook)
-        val childTrack = child.createTrackFinalFile("42", 0, "mp3")
+        val childTrack = child.createTrackFinalFile(KEY, 0, "mp3")
         childTrack.writeText("child media")
-        child.coverFile("42").writeText("child cover")
+        child.coverFile(KEY).writeText("child cover")
         child.saveManifest(manifest(childBook, child.relativePath(childTrack)))
 
         ownerTrack.appendText(" late owner write")
         owner.savePendingRequest(ownerBook.copy(title = "Owner pending updated"))
         assertEquals("child media", childTrack.readText())
-        assertEquals("Child audio", child.getManifest("42")?.title)
-        assertEquals(childBook, child.getPendingRequest("42"))
-        assertEquals("child cover", child.coverFile("42").readText())
+        assertEquals("Child audio", child.getManifest(KEY)?.title)
+        assertEquals(childBook, child.getPendingRequest(KEY))
+        assertEquals("child cover", child.coverFile(KEY).readText())
         val reopened = OfflineAudioStorage(childLocations)
-        assertTrue(reopened.isDownloaded("42"))
-        assertEquals("child media", reopened.absolutePath(reopened.getManifest("42")!!.tracks.single().relativePath).readText())
+        assertTrue(reopened.isDownloaded(KEY))
+        assertEquals("child media", reopened.absolutePath(reopened.getManifest(KEY)!!.tracks.single().relativePath).readText())
         assertEquals(listOf(childBook), reopened.listPendingRequests())
 
-        child.clearPendingRequest("42")
-        child.removeDownload("42")
-        assertFalse(child.isDownloaded("42"))
-        assertTrue(owner.isDownloaded("42"))
+        child.clearPendingRequest(KEY)
+        child.removeDownload(KEY)
+        assertFalse(child.isDownloaded(KEY))
+        assertTrue(owner.isDownloaded(KEY))
         assertEquals("owner media late owner write", ownerTrack.readText())
-        assertEquals("Owner audio", owner.getManifest("42")?.title)
-        assertEquals("Owner pending updated", owner.getPendingRequest("42")?.title)
+        assertEquals("Owner audio", owner.getManifest(KEY)?.title)
+        assertEquals("Owner pending updated", owner.getPendingRequest(KEY)?.title)
     }
 
     @Test
@@ -90,21 +94,21 @@ class ProfileOfflineStorageTest {
         val childLocations = locations("child-one")
         val owner = ComicOfflineStorage(ownerLocations)
         val ownerBook = book("Owner comic").copy(mediaType = AppMediaType.EBOOK)
-        val ownerTemp = owner.createTempFile("42", "epub")
-        assertEquals(File(root, "files/offline-comics/42/book.epub.part"), ownerTemp)
+        val ownerTemp = owner.createTempFile(KEY, "epub")
+        assertEquals(File(root, "files/offline-comics/$KEY/book.epub.part"), ownerTemp)
         ownerTemp.writeText("owner comic bytes")
-        assertFalse(owner.isDownloaded("42"))
+        assertFalse(owner.isDownloaded(KEY))
         val ownerFile = owner.commit(ownerTemp)
         owner.saveManifest(ownerBook)
-        assertTrue(File(root, "files/offline-comics/42/book.json").exists())
+        assertTrue(File(root, "files/offline-comics/$KEY/book.json").exists())
 
         val child = ComicOfflineStorage(childLocations)
-        assertFalse(child.isDownloaded("42"))
+        assertFalse(child.isDownloaded(KEY))
         assertTrue(child.listManifests().isEmpty())
         val childBook = book("Child comic").copy(mediaType = AppMediaType.EBOOK)
-        val childTemp = child.createTempFile("42", "epub")
+        val childTemp = child.createTempFile(KEY, "epub")
         childTemp.writeText("child comic bytes")
-        assertFalse(child.isDownloaded("42"))
+        assertFalse(child.isDownloaded(KEY))
         val childFile = child.commit(childTemp)
         child.saveManifest(childBook)
 
@@ -113,21 +117,116 @@ class ProfileOfflineStorageTest {
         assertEquals("child comic bytes", childFile.readText())
         assertEquals(listOf(childBook), child.listManifests())
         val reopened = ComicOfflineStorage(childLocations)
-        assertEquals("child comic bytes", reopened.getDownloadedFile("42")?.readText())
-        assertEquals(setOf("42"), reopened.listDownloadedBookIds())
-        assertEquals(childBook, reopened.getManifest("42"))
+        assertEquals("child comic bytes", reopened.getDownloadedFile(KEY)?.readText())
+        assertEquals(setOf(KEY), reopened.listDownloadedKeys())
+        assertEquals(childBook, reopened.getManifest(KEY))
 
-        child.removeDownload("42")
-        assertFalse(child.isDownloaded("42"))
-        assertTrue(owner.isDownloaded("42"))
+        child.removeDownload(KEY)
+        assertFalse(child.isDownloaded(KEY))
+        assertTrue(owner.isDownloaded(KEY))
         assertEquals("owner comic bytes late owner write", ownerFile.readText())
-        assertEquals("Owner comic updated", owner.getManifest("42")?.title)
+        assertEquals("Owner comic updated", owner.getManifest(KEY)?.title)
+    }
+
+    @Test
+    fun failedComicManifestReplacementKeepsTheCompletedBook() {
+        val storage = ComicOfflineStorage(locations(DEFAULT_ADULT_PROFILE_ID))
+        val original = book("Saved title").copy(mediaType = AppMediaType.EBOOK)
+        val key = original.offlineDownloadKey
+        val finished = storage.commit(storage.createTempFile(key, "epub").apply { writeText("complete") })
+        storage.saveManifest(original)
+        check(File(finished.parentFile, ".book-manifest.tmp").mkdir())
+
+        val failure = runCatching { storage.saveManifest(original.copy(title = "Other title")) }.exceptionOrNull()
+
+        assertTrue(failure is java.io.IOException)
+        assertEquals(original, storage.getManifest(key))
+        assertEquals("complete", storage.getDownloadedFile(key)?.readText())
+    }
+
+    @Test
+    fun comicsWithTheSameIdOnTwoConnectionsStaySeparate() {
+        val storage = ComicOfflineStorage(locations(DEFAULT_ADULT_PROFILE_ID))
+        val first = Book(id = "42", title = "First", source = BookSource.KOMGA, connectionId = "komga-a", mediaType = AppMediaType.EBOOK)
+        val second = first.copy(title = "Second", connectionId = "komga-b")
+        storage.commit(storage.createTempFile(first.offlineDownloadKey, "cbz").apply { writeText("first") })
+        storage.saveManifest(first)
+        storage.commit(storage.createTempFile(second.offlineDownloadKey, "cbz").apply { writeText("second") })
+        storage.saveManifest(second)
+        storage.savePendingRequest(first)
+        storage.savePendingRequest(second)
+
+        assertEquals("first", storage.getDownloadedFile(first.offlineDownloadKey)?.readText())
+        assertEquals("second", storage.getDownloadedFile(second.offlineDownloadKey)?.readText())
+        assertEquals(2, storage.listPendingRequests().size)
+
+        storage.removeDownload(first.offlineDownloadKey)
+
+        assertFalse(storage.isDownloaded(first.offlineDownloadKey))
+        assertEquals("second", storage.getDownloadedFile(second.offlineDownloadKey)?.readText())
+        assertEquals(listOf("Second"), storage.listPendingRequests().map { it.title })
+    }
+
+    @Test
+    fun legacyComicDirectoryResolvesOnlyForTheConnectionInItsManifest() {
+        val owned = Book(id = "a:b", title = "Legacy", source = BookSource.KOMGA, connectionId = "komga-a", mediaType = AppMediaType.EBOOK)
+        val legacy = File(root, "files/offline-comics/a_b").apply { check(mkdirs()) }
+        File(legacy, "book.cbz").writeText("legacy")
+        File(legacy, "book.json").writeText(Json.encodeToString(owned))
+        val storage = ComicOfflineStorage(locations(DEFAULT_ADULT_PROFILE_ID))
+
+        assertEquals("legacy", storage.getDownloadedFile(owned.offlineDownloadKey)?.readText())
+        assertEquals(null, storage.getDownloadedFile(owned.copy(connectionId = "komga-b").offlineDownloadKey))
+        assertEquals(null, storage.getDownloadedFile(owned.copy(id = "a/b").offlineDownloadKey))
+        assertEquals(setOf(owned.offlineDownloadKey), storage.listDownloadedKeys())
+    }
+
+    @Test
+    fun legacyComicWithoutConnectionBecomesSeparateLocalRecoveredCopy() {
+        val remote = Book(id = "a:b", title = "Legacy", source = BookSource.KOMGA, mediaType = AppMediaType.EBOOK, coverUrl = "https://example.invalid/c")
+        val legacy = File(root, "files/offline-comics/a_b").apply { check(mkdirs()) }
+        File(legacy, "book.cbz").writeText("legacy")
+        val original = Json.encodeToString(remote)
+        File(legacy, "book.json").writeText(original)
+        val storage = ComicOfflineStorage(locations(DEFAULT_ADULT_PROFILE_ID))
+
+        val recovered = storage.listManifests().single()
+        assertTrue(recovered.id.startsWith("local-recovered-"))
+        assertEquals(BookSource.LOCAL, recovered.source)
+        assertEquals(null, recovered.connectionId)
+        assertEquals(null, recovered.coverUrl)
+        assertEquals("legacy", storage.getDownloadedFile(recovered.offlineDownloadKey)?.readText())
+        assertEquals(null, storage.getDownloadedFile(remote.offlineDownloadKey))
+        assertEquals(null, storage.getDownloadedFile(remote.copy(connectionId = "komga-a").offlineDownloadKey))
+        assertEquals(setOf(recovered.offlineDownloadKey), storage.listDownloadedKeys())
+        assertEquals(original, File(legacy, "book.json").readText())
+
+        val scoped = remote.copy(connectionId = "komga-a")
+        storage.commit(storage.createTempFile(scoped.offlineDownloadKey, "cbz").apply { writeText("scoped") })
+        storage.saveManifest(scoped)
+        storage.removeDownload(recovered.offlineDownloadKey)
+
+        assertFalse(legacy.exists())
+        assertEquals("scoped", storage.getDownloadedFile(scoped.offlineDownloadKey)?.readText())
+    }
+
+    @Test
+    fun legacyPendingRequestsMoveToTheirFullIdentity() {
+        val pending = File(root, "files/offline-comics/.pending").apply { check(mkdirs()) }
+        val book = Book(id = "a:b", title = "Pending", source = BookSource.KOMGA, connectionId = "komga-a", mediaType = AppMediaType.EBOOK)
+        File(pending, "a_b.json").writeText(Json.encodeToString(book))
+
+        val storage = ComicOfflineStorage(locations(DEFAULT_ADULT_PROFILE_ID))
+
+        assertEquals(listOf(book), storage.listPendingRequests())
+        assertTrue(File(pending, "${book.offlineDownloadKey}.json").exists())
+        assertFalse(File(pending, "a_b.json").exists())
     }
 
     @Test
     fun childAudioManifestPathsCannotEscapeToOwnerMedia() {
         val owner = OfflineAudioStorage(locations(DEFAULT_ADULT_PROFILE_ID))
-        val ownerTrack = owner.createTrackFinalFile("42", 0, "mp3")
+        val ownerTrack = owner.createTrackFinalFile(KEY, 0, "mp3")
         ownerTrack.writeText("owner media")
         val childLocations = locations("child-one")
         val child = OfflineAudioStorage(childLocations)
@@ -145,17 +244,17 @@ class ProfileOfflineStorageTest {
             }
         }
 
-        val childTrack = child.createTrackFinalFile("42", 0, "mp3")
+        val childTrack = child.createTrackFinalFile(KEY, 0, "mp3")
         childTrack.writeText("child media")
         assertEquals(childTrack.canonicalFile, child.absolutePath(child.relativePath(childTrack)))
-        assertEquals("child media", child.absolutePath("42/track_0.mp3").readText())
+        assertEquals("child media", child.absolutePath("$KEY/track_0.mp3").readText())
         assertEquals("owner media", ownerTrack.readText())
     }
 
     @Test
     fun blockedChildAudioRootCannotTouchOwnerFiles() {
         val owner = OfflineAudioStorage(locations(DEFAULT_ADULT_PROFILE_ID))
-        val ownerTrack = owner.createTrackFinalFile("42", 0, "mp3")
+        val ownerTrack = owner.createTrackFinalFile(KEY, 0, "mp3")
         ownerTrack.writeText("owner media")
         val childLocations = locations("child-blocked")
         check(childLocations.filesDirectory.mkdirs())
@@ -188,13 +287,13 @@ class ProfileOfflineStorageTest {
         } catch (_: IllegalStateException) {
         }
         assertEquals("blocked pending directory", blocked.readText())
-        assertEquals(ownerBook, owner.getPendingRequest("42"))
+        assertEquals(ownerBook, owner.getPendingRequest(KEY))
     }
 
     @Test
     fun blockedChildComicRootCannotTouchOwnerFiles() {
         val owner = ComicOfflineStorage(locations(DEFAULT_ADULT_PROFILE_ID))
-        val temp = owner.createTempFile("42", "epub")
+        val temp = owner.createTempFile(KEY, "epub")
         temp.writeText("owner comic")
         val ownerFile = owner.commit(temp)
         val childLocations = locations("child-blocked")
@@ -209,7 +308,7 @@ class ProfileOfflineStorageTest {
         }
         assertEquals("blocked root", blocked.readText())
         assertEquals("owner comic", ownerFile.readText())
-        assertTrue(owner.isDownloaded("42"))
+        assertTrue(owner.isDownloaded(KEY))
     }
 
     private fun locations(profileId: String) = ProfileStorageLocations.forProfile(
@@ -227,5 +326,11 @@ class ProfileOfflineStorageTest {
         source = book.source.name,
         downloadedAtEpochMs = 1L,
         tracks = listOf(OfflineAudioTrackManifest(index = 0, relativePath = relativePath)),
+        connectionId = book.connectionId,
+        downloadKey = book.offlineDownloadKey,
     )
+
+    private companion object {
+        val KEY = Book(id = "42", title = "", connectionId = "same-connection").offlineDownloadKey
+    }
 }

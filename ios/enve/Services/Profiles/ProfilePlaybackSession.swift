@@ -4,6 +4,9 @@ import Foundation
 final class ProfilePlaybackSession {
     private unowned let profileSession: ProfileSession
     let manager: PlaybackManager
+    #if os(iOS) && canImport(GoogleCast)
+    let cast: CastPlaybackService
+    #endif
     let controller: PlaybackManagerController
     let audioProcessing: PlaybackManagerAudioProcessingController
     let composition: PlaybackComposition
@@ -50,8 +53,7 @@ final class ProfilePlaybackSession {
         let abs = profileSession.absService
         let sessions = PlayerSessionService(audiobookshelfService: abs, providerConnections: profileSession.providerConnections,
             serverSyncEnabled: { [unowned profileSession] in profileSession.serverSyncEnabled })
-        let progress = PlayerProgressService(storageService: profileSession.storageService,
-            audiobookshelfService: abs, providerConnections: profileSession.providerConnections, profileSession: profileSession)
+        let progress = PlayerProgressService(audiobookshelfService: abs, providerConnections: profileSession.providerConnections, profileSession: profileSession)
         let streams = PlayerStreamURLResolver(audiobookshelfService: abs,
             providerConnections: profileSession.providerConnections, sessionService: sessions,
             progressService: progress, profileSession: profileSession)
@@ -75,12 +77,21 @@ final class ProfilePlaybackSession {
         self.profileSession = profileSession
         let manager = PlaybackManager(profileSession: profileSession)
         self.manager = manager
+        #if os(iOS) && canImport(GoogleCast)
+        let cast = CastPlaybackService(profileSession: profileSession, localPlayback: manager)
+        self.cast = cast
+        let controller = PlaybackManagerController(manager: manager, cast: cast)
+        #else
         let controller = PlaybackManagerController(manager: manager)
+        #endif
         self.controller = controller
         let audioProcessing = PlaybackManagerAudioProcessingController(processor: manager.audioProcessor)
         self.audioProcessing = audioProcessing
         let starter = AudiobookPlaybackCoordinator(appState: profileSession.appState, playback: manager, profileSession: profileSession)
         self.starter = starter
+        #if os(iOS) && canImport(GoogleCast)
+        cast.resumeLocally = { [unowned starter] book, position in starter.play(book, from: position, presentPlayer: false) }
+        #endif
         let composition = PlaybackComposition(controller: controller, eventPublisher: controller,
             loader: nil, bookStarter: starter, restorationPreparer: nil, bookMetadataUpdater: controller,
             nowPlayingUpdater: controller, conflictResolver: controller, overlayController: controller,
@@ -122,6 +133,9 @@ final class ProfilePlaybackSession {
         await mediaOverlay.retire()
         #endif
         await starter.retire()
+        #if os(iOS) && canImport(GoogleCast)
+        await cast.retire()
+        #endif
         if didCreatePlayer { await player.retire() }
         if didCreateEngine { await engine.retire() }
         await manager.retire()

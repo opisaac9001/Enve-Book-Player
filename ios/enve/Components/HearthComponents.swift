@@ -298,12 +298,15 @@ enum HearthFormat {
 }
 
 private struct HearthBackBar: ViewModifier {
+    var onBack: (() -> Void)?
     @Environment(\.dismiss) private var dismiss
 
     func body(content: Content) -> some View {
         content.safeAreaInset(edge: .top, spacing: 0) {
             HStack {
-                GlyphButton(systemImage: "chevron.left", label: "Back") { dismiss() }
+                GlyphButton(systemImage: "chevron.left", label: "Back") {
+                    if let onBack { onBack() } else { dismiss() }
+                }
                 Spacer(minLength: 0)
             }
             .padding(.horizontal, 16)
@@ -315,8 +318,8 @@ private struct HearthBackBar: ViewModifier {
 }
 
 extension View {
-    func hearthBackBar() -> some View {
-        modifier(HearthBackBar())
+    func hearthBackBar(onBack: (() -> Void)? = nil) -> some View {
+        modifier(HearthBackBar(onBack: onBack))
     }
 }
 

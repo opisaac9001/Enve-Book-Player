@@ -20,8 +20,8 @@ class AnnotationsFacadeImpl @Inject constructor(
 ) : AnnotationsFacade {
     override val knownTags: Flow<List<String>> = tags.tagsByUsage
 
-    override fun annotationsForBook(bookId: String): Flow<List<ReaderAnnotation>> =
-        annotations.byBook(bookId)
+    override fun annotationsForBook(book: Book): Flow<List<ReaderAnnotation>> =
+        annotations.byBook(book.id, book.connectionId)
 
     override fun tagsFor(annotation: ReaderAnnotation): List<String> =
         annotations.tagsFromJson(annotation.tagsJson)
@@ -34,7 +34,7 @@ class AnnotationsFacadeImpl @Inject constructor(
             throw e
         } catch (_: Exception) {
         }
-        sync.flushAnnotations(book.id)
+        sync.flushAnnotations(book)
     }
 
     override suspend fun update(

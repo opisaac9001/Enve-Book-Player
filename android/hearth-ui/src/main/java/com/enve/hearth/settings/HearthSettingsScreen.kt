@@ -65,6 +65,7 @@ import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.saveable.rememberSaveable
+import androidx.compose.material.icons.outlined.Save
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
@@ -76,6 +77,7 @@ import com.enve.core.data.model.BookSource
 import com.enve.hearth.design.EmberAccent
 import com.enve.hearth.design.HearthToggleRow
 import com.enve.hearth.design.parseHexColor
+import com.enve.hearth.bookorbit.BookOrbitTool
 import com.enve.hearth.opds.HearthOpdsCatalogScreen
 import androidx.compose.ui.semantics.contentDescription
 import androidx.compose.ui.semantics.selected
@@ -121,9 +123,11 @@ enum class HearthSettingsDestination {
     StoryAlign,
     Downloads,
     Storage,
+    SettingsBackup,
     SyncCloud,
     KOReader,
     Obsidian,
+    Readwise,
     Vocabulary,
     Dictionaries,
     LibraryDisplay,
@@ -155,6 +159,7 @@ fun HearthSettingsScreen(
     onManageSources: () -> Unit,
     onOpenDestination: (HearthSettingsDestination) -> Unit = {},
     onOpdsAuthorize: (connectionId: String, methodType: String, authorizeUrl: String) -> Unit = { _, _, _ -> },
+    onOpenBookOrbitTool: (BookOrbitTool, String?) -> Unit = { _, _ -> },
 ) {
     val vm: HearthSettingsViewModel = profileViewModel()
     val connections by vm.connections.collectAsStateWithLifecycle()
@@ -184,11 +189,18 @@ fun HearthSettingsScreen(
     selectedConnectionId?.let { id ->
         val connection = connections.firstOrNull { it.id == id }
         if (connection != null) {
+            val openBookOrbitTool: ((BookOrbitTool) -> Unit)? =
+                if (connection.source == BookSource.BOOKORBIT && connection.enabled) {
+                    { tool -> onOpenBookOrbitTool(tool, connection.id) }
+                } else {
+                    null
+                }
             SourceDetailPage(
                 connection = connection,
                 onBack = { selectedConnectionId = null },
                 onBrowseCatalog = { catalogConnectionId = connection.id }
                     .takeIf { connection.source == BookSource.OPDS },
+                onOpenBookOrbitTool = openBookOrbitTool,
                 onSave = vm::updateConnection,
                 onEnabled = { vm.setConnectionEnabled(connection, it) },
                 onReauthenticate = onManageSources,
@@ -674,6 +686,9 @@ private fun DownloadsPage(
                 ToolRow(Icons.Outlined.Storage, "Storage", "Cache, downloaded media, and local cleanup") {
                     onOpenDestination(HearthSettingsDestination.Storage)
                 }
+                ToolRow(Icons.Outlined.Save, "Settings backup", "Export or import this profile's preferences") {
+                    onOpenDestination(HearthSettingsDestination.SettingsBackup)
+                }
             }
         }
         item {
@@ -683,6 +698,9 @@ private fun DownloadsPage(
                 }
                 ToolRow(Icons.Outlined.Sync, "KOReader", "Progress bridge and sync diagnostics") {
                     onOpenDestination(HearthSettingsDestination.KOReader)
+                }
+                ToolRow(Icons.Outlined.Book, "Readwise", "Preview and export your highlights") {
+                    onOpenDestination(HearthSettingsDestination.Readwise)
                 }
                 ToolRow(Icons.Outlined.Book, "Obsidian", "Reading notes and vault export") {
                     onOpenDestination(HearthSettingsDestination.Obsidian)

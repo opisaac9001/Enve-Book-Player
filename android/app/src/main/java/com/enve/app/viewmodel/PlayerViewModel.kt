@@ -9,6 +9,7 @@ import com.enve.core.data.local.toBook
 import com.enve.core.data.model.*
 import com.enve.app.data.offline.OfflineDownloadManager
 import com.enve.app.data.offline.KeepNextOfflineService
+import com.enve.app.data.offline.offlineDownloadKey
 import com.enve.core.data.provider.synthesizeChaptersFromTracks
 import com.enve.app.data.remote.dto.AudiobookInfoDto
 import com.enve.app.data.repository.GrimmoryRepository
@@ -129,7 +130,7 @@ class PlayerViewModel @Inject constructor(
             combine(
                 _state.map { it.currentBook }.distinctUntilChangedBy { it?.uniqueKey },
                 keepNextOffline.settings,
-                offlineDownloadManager.downloadedBookIds,
+                offlineDownloadManager.downloadedKeys,
             ) { currentBook, _, _ -> currentBook }
                 .filterNotNull()
                 .collectLatest(keepNextOffline::reconcile)
@@ -293,8 +294,8 @@ class PlayerViewModel @Inject constructor(
             hydratedPlaybackMediaId = mediaId
 
             offlineDownloadManager.ensureCoverCached(requestedBook)
-            val offlineCover = offlineDownloadManager.localCoverUri(requestedBook.id)
-                ?: offlineDownloadManager.getManifest(requestedBook.id)?.coverUrl
+            val offlineCover = offlineDownloadManager.localCoverUri(requestedBook.offlineDownloadKey)
+                ?: offlineDownloadManager.getManifest(requestedBook.offlineDownloadKey)?.coverUrl
             val book = if (offlineCover != null) requestedBook.copy(coverUrl = offlineCover) else requestedBook
 
             _state.update {
@@ -312,22 +313,15 @@ class PlayerViewModel @Inject constructor(
             val resolvedStartTime = resolveStartTime(book)
             _state.update { it.copy(currentTime = resolvedStartTime) }
 
-            val localTracks = offlineDownloadManager.localTracks(book.id)
+            val localTracks = offlineDownloadManager.localTracks(book.offlineDownloadKey)
             if (!localTracks.isNullOrEmpty()) {
                 withContext(Dispatchers.IO) {
-                    val updatedRows = bookCacheDao.updateDownloadedStatus(
+                    bookCacheDao.updateDownloadedStatus(
                         bookId = book.id,
                         connectionId = book.connectionId,
                         downloaded = true,
                         nowMs = System.currentTimeMillis(),
                     )
-                    if (updatedRows == 0) {
-                        bookCacheDao.updateDownloadedStatusById(
-                            bookId = book.id,
-                            downloaded = true,
-                            nowMs = System.currentTimeMillis(),
-                        )
-                    }
                 }
                 val localDurationSec = when {
                     book.duration > 0L -> book.duration

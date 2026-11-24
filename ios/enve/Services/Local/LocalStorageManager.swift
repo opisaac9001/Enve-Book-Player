@@ -694,6 +694,7 @@ final class LocalStorageManager {
         let sidecars = [
             (metadataOverridePath(for: oldKey), metadataOverridePath(for: newKey)),
             (coverOverridePath(for: oldKey), coverOverridePath(for: newKey)),
+            (coverOverridePath(for: oldKey).appendingPathExtension("revision"), coverOverridePath(for: newKey).appendingPathExtension("revision")),
             (playbackStatePath(for: oldKey), playbackStatePath(for: newKey)),
         ]
         for (oldFile, newFile) in sidecars
@@ -748,6 +749,10 @@ final class LocalStorageManager {
         if fm.fileExists(atPath: oldCover.path) {
             try? fm.removeItem(at: newCover)
             try? fm.moveItem(at: oldCover, to: newCover)
+            let oldRevision = oldCover.appendingPathExtension("revision")
+            let newRevision = newCover.appendingPathExtension("revision")
+            try? fm.removeItem(at: newRevision)
+            if fm.fileExists(atPath: oldRevision.path) { try? fm.moveItem(at: oldRevision, to: newRevision) }
             AppLogger.network.info("Moved cover: \(oldSanitized) -> \(newSanitized)")
         }
 
@@ -768,10 +773,18 @@ final class LocalStorageManager {
     }
 
     @discardableResult
-    func saveCoverOverride(for bookId: String, imageData: Data) throws -> URL {
+    func saveCoverOverride(for bookId: String, imageData: Data, sourceURL: URL? = nil) throws -> URL {
         try FileManager.default.createDirectory(at: coverOverridesDirectory, withIntermediateDirectories: true)
         let url = coverOverridePath(for: bookId)
+        let revisionURL = url.appendingPathExtension("revision")
+        if FileManager.default.fileExists(atPath: revisionURL.path) {
+            try FileManager.default.removeItem(at: revisionURL)
+        }
         try imageData.write(to: url, options: .atomic)
+        if let sourceURL, let revision = URLComponents(url: sourceURL, resolvingAgainstBaseURL: false)?.queryItems?
+            .first(where: { $0.name == "enveCoverRevision" })?.value {
+            try Data(revision.utf8).write(to: revisionURL, options: .atomic)
+        }
         AppLogger.network.info("Saved cover override \(DiagnosticLogSanitizer.fileDescriptor(for: url))")
         return url
     }

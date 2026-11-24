@@ -103,6 +103,7 @@ final class ClassicReaderModel: NSObject, ObservableObject, EPUBNavigatorDelegat
 
     private let searchModel = ReaderSearchModel()
     private let navigatorWrapper = ReaderNavigatorWrapper()
+    private let pageTurnAnimator = ReaderPageTurnAnimator()
     var searchService: EbookSearchService { searchModel.searchService }
     let ttsService = EbookTTSService()
 
@@ -1396,14 +1397,15 @@ final class ClassicReaderModel: NSObject, ObservableObject, EPUBNavigatorDelegat
     }
 
     func pageForward() async {
+        guard !pageTurnAnimator.isTurning else { return }
         switch state {
         case .readyEPUB, .readyFoliate:
             guard await prepareUserEPUBNavigation() else { return }
             clearPendingSelectionForNavigation()
-            _ = await readerEngineAdapter?.pageForward(animated: !reduceMotionEnabled())
+            await turnEPUBPage(forward: true)
         case .readyPDF:
             clearPendingSelectionForNavigation()
-            pagedContent.stepPDFPage(by: 1)
+            await turnPDFPage(forward: true)
         case .readyComic:
             clearPendingSelectionForNavigation()
             pagedContent.stepComicPage(by: 1)
@@ -1413,19 +1415,45 @@ final class ClassicReaderModel: NSObject, ObservableObject, EPUBNavigatorDelegat
     }
 
     func pageBackward() async {
+        guard !pageTurnAnimator.isTurning else { return }
         switch state {
         case .readyEPUB, .readyFoliate:
             guard await prepareUserEPUBNavigation() else { return }
             clearPendingSelectionForNavigation()
-            _ = await readerEngineAdapter?.pageBackward(animated: !reduceMotionEnabled())
+            await turnEPUBPage(forward: false)
         case .readyPDF:
             clearPendingSelectionForNavigation()
-            pagedContent.stepPDFPage(by: -1)
+            await turnPDFPage(forward: false)
         case .readyComic:
             clearPendingSelectionForNavigation()
             pagedContent.stepComicPage(by: -1)
         default:
             return
+        }
+    }
+
+    private func turnEPUBPage(forward: Bool) async {
+        guard let adapter = readerEngineAdapter else { return }
+        let operation: (Bool) async -> Bool = { animated in
+            if forward { return await adapter.pageForward(animated: animated) }
+            return await adapter.pageBackward(animated: animated)
+        }
+        if appearance.pageTurnAnimation.usesCurl(scrolling: !isFixedLayoutBook && appearance.scrollEnabled, reduceMotion: reduceMotionEnabled()) {
+            _ = await pageTurnAnimator.turn(in: adapter.viewController.viewIfLoaded, forward: forward, operation: operation)
+        } else {
+            _ = await operation(!reduceMotionEnabled())
+        }
+    }
+
+    private func turnPDFPage(forward: Bool) async {
+        if appearance.pageTurnAnimation.usesCurl(scrolling: appearance.pdfScrollEnabled, reduceMotion: reduceMotionEnabled()) {
+            _ = await pageTurnAnimator.turn(in: pdfController?.viewIfLoaded, forward: forward) { [self] _ in
+                let previous = pdfController?.currentPageIndex()
+                pagedContent.stepPDFPage(by: forward ? 1 : -1)
+                return pdfController?.currentPageIndex() != previous
+            }
+        } else {
+            pagedContent.stepPDFPage(by: forward ? 1 : -1)
         }
     }
 

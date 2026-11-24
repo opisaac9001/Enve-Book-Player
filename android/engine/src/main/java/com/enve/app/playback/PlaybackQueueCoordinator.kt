@@ -82,6 +82,7 @@ class PlaybackQueueCoordinator @Inject constructor(
     private val sessionService: PlayerSessionService,
     private val completionHandler: BookCompletionHandler,
     private val preferences: PreferencesManager,
+    private val openProgress: PlaybackOpenProgressResolver,
     @ApplicationScope parentScope: CoroutineScope =
         CoroutineScope(SupervisorJob() + Dispatchers.Default),
 ) {
@@ -142,12 +143,19 @@ class PlaybackQueueCoordinator @Inject constructor(
 
     suspend fun open(book: Book, positionMs: Long? = null): Boolean = mutex.withLock {
         if (isCurrent(book)) {
-            withContext(Dispatchers.Main.immediate) {
+            val before = audioManager.state.value
+            val resolvedPositionMs = positionMs ?: openProgress.resolveResumePositionMs(book, before)
+            return@withLock withContext(Dispatchers.Main.immediate) {
                 coroutineContext.ensureActive()
-                positionMs?.let(audioManager::seekTo)
+                if (!isCurrent(book)) return@withContext false
+                val current = audioManager.state.value
+                if (positionMs != null || (!current.isPlaying && !current.isBuffering &&
+                        current.currentPositionMs == before.currentPositionMs)) {
+                    resolvedPositionMs?.let(audioManager::seekTo)
+                }
                 audioManager.resume()
+                true
             }
-            return@withLock true
         }
         finalizeCurrent()
         store.clear()
@@ -288,12 +296,15 @@ class PlaybackQueueCoordinator @Inject constructor(
 
     private suspend fun finalizeCurrent(): Book? {
         val state = audioManager.state.value
-        val checkpoint = progressService.capturePlayback(
-            mediaId = state.mediaId,
-            bookId = audioManager.currentBookId,
-            positionMs = state.currentPositionMs,
-            durationMs = state.durationMs,
-        )
+        val positionMs = state.checkpointPositionMs
+        val checkpoint = positionMs?.let {
+            progressService.capturePlayback(
+                mediaId = state.mediaId,
+                bookId = audioManager.currentBookId,
+                positionMs = it,
+                durationMs = state.checkpointDurationMs,
+            )
+        }
         val result = checkpoint?.let { progressService.persistCheckpoint(it, force = true) }
         val persisted = (result as? PlayerProgressService.SaveResult.Saved)?.progress
         if (persisted != null) {
@@ -303,13 +314,16 @@ class PlaybackQueueCoordinator @Inject constructor(
                 progressFraction = persisted.progressFraction,
             )
         }
-        val current = checkpoint?.key?.let { bookCache.getByCacheKey(it) }
+        val current = state.mediaId?.let(AutoMediaBrowserHelper::cacheKeyFrom)?.let { bookCache.getByCacheKey(it) }
             ?: audioManager.currentBookId?.let { bookCache.getById(it) }
-        withTimeoutOrNull(SESSION_CLOSE_TIMEOUT_MS) {
-            sessionService.close(
-                positionSec = state.currentPositionMs.coerceAtLeast(0L) / 1000L,
-                durationSec = state.durationMs.coerceAtLeast(0L) / 1000L,
-            )
+        val closePositionSec = positionMs?.let { it / 1000L } ?: current?.currentTime
+        if (closePositionSec != null) {
+            withTimeoutOrNull(SESSION_CLOSE_TIMEOUT_MS) {
+                sessionService.close(
+                    positionSec = closePositionSec,
+                    durationSec = (state.checkpointDurationMs / 1000L).takeIf { it > 0L } ?: current?.duration ?: 0L,
+                )
+            }
         }
         return persisted?.book ?: current?.toBook()
     }

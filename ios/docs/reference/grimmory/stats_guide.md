@@ -7,7 +7,7 @@ This document details the various data visualization and statistics endpoints av
 
 ---
 
-## 📖 1. General Reading Statistics
+## 1. General Reading Statistics
 
 ### Reading Streak
 Retrieves the user's current reading streak, longest streak, and a 52-week activity map.
@@ -91,7 +91,7 @@ Provides progress snapshots for books completed in a specific year to visualize 
 
 ---
 
-## 🎧 2. Audiobook & Listening Statistics
+## 2. Audiobook & Listening Statistics
 
 ### Listening Completion Progress
 Returns overall audiobook completion stats and a list of currently in-progress audiobooks.

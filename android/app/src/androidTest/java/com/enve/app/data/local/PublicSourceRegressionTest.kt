@@ -32,6 +32,28 @@ import org.junit.runner.RunWith
 class PublicSourceRegressionTest {
 
     @Test
+    fun mediaBrowserDownloadUsesOnlyTheRequestedAccountToken() = runBlocking {
+        withProfile { component ->
+            for (source in listOf(BookSource.JELLYFIN, BookSource.EMBY)) {
+                val first = ProviderConnection("first-$source", source, "First", "https://a.example", "one")
+                val second = first.copy(id = "second-$source", serverUrl = "https://b.example")
+                component.connections().upsert(first)
+                component.connections().upsert(second)
+                component.preferences().setActiveConnectionId(first.id)
+                component.vault().put(com.enve.core.auth.CredentialVault.accessTokenKey(first.id), "first-token")
+                component.vault().put(com.enve.core.auth.CredentialVault.passwordKey(second.id), "second-password")
+                val repository = component.aggregator()
+                assertEquals(null, repository.getEbookDownloadUrl("42", source, second.id))
+                assertEquals(null, repository.getEbookDownloadUrl("42", source, "removed"))
+                component.vault().put(com.enve.core.auth.CredentialVault.accessTokenKey(second.id), "a&b")
+                val key = if (source == BookSource.EMBY) "api_key" else "ApiKey"
+                assertEquals("https://b.example/Items/42/Download?$key=a%26b",
+                    repository.getEbookDownloadUrl("42", source, second.id))
+            }
+        }
+    }
+
+    @Test
     fun audiobookshelfCollectionsUseRemoteLibraryIds() = runBlocking {
         withProfile { component ->
             CollectionServer().use { server ->
@@ -97,7 +119,7 @@ class PublicSourceRegressionTest {
                         duration = 1000, currentTime = 100, readProgress = 0.1f)
                         .also { component.bookCacheDao().insertIfAbsent(it.toCachedBook()) }
                 }
-                val result = GrimmoryAudiobookSyncStrategy(component.aggregator(), component.bookCacheDao())
+                val result = GrimmoryAudiobookSyncStrategy(component.aggregator(), component.bookCacheDao(), component.database())
                     .sync(force = true, launchOptimized = false)
                 assertEquals(2, result.pulled)
                 books.zip(listOf(800L, 400L)).forEach { (book, expected) ->
@@ -112,6 +134,31 @@ class PublicSourceRegressionTest {
                 }
             } finally {
                 servers.forEach { it.close() }
+            }
+        }
+    }
+
+    @Test
+    fun closingEbookWithDisabledConnectionKeepsItsLocalPositionAndDoesNotUseActiveAccount() = runBlocking {
+        withProfile { component ->
+            component.serverSync().setEnabled(true)
+            okhttp3.mockwebserver.MockWebServer().use { server ->
+                server.start()
+                val source = BookSource.GRIMMORY
+                val a = ProviderConnection("missing", source, "Original", server.url("/").toString(), "fixture", enabled = false)
+                val b = a.copy(id = "active", enabled = true)
+                component.connections().upsert(a)
+                component.connections().upsert(b)
+                component.preferences().setActiveConnectionId(b.id)
+                val first = Book(id = "42", title = "Original", source = source, connectionId = a.id, mediaType = AppMediaType.EBOOK)
+                val other = first.copy(connectionId = b.id, readProgress = 0.9f)
+                component.bookCacheDao().upsert(listOf(first.toCachedBook(), other.toCachedBook()))
+                val result = component.aggregator().syncEbookProgress(first.id, source, 0.2f, null,
+                    connectionId = a.id, observedAt = System.currentTimeMillis())
+                org.junit.Assert.assertTrue(result.isFailure)
+                assertEquals(0.2f, component.bookCacheDao().getByIdAndConnection("42", a.id)!!.readProgress, 0.0001f)
+                assertEquals(0.9f, component.bookCacheDao().getByIdAndConnection("42", b.id)!!.readProgress, 0.0001f)
+                assertEquals(0, server.requestCount)
             }
         }
     }
@@ -230,13 +277,13 @@ class PublicSourceRegressionTest {
                     while (!input.readLine().isNullOrEmpty()) { }
                     val path = request.substringAfter(' ').substringBefore(' ').substringBefore('?')
                     val body = when {
-                        path.endsWith("/recently-added") -> """[{"id":"recent","title":"Server $percent","primaryFileType":"EPUB"}]"""
+                        path == "/api/v1/books/page" -> """{"content":[{"id":"recent","title":"Server $percent","primaryFile":{"bookType":"EPUB"}}],"page":{"number":0,"size":20,"totalElements":1,"totalPages":1}}"""
                         path.endsWith("/7/progress") -> """{"readStatus":"READING","audiobookProgress":{"positionMs":${percent * 10000},"trackIndex":0,"percentage":$percent,"updatedAt":"2099-01-01T00:00:00Z"}}"""
                         path.endsWith("/7/info") -> """{"bookId":"7","narrator":"Narrator ${percent * 10}","durationMs":1000000}"""
-                        path.endsWith("/7") -> """{"id":"7","title":"Shared ID","primaryFileType":"AUDIOBOOK"}"""
+                        path.endsWith("/7") -> """{"id":"7","title":"Shared ID","primaryFile":{"bookType":"AUDIOBOOK"}}"""
                         else -> "[]"
                     }.toByteArray()
-                    val status = if (path.endsWith("/7/progress") || path.endsWith("/7/info") || path.endsWith("/7") || path.endsWith("/recently-added")) "200 OK" else "404 Not Found"
+                    val status = if (path.endsWith("/7/progress") || path.endsWith("/7/info") || path.endsWith("/7") || path == "/api/v1/books/page") "200 OK" else "404 Not Found"
                     val output = it.getOutputStream()
                     output.write("HTTP/1.1 $status\r\nContent-Type: application/json\r\nContent-Length: ${body.size}\r\nConnection: close\r\n\r\n".toByteArray())
                     output.write(body)

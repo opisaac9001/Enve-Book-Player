@@ -19,7 +19,7 @@ class DownloadActivityFacadeImpl @Inject constructor(
     comicOffline: ComicOfflineService,
 ) : DownloadActivityFacade {
     override val activeTransfers: Flow<List<DownloadTransfer>> =
-        combine(offlineDownloads.progressByBookId, comicOffline.progressByBookId) { audio, comic ->
+        combine(offlineDownloads.progressByDownloadKey, comicOffline.progressByDownloadKey) { audio, comic ->
             audio.values.mapNotNull { it.toTransfer() } + comic.values.mapNotNull { it.toTransfer() }
         }.distinctUntilChanged()
 }

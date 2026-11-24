@@ -95,6 +95,7 @@ struct BookOrbitInsightsSnapshot {
 @Observable
 final class BookOrbitInsightsModel {
     private(set) var state: BookOrbitLoadState = .loading
+    private(set) var widgetError: String?
     private(set) var snapshot = BookOrbitInsightsSnapshot()
     private(set) var connections: [ServerConnection] = []
     private(set) var connectionId: UUID?
@@ -144,6 +145,7 @@ final class BookOrbitInsightsModel {
     }
 
     private func load() async {
+        widgetError = nil
         guard let connectionId, let provider = BookOrbitAccess.provider(connectionId) else {
             state = .unavailable
             return
@@ -164,15 +166,15 @@ final class BookOrbitInsightsModel {
             return
         }
 
-        async let streakTask = provider.fetchReadingStreakWidget()
-        async let goalTask = provider.fetchReadingGoalWidget()
-        async let projectionTask = provider.fetchYearProjectionWidget()
-        async let challengeTask = provider.fetchMonthlyChallengeWidget()
+        async let streakTask = loadWidget(previous: snapshot.streak) { try await provider.fetchReadingStreakWidget() }
+        async let goalTask = loadWidget(previous: snapshot.goal) { try await provider.fetchReadingGoalWidget() }
+        async let projectionTask = loadWidget(previous: snapshot.projection) { try await provider.fetchYearProjectionWidget() }
+        async let challengeTask = loadWidget(previous: snapshot.challenge) { try await provider.fetchMonthlyChallengeWidget() }
         async let dailyTask = provider.fetchDailyReading(days: days)
-        let streak = try? await streakTask
-        let goal = try? await goalTask
-        let projection = try? await projectionTask
-        let challenge = try? await challengeTask
+        let streak = await streakTask
+        let goal = await goalTask
+        let projection = await projectionTask
+        let challenge = await challengeTask
         let daily = try? await dailyTask
         guard !Task.isCancelled else { return }
         snapshot.streak = streak
@@ -215,14 +217,14 @@ final class BookOrbitInsightsModel {
         snapshot.diversity = diversity
         snapshot.overview = overview
 
-        async let highlightTask = provider.fetchHighlightOfTheDayWidget()
+        async let highlightTask = loadWidget(previous: snapshot.highlight) { try await provider.fetchHighlightOfTheDayWidget() }
         async let longWaitTask = provider.fetchLongWaitWidget()
         async let gemsTask = provider.fetchNeglectedGems()
-        let highlight = try? await highlightTask
+        let highlight = await highlightTask
         let longWait = try? await longWaitTask
         let gems = try? await gemsTask
         guard !Task.isCancelled else { return }
-        snapshot.highlight = highlight ?? nil
+        snapshot.highlight = highlight
         snapshot.longWait = longWait ?? nil
         snapshot.gems = gems ?? []
 
@@ -232,6 +234,18 @@ final class BookOrbitInsightsModel {
         let resolved = await BookOrbitAccess.localBooks(connectionId: connectionId, remoteIds: remoteIds)
         guard !Task.isCancelled else { return }
         books = resolved
+    }
+
+    func loadWidget<Value: Sendable>(previous: Value?, fetch: () async throws -> Value?) async -> Value? {
+        do {
+            return try await fetch()
+        } catch BookOrbitProvider.FeatureError.unavailable {
+            return nil
+        } catch {
+            guard !Task.isCancelled else { return previous }
+            widgetError = "Some BookOrbit cards couldn't refresh. " + BookOrbitAccess.message(for: error)
+            return previous
+        }
     }
 
     private static func heatmap(_ stats: [BookOrbitProvider.DailyReading]) -> [String: TimeInterval] {

@@ -38,7 +38,7 @@ struct BookOrbitMarginaliaScreen: View {
                     }
                     summaryLine
                     if model.items.isEmpty {
-                        JournalQuietNote(text: model.trashed ? "The trash is empty." : "Nothing in the margins yet.")
+                        JournalQuietNote(text: emptyText)
                     } else {
                         entries
                     }
@@ -140,6 +140,12 @@ struct BookOrbitMarginaliaScreen: View {
         HStack(spacing: 8) {
             HearthChip(title: "Kept", isSelected: !model.trashed) { model.select(trashed: false) }
             HearthChip(title: "Trash", isSelected: model.trashed) { model.select(trashed: true) }
+            Spacer(minLength: 8)
+            HearthChip(title: "Only with notes", isSelected: model.onlyWithNotes) {
+                model.select(onlyWithNotes: !model.onlyWithNotes)
+            }
+            .accessibilityAddTraits(model.onlyWithNotes ? .isSelected : [])
+            .accessibilityIdentifier("bookorbit-highlights-notes-only")
         }
     }
 
@@ -189,8 +195,18 @@ struct BookOrbitMarginaliaScreen: View {
             }
             if model.isLoadingMore {
                 JournalLoadingNote(text: "Turning the page…")
+            } else if let message = model.loadMoreError {
+                BookOrbitErrorCard(message: message) {
+                    Task { await model.loadMore(retry: true) }
+                }
+                .accessibilityIdentifier("bookorbit-highlights-page-error")
             }
         }
+    }
+
+    private var emptyText: String {
+        if model.onlyWithNotes { return model.trashed ? "No trashed highlights carry a note." : "No highlights carry a note yet." }
+        return model.trashed ? "The trash is empty." : "Nothing in the margins yet."
     }
 
     private func entry(_ item: BookOrbitProvider.AnnotationHubItem) -> some View {

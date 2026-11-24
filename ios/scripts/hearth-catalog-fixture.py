@@ -11,26 +11,17 @@ library_release = Event()
 library_release.set()
 
 
-def summary(book_id):
+def book_record(book_id):
     return {
         "id": book_id,
-        "title": "Hearth Fixture Cached" if book_id == 1 else f"Hearth Fixture Added {book_id - 1}",
-        "primaryFileType": "EPUB",
-        "primaryFileName": f"fixture-{book_id}.epub",
+        "libraryId": 1,
+        "metadata": {
+            "title": "Hearth Fixture Cached" if book_id == 1 else f"Hearth Fixture Added {book_id - 1}",
+            "authors": ["Fixture Author"],
+        },
+        "primaryFile": {"id": book_id, "bookType": "EPUB", "fileName": f"fixture-{book_id}.epub"},
         "addedOn": f"2030-10-20T12:{book_id // 60:02d}:{book_id % 60:02d}Z",
-        "readProgress": 0,
         "readStatus": "UNREAD",
-        "authors": ["Fixture Author"],
-    }
-
-
-def legacy(book_id):
-    book = summary(book_id)
-    return {
-        "id": book_id,
-        "metadata": {"title": book["title"]},
-        "primaryFile": {"bookType": "EPUB", "fileName": book["primaryFileName"]},
-        "addedOn": book["addedOn"],
     }
 
 
@@ -81,27 +72,31 @@ class Handler(BaseHTTPRequestHandler):
             if state["libraryMode"] == "failure":
                 return self.reply({}, 503)
             return self.reply([{"id": 1, "name": "Hearth Fixture", "allowedFormats": ["EPUB"]}])
-        if url.path == "/api/v1/app/books":
+        if url.path == "/api/v1/books/page":
             if state["mode"] == "failure" and query.get("size") == ["50"]:
                 return self.reply({}, 503)
             page = int(query.get("page", ["0"])[0])
             size = int(query.get("size", ["50"])[0])
+            if size < 1 or size > 100:
+                return self.reply({}, 400)
             window = ids[page * size:(page + 1) * size]
             return self.reply({
-                "content": [summary(book_id) for book_id in window],
-                "page": page,
-                "size": size,
-                "totalElements": len(ids),
-                "totalPages": math.ceil(len(ids) / size),
-                "hasNext": (page + 1) * size < len(ids),
-                "hasPrevious": page > 0,
+                "content": [book_record(book_id) for book_id in window],
+                "page": {
+                    "number": page,
+                    "size": size,
+                    "totalElements": len(ids),
+                    "totalPages": math.ceil(len(ids) / size),
+                },
             })
         if url.path == "/api/v1/books/batch":
-            return self.reply([legacy(int(book_id)) for book_id in query.get("ids", [""])[0].split(",") if book_id])
+            return self.reply([book_record(int(book_id)) for book_id in query.get("ids", [""])[0].split(",") if book_id])
         if url.path == "/api/v1/libraries/1/book":
-            return self.reply([legacy(book_id) for book_id in ids])
+            return self.reply([book_record(book_id) for book_id in ids])
         if url.path.startswith("/api/v1/libraries/1/book/"):
-            return self.reply(legacy(int(url.path.rsplit("/", 1)[1])))
+            return self.reply(book_record(int(url.path.rsplit("/", 1)[1])))
+        if url.path.startswith("/api/v1/books/") and url.path.rsplit("/", 1)[1].isdigit():
+            return self.reply(book_record(int(url.path.rsplit("/", 1)[1])))
         if "shel" in url.path or "collection" in url.path:
             return self.reply([])
         if url.path.endswith("/progress"):

@@ -82,7 +82,7 @@ class SiloTokenRefreshStrategy @Inject constructor(
 
     private fun storeTokens(connectionId: String?, accessToken: String, refreshToken: String?) {
         runBlocking {
-            prefs.saveAuth(accessToken, refreshToken)
+            if (connectionId == null) prefs.saveAuth(accessToken, refreshToken)
             connectionId?.let { id ->
                 vault.put(CredentialVault.accessTokenKey(id), accessToken)
                 if (!refreshToken.isNullOrBlank()) {

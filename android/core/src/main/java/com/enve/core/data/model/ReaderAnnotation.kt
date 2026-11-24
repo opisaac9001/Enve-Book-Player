@@ -67,6 +67,7 @@ enum class AnnotationMedia {
         Index("updatedAt"),
         Index("deletedAt"),
         Index("serverId"),
+        Index("connectionId"),
     ],
 )
 data class ReaderAnnotation(
@@ -107,16 +108,30 @@ data class ReaderAnnotation(
     @ColumnInfo val providerSource: String = "local",
     @ColumnInfo val syncDirty:    Boolean = true,
     @ColumnInfo val syncEtag:     String? = null,
+    @ColumnInfo val connectionId: String? = null,
+    @ColumnInfo val connectionUnresolved: Boolean = false,
 )
 
 @Dao
 interface ReaderAnnotationDao {
 
-    @Query("SELECT * FROM reader_annotations WHERE bookId = :bookId AND deletedAt IS NULL ORDER BY createdAt DESC")
-    fun flowByBook(bookId: String): Flow<List<ReaderAnnotation>>
+    @Query("""
+        SELECT * FROM reader_annotations
+        WHERE bookId = :bookId AND deletedAt IS NULL
+          AND connectionUnresolved = 0
+          AND (connectionId = :connectionId OR (:connectionId IS NULL AND connectionId IS NULL))
+        ORDER BY createdAt DESC
+    """)
+    fun flowByBook(bookId: String, connectionId: String?): Flow<List<ReaderAnnotation>>
 
-    @Query("SELECT * FROM reader_annotations WHERE bookId = :bookId AND kind = :kind AND deletedAt IS NULL ORDER BY createdAt ASC")
-    fun flowByBookAndKind(bookId: String, kind: String): Flow<List<ReaderAnnotation>>
+    @Query("""
+        SELECT * FROM reader_annotations
+        WHERE bookId = :bookId AND kind = :kind AND deletedAt IS NULL
+          AND connectionUnresolved = 0
+          AND (connectionId = :connectionId OR (:connectionId IS NULL AND connectionId IS NULL))
+        ORDER BY createdAt ASC
+    """)
+    fun flowByBookAndKind(bookId: String, connectionId: String?, kind: String): Flow<List<ReaderAnnotation>>
 
     @Query("SELECT * FROM reader_annotations WHERE deletedAt IS NULL ORDER BY updatedAt DESC")
     fun flowAll(): Flow<List<ReaderAnnotation>>
@@ -129,26 +144,42 @@ interface ReaderAnnotationDao {
     """)
     fun search(pattern: String): Flow<List<ReaderAnnotation>>
 
-    @Query("SELECT * FROM reader_annotations WHERE bookId = :bookId AND deletedAt IS NULL ORDER BY createdAt DESC")
-    suspend fun getByBook(bookId: String): List<ReaderAnnotation>
+    @Query("""
+        SELECT * FROM reader_annotations
+        WHERE bookId = :bookId AND deletedAt IS NULL
+          AND connectionUnresolved = 0
+          AND (connectionId = :connectionId OR (:connectionId IS NULL AND connectionId IS NULL))
+        ORDER BY createdAt DESC
+    """)
+    suspend fun getByBook(bookId: String, connectionId: String?): List<ReaderAnnotation>
 
     @Query("SELECT * FROM reader_annotations WHERE id = :id LIMIT 1")
     suspend fun getById(id: String): ReaderAnnotation?
 
-    @Query("SELECT * FROM reader_annotations WHERE serverId = :serverId AND providerSource = :providerSource LIMIT 1")
-    suspend fun getByServerId(serverId: String, providerSource: String): ReaderAnnotation?
-
-    @Query("SELECT * FROM reader_annotations WHERE serverId = :serverId AND providerSource = :providerSource AND bookId = :bookId LIMIT 1")
-    suspend fun getByServerIdForBook(serverId: String, providerSource: String, bookId: String): ReaderAnnotation?
+    @Query("""
+        SELECT * FROM reader_annotations
+        WHERE serverId = :serverId AND providerSource = :providerSource AND bookId = :bookId AND connectionUnresolved = 0
+          AND (connectionId = :connectionId OR (:connectionId IS NULL AND connectionId IS NULL))
+        LIMIT 1
+    """)
+    suspend fun getByServerIdForBook(serverId: String, providerSource: String, bookId: String, connectionId: String?): ReaderAnnotation?
 
     @Query("SELECT * FROM reader_annotations WHERE syncDirty = 1")
     suspend fun getDirty(): List<ReaderAnnotation>
 
-    @Query("SELECT * FROM reader_annotations WHERE bookId = :bookId AND syncDirty = 1")
-    suspend fun getDirtyForBook(bookId: String): List<ReaderAnnotation>
+    @Query("""
+        SELECT * FROM reader_annotations
+        WHERE bookId = :bookId AND syncDirty = 1 AND connectionUnresolved = 0
+          AND (connectionId = :connectionId OR (:connectionId IS NULL AND connectionId IS NULL))
+    """)
+    suspend fun getDirtyForBook(bookId: String, connectionId: String?): List<ReaderAnnotation>
 
-    @Query("SELECT * FROM reader_annotations WHERE bookId = :bookId AND providerSource = :providerSource AND syncDirty = 1")
-    suspend fun getDirtyForBookAndProvider(bookId: String, providerSource: String): List<ReaderAnnotation>
+    @Query("""
+        SELECT * FROM reader_annotations
+        WHERE bookId = :bookId AND providerSource = :providerSource AND syncDirty = 1 AND connectionUnresolved = 0
+          AND (connectionId = :connectionId OR (:connectionId IS NULL AND connectionId IS NULL))
+    """)
+    suspend fun getDirtyForBookAndProvider(bookId: String, connectionId: String?, providerSource: String): List<ReaderAnnotation>
 
     @Query("SELECT DISTINCT bookId FROM reader_annotations WHERE syncDirty = 1")
     suspend fun getDirtyBookIds(): List<String>
@@ -180,12 +211,23 @@ interface ReaderAnnotationDao {
     @Query("DELETE FROM reader_annotations WHERE id = :id")
     suspend fun purge(id: String)
 
-    @Query("DELETE FROM reader_annotations WHERE bookId = :bookId AND providerSource = :providerSource AND syncDirty = 0 AND serverId IS NOT NULL")
-    suspend fun purgeCleanProviderRows(bookId: String, providerSource: String)
+    @Query("""
+        DELETE FROM reader_annotations
+        WHERE bookId = :bookId AND providerSource = :providerSource AND syncDirty = 0 AND serverId IS NOT NULL
+          AND connectionUnresolved = 0
+          AND (connectionId = :connectionId OR (:connectionId IS NULL AND connectionId IS NULL))
+    """)
+    suspend fun purgeCleanProviderRows(bookId: String, connectionId: String?, providerSource: String)
 
-    @Query("DELETE FROM reader_annotations WHERE bookId = :bookId AND providerSource = :providerSource AND syncDirty = 0 AND serverId IS NOT NULL AND serverId NOT IN (:serverIds)")
+    @Query("""
+        DELETE FROM reader_annotations
+        WHERE bookId = :bookId AND providerSource = :providerSource AND syncDirty = 0 AND serverId IS NOT NULL
+          AND serverId NOT IN (:serverIds) AND connectionUnresolved = 0
+          AND (connectionId = :connectionId OR (:connectionId IS NULL AND connectionId IS NULL))
+    """)
     suspend fun purgeCleanProviderRowsMissing(
         bookId: String,
+        connectionId: String?,
         providerSource: String,
         serverIds: List<String>,
     )
@@ -201,15 +243,16 @@ interface ReaderAnnotationDao {
     @Transaction
     suspend fun reconcileAuthoritativeRemote(
         bookId: String,
+        connectionId: String?,
         providerSource: String,
         remotes: List<ReaderAnnotation>,
     ) {
         remotes.forEach { reconcileRemoteRow(it) }
         val serverIds = remotes.mapNotNull(ReaderAnnotation::serverId).distinct()
         if (serverIds.isEmpty()) {
-            purgeCleanProviderRows(bookId, providerSource)
+            purgeCleanProviderRows(bookId, connectionId, providerSource)
         } else {
-            purgeCleanProviderRowsMissing(bookId, providerSource, serverIds)
+            purgeCleanProviderRowsMissing(bookId, connectionId, providerSource, serverIds)
         }
     }
 
@@ -231,8 +274,11 @@ interface ReaderAnnotationDao {
 
 private suspend fun ReaderAnnotationDao.reconcileRemoteRow(remote: ReaderAnnotation) {
     val sameId = getById(remote.id)
-    val local = remote.serverId?.let { getByServerIdForBook(it, remote.providerSource, remote.bookId) }
-        ?: sameId?.takeIf { it.bookId == remote.bookId && it.providerSource == remote.providerSource }
+    val local = remote.serverId?.let { getByServerIdForBook(it, remote.providerSource, remote.bookId, remote.connectionId) }
+        ?: sameId?.takeIf {
+            it.bookId == remote.bookId && it.providerSource == remote.providerSource &&
+                it.connectionId == remote.connectionId && !it.connectionUnresolved
+        }
     val deletedAt = local?.deletedAt
     when {
         local == null && sameId == null -> upsert(remote)

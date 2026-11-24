@@ -11,6 +11,9 @@ final class PlaybackManagerController: PlaybackControlling, PlaybackEventPublish
     static var shared: PlaybackManagerController { ProfileSession.owner.playback.controller }
 
     private let manager: PlaybackManager
+    #if os(iOS) && canImport(GoogleCast)
+    private let cast: CastPlaybackService?
+    #endif
     private let changeSignal = PassthroughSubject<Void, Never>()
     private let eventSignal = PassthroughSubject<PlaybackEvent, Never>()
     private var cancellables = Set<AnyCancellable>()
@@ -18,8 +21,16 @@ final class PlaybackManagerController: PlaybackControlling, PlaybackEventPublish
 
     let ownsProgressPersistence = true
 
+    #if os(iOS) && canImport(GoogleCast)
+    private var remote: CastPlaybackService? { cast?.ownsPlayback == true ? cast : nil }
+    #endif
+
     var snapshot: PlaybackSnapshot {
-        PlaybackSnapshot(
+        #if os(iOS) && canImport(GoogleCast)
+        if let remote = cast?.snapshot { return remote }
+        if !manager.hasActivePlayer, manager.currentBook == nil, let ended = cast?.endedSnapshot { return ended }
+        #endif
+        return PlaybackSnapshot(
             currentBook: manager.currentBook,
             isPlaying: manager.isPlaying,
             position: manager.currentTime,
@@ -33,7 +44,12 @@ final class PlaybackManagerController: PlaybackControlling, PlaybackEventPublish
         )
     }
 
-    var livePosition: TimeInterval? { manager.livePosition }
+    var livePosition: TimeInterval? {
+        #if os(iOS) && canImport(GoogleCast)
+        if let remote { return remote.livePosition }
+        #endif
+        return manager.livePosition
+    }
 
     var snapshots: AnyPublisher<PlaybackSnapshot, Never> {
         changeSignal
@@ -62,9 +78,22 @@ final class PlaybackManagerController: PlaybackControlling, PlaybackEventPublish
             .eraseToAnyPublisher()
     }
 
+    #if os(iOS) && canImport(GoogleCast)
+    init(manager: PlaybackManager = .shared, cast: CastPlaybackService? = nil) {
+        self.manager = manager
+        self.cast = cast
+        observeManager()
+        cast?.onStateChange = { [weak self] in self?.changeSignal.send(()) }
+        cast?.onEvent = { [weak self] in self?.eventSignal.send($0) }
+    }
+    #else
     init(manager: PlaybackManager = .shared) {
         self.manager = manager
+        observeManager()
+    }
+    #endif
 
+    private func observeManager() {
         manager.stateDidChangeSubject
         .sink { [weak self] in
             guard let self else { return }
@@ -94,47 +123,109 @@ final class PlaybackManagerController: PlaybackControlling, PlaybackEventPublish
     }
 
     func play() {
+        #if os(iOS) && canImport(GoogleCast)
+        if let remote {
+            remote.play()
+            return
+        }
+        if manager.currentBook == nil, cast?.resumeEndedPlaybackLocally() == true { return }
+        #endif
         manager.play()
     }
 
     func pause() {
+        #if os(iOS) && canImport(GoogleCast)
+        if let remote {
+            remote.pause()
+            return
+        }
+        #endif
         manager.pause()
     }
 
     func stop() {
+        #if os(iOS) && canImport(GoogleCast)
+        if let cast, cast.ownsPlayback || cast.endedSnapshot != nil { cast.stop() }
+        #endif
         manager.stop()
     }
 
     func togglePlay() {
-        manager.isPlaying ? manager.pause() : manager.play()
+        #if os(iOS) && canImport(GoogleCast)
+        if let remote {
+            remote.togglePlay()
+            return
+        }
+        #endif
+        manager.isPlaying ? manager.pause() : play()
     }
 
     func seek(to time: TimeInterval) {
+        #if os(iOS) && canImport(GoogleCast)
+        if let remote {
+            remote.seek(to: time)
+            return
+        }
+        #endif
         manager.seek(to: time)
     }
 
     func skipForward(seconds: TimeInterval) {
+        #if os(iOS) && canImport(GoogleCast)
+        if let remote {
+            remote.skip(by: seconds)
+            return
+        }
+        #endif
         manager.skipForward(seconds: seconds)
     }
 
     func skipBackward(seconds: TimeInterval) {
+        #if os(iOS) && canImport(GoogleCast)
+        if let remote {
+            remote.skip(by: -seconds)
+            return
+        }
+        #endif
         manager.skipBackward(seconds: seconds)
     }
 
     func setPlaybackRate(_ rate: Double) {
+        #if os(iOS) && canImport(GoogleCast)
+        if let remote {
+            remote.setPlaybackRate(rate)
+            return
+        }
+        #endif
         manager.setPlaybackSpeed(Float(rate))
     }
 
     func setVolume(_ volume: Double) {
+        #if os(iOS) && canImport(GoogleCast)
+        if let remote {
+            remote.setVolume(volume)
+            changeSignal.send(())
+            return
+        }
+        #endif
         manager.setOutputVolume(Float(volume))
         changeSignal.send(())
     }
 
     func fadeOutAndPause(duration: TimeInterval, steps: Int) async {
+        #if os(iOS) && canImport(GoogleCast)
+        if let remote {
+            remote.pause()
+            return
+        }
+        #endif
         await manager.fadeOutAndPause(duration: duration, steps: steps)
     }
 
     func updateChapters(_ chapters: [Chapter], for book: Book) {
+        #if os(iOS) && canImport(GoogleCast)
+        cast?.updateChapters(chapters, for: book)
+        #endif
         guard var currentBook = manager.currentBook,
             Self.isSameBook(currentBook, book)
         else {
@@ -146,6 +237,12 @@ final class PlaybackManagerController: PlaybackControlling, PlaybackEventPublish
     }
 
     func refreshNowPlayingInfo() {
+        #if os(iOS) && canImport(GoogleCast)
+        if let remote {
+            remote.refreshNowPlayingInfo()
+            return
+        }
+        #endif
         manager.refreshNowPlayingInfo()
     }
 
@@ -163,7 +260,10 @@ final class PlaybackManagerController: PlaybackControlling, PlaybackEventPublish
         totalDuration: TimeInterval,
         resumeTime: TimeInterval
     ) async throws -> String {
-        try await manager.playOverlayTracks(
+        #if os(iOS) && canImport(GoogleCast)
+        if remote != nil { throw CastPlaybackError.readAloudUnsupported }
+        #endif
+        return try await manager.playOverlayTracks(
             tracks,
             book: book,
             totalDuration: totalDuration,

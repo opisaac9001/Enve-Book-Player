@@ -11,11 +11,7 @@ final class EbookChapterSyncService: @unchecked Sendable {
     func resolvedFileURL(for ebook: Book) -> URL? {
         guard ebook.mediaType == .ebook else { return nil }
 
-        return importer.resolveExistingLocalEbookURL(
-            bookIdentifier: ebook.id,
-            ebookFileURL: ebook.ebookFileURL,
-            filePath: ebook.filePath
-        )
+        return importer.resolveExistingLocalEbookURL(for: ebook)
     }
 
     func extractEbookChapters(for ebook: Book) async -> [Chapter]? {

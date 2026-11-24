@@ -11,6 +11,7 @@ private final class CatalogSessionStub: CurrentBookSession {
 
 @MainActor
 private final class CatalogConnectionStub: ProviderConnectionResolving, ProviderConnectionAccessing {
+    var isConfigurationAuthoritative = true
     var connections: [ServerConnection] = []
     var connectionsNeedingReauth: [ServerConnection] = []
     var allProviders: [UUID: LibraryProvider] = [:]
@@ -192,7 +193,95 @@ private struct CatalogFixture {
 }
 
 @MainActor
+private final class BrowsedCatalogProviderStub: CatalogProviderStub, @MainActor RemoteCatalogBrowsingProvider {
+    var summaryRequests: [Int] = []
+    var detailRequests = 0
+    var details: Book?
+
+    func fetchRemoteCatalogPage(libraryId: String, request: RemoteCatalogRequest, cursor: String?, limit: Int) async throws -> RemoteCatalogPage {
+        summaryRequests.append(limit)
+        return RemoteCatalogPage(books: Array(recentBooks.prefix(limit)), nextCursor: "next")
+    }
+
+    override func fetchFullBookDetails(bookId: String, libraryId: String) async throws -> Book {
+        detailRequests += 1
+        return try #require(details)
+    }
+}
+
+@MainActor
 struct LibraryCatalogCoordinatorTests {
+    @Test func openingRemoteSummaryPersistsEbookDetailsWithoutChapters() async throws {
+        let fixture = try CatalogFixture()
+        defer { fixture.cleanUp() }
+        let catalog = fixture.makeCoordinator()
+        let provider = BrowsedCatalogProviderStub(connection: ServerConnection(
+            name: "Catalog fixture", url: "https://fixture.example.invalid", type: .silo))
+        let id = provider.connection.id
+        fixture.connections.allProviders[id] = provider
+        var summary = Book(id: "summary", title: "Summary", mediaType: .ebook,
+            libraryId: "books", providerId: id, source: .silo)
+        summary.language = "en"
+        provider.details = Book(id: summary.id, title: "Resolved", author: "Author", mediaType: .ebook,
+            ebookFormat: "epub", description: "Full description", libraryId: "books", providerId: id, source: .silo)
+
+        await catalog.refreshBookDetails(for: summary)
+
+        let saved = try #require(await fixture.store.book(uniqueId: summary.uniqueId))
+        #expect(saved.author == "Author" && saved.ebookFormat == "epub")
+        #expect(saved.language == "en")
+        #expect(saved.description == "Full description" && saved.chapters == nil)
+        #expect(fixture.library.books.first?.uniqueId == summary.uniqueId)
+        #expect(fixture.library.books.first?.author == "Author")
+        #expect(provider.detailRequests == 1)
+
+        var reading = saved
+        reading.ebookProgress = 0.4
+        reading.epubLocator = "saved-locator"
+        reading.hideFromContinue = true
+        fixture.library.books = [reading]
+        await fixture.store.upsertBooks([reading])
+        provider.details?.isFinished = true
+        provider.details?.language = "de"
+        await catalog.refreshBookDetails(for: summary)
+        let refreshed = try #require(await fixture.store.book(uniqueId: summary.uniqueId))
+        #expect(refreshed.ebookProgress == 0.4 && refreshed.epubLocator == "saved-locator")
+        #expect(refreshed.language == "de")
+        #expect(!refreshed.isFinished && refreshed.hideFromContinue)
+        await catalog.retire()
+    }
+
+    @Test func remoteRecentCardsDoNotEraseResolvedDetailsOrTraverseTheCatalog() async throws {
+        let fixture = try CatalogFixture()
+        defer { fixture.cleanUp() }
+        let catalog = fixture.makeCoordinator()
+        let provider = BrowsedCatalogProviderStub(connection: ServerConnection(
+            name: "Catalog fixture", url: "https://fixture.example.invalid", type: .silo))
+        let id = provider.connection.id
+        let library = Library(id: "books", name: "Books", type: "ebooks", providerId: id)
+        provider.libraries = [library]
+        fixture.connections.connections = [provider.connection]
+        fixture.connections.allProviders[id] = provider
+        catalog.libraries = [library]
+        let stored = Book(id: "existing", title: "Old title", author: "Author", mediaType: .ebook,
+            ebookFormat: "epub", ebookProgress: 0.4, description: "Full description",
+            libraryId: library.id, providerId: id, source: .silo)
+        await fixture.store.upsertBooks([stored])
+        provider.recentBooks = [Book(id: stored.id, title: "New title", mediaType: .ebook,
+            libraryId: library.id, providerId: id, source: .silo)]
+
+        await catalog.refreshLibrary(providerId: id, libraryId: library.id)
+
+        let saved = try #require(await fixture.store.book(uniqueId: stored.uniqueId))
+        #expect(saved.title == "New title" && saved.author == "Author")
+        #expect(saved.ebookFormat == "epub" && saved.ebookProgress == 0.4)
+        #expect(saved.description == "Full description")
+        #expect(provider.summaryRequests == [12])
+        #expect(provider.detailRequests == 0 && provider.fullCatalogFetchCount == 0)
+        #expect(await fixture.store.loadCursor(providerId: id, libraryId: library.id) == nil)
+        await catalog.retire()
+    }
+
     @Test func jellyfinFailurePreservesCacheAndRetryAcceptsAValidEmptyCatalog() async throws {
         let fixture = try CatalogFixture()
         defer { fixture.cleanUp() }

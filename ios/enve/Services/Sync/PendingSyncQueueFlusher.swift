@@ -23,6 +23,7 @@ final class ProviderPendingSyncTransport: PendingSyncTransporting {
 
     init(
         providerResolver: any LibraryProviderResolving,
+        storytellerPositions: @escaping () -> StorytellerPositionSyncService,
         bookLookup: @escaping (String) async -> Book?,
         pendingSync: PendingSyncQueueStore? = nil,
         serialQueue: PerBookSerialQueue? = nil,
@@ -30,7 +31,7 @@ final class ProviderPendingSyncTransport: PendingSyncTransporting {
         serverSyncEnabled: @escaping () -> Bool = { true }
     ) {
         self.providerResolver = providerResolver
-        providerSink = ProviderSyncSink(providerResolver: providerResolver, pendingSync: pendingSync)
+        providerSink = ProviderSyncSink(providerResolver: providerResolver, storytellerPositions: storytellerPositions, pendingSync: pendingSync)
         self.pendingSync = pendingSync
         self.serialQueue = serialQueue
         self.isDownloaded = isDownloaded
@@ -165,26 +166,69 @@ final class PendingSyncQueueFlusher {
                 AppLogger.sync.error("[PendingSync] Validation failed for bookDiagnosticID=\(diagnosticID): \(message)")
                 return
             }
+            let status = httpStatus(from: error)
             if entry.downloadedBaseline != nil {
-                store.markRetry(stableId: stableId, at: now())
                 if let conflict = error as? DownloadedProgressConflict {
+                    store.markRetry(stableId: stableId, failure: failure(.conflict), at: now())
                     onDownloadedConflict?(stableId, conflict.serverPosition)
+                } else {
+                    store.markRetry(stableId: stableId, failure: transientFailure(for: error, status: status), at: now())
                 }
                 return
             }
-            let status = httpStatus(from: error)
+            if case .unauthorized = error as? ProviderError {
+                store.suspend(stableId: stableId, failure: failure(.authentication))
+                AppLogger.sync.error("[PendingSync] Authentication failed for bookDiagnosticID=\(diagnosticID)")
+                return
+            }
             switch status {
             case 401, 403:
-                store.suspend(stableId: stableId)
+                store.suspend(stableId: stableId, failure: failure(.authentication))
                 AppLogger.sync.error("[PendingSync] Authentication failed for bookDiagnosticID=\(diagnosticID)")
             case 404, 410, 422:
                 store.remove(stableId: stableId)
                 AppLogger.sync.error("[PendingSync] Dropped permanent failure for bookDiagnosticID=\(diagnosticID) status=\(status ?? 0)")
             default:
-                store.markRetry(stableId: stableId, at: now())
+                store.markRetry(stableId: stableId, failure: transientFailure(for: error, status: status), at: now())
                 AppLogger.sync.error("[PendingSync] Scheduled retry for bookDiagnosticID=\(diagnosticID): \(error.localizedDescription)")
             }
         }
+    }
+
+    private func failure(_ category: PendingSyncFailure.Category) -> PendingSyncFailure {
+        let message = switch category {
+        case .authentication: "The server needs you to sign in again."
+        case .conflict: "The server has newer progress than this download."
+        case .transient: "The update couldn't be sent."
+        }
+        return PendingSyncFailure(category: category, message: message, occurredAt: now().timeIntervalSince1970)
+    }
+
+    private func transientFailure(for error: Error, status: Int?) -> PendingSyncFailure {
+        let message: String
+        if let status {
+            message = "The server returned an error (HTTP \(status))."
+        } else if let urlError = error as? URLError {
+            message = switch urlError.code {
+            case .notConnectedToInternet, .networkConnectionLost, .dataNotAllowed, .internationalRoamingOff:
+                "This device is offline."
+            case .timedOut:
+                "The server took too long to respond."
+            case .cannotFindHost, .cannotConnectToHost, .dnsLookupFailed:
+                "The server couldn't be reached."
+            case .secureConnectionFailed, .serverCertificateUntrusted, .serverCertificateHasBadDate,
+                .serverCertificateNotYetValid, .serverCertificateHasUnknownRoot, .clientCertificateRejected,
+                .clientCertificateRequired:
+                "A secure connection to the server couldn't be made."
+            default:
+                "The connection to the server failed."
+            }
+        } else if case .rateLimited = error as? ProviderError {
+            message = "The server is limiting requests. Enve will try again shortly."
+        } else {
+            return failure(.transient)
+        }
+        return PendingSyncFailure(category: .transient, message: message, occurredAt: now().timeIntervalSince1970)
     }
 
     private func httpStatus(from error: Error) -> Int? {

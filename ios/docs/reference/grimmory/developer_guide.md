@@ -4,7 +4,7 @@ This guide documents the request lifecycle and payloads used by third-party Grim
 
 ---
 
-## 🚀 1. Authentication (Login Flow)
+## 1. Authentication (Login Flow)
 Before your app can do anything, it must exchange user credentials for a JWT (JSON Web Token). This token must be included as an `Authorization: Bearer <TOKEN>` header on **all subsequent requests.**
 
 ### Request
@@ -30,7 +30,7 @@ Content-Type: application/json
 
 ---
 
-## 📚 2. Connecting to the Library
+## 2. Connecting to the Library
 Once authenticated, the home screen of your app should likely query the libraries assigned to the user. A Grimmory server can host multiple libraries (e.g. "Audiobooks", "Ebooks", "Manga").
 
 ### Request
@@ -71,7 +71,7 @@ Authorization: Bearer <accessToken>
 
 ---
 
-## 📖 3. Fetching the Book Feed
+## 3. Fetching the Book Feed
 Now that you have the `libraryId` (e.g., `3`), you can fetch a paginated list of books to display in your UI. This endpoint powers the main feed.
 
 ### Request
@@ -113,7 +113,7 @@ Authorization: Bearer <accessToken>
 
 ---
 
-## 🖼️ 4. Loading Media (Images & Audio)
+## 4. Loading Media (Images & Audio)
 To display the cover image, you can use the `thumbnailUrl` provided in the book feed, OR construct the GET request directly.
 
 However, standard standard HTML `<img>` tags or Mobile WebViews don't easily allow you to pass the `Authorization` header. To solve this, Grimmory allows passing the token as a query parameter for streaming or image loading!
@@ -123,7 +123,7 @@ However, standard standard HTML `<img>` tags or Mobile WebViews don't easily all
 
 ---
 
-## 🏷️ 5. Fetching Shelves and Magic Shelves
+## 5. Fetching Shelves and Magic Shelves
 Users organize their books into custom collections. Standard Shelves are manually curated, while Magic Shelves use dynamic search filters (like "All books by Stephen King"). Here's how you populate the "Shelves" tab.
 
 ### Request
@@ -148,7 +148,7 @@ Authorization: Bearer <accessToken>
 
 ---
 
-## ⏱️ 6. Tracking Reading Progress & Session Telemetry
+## 6. Tracking Reading Progress & Session Telemetry
 When the user is actively listening or reading your app, you should periodically sync their progress to the server. This populates their global Reading Stats (Heatmaps, Streaks) and syncs position across devices.
 
 ### Request

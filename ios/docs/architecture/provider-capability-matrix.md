@@ -43,6 +43,7 @@ The app **supports libraries up to hundreds of thousands of books per provider**
 | `series` | `fetchSeries` returns server-defined series. |
 | `collections` | `fetchCollections` returns server-defined collections. |
 | `audiobookProgressPull` / `Push` | `fetchAudiobookProgress` / `updatePlaybackProgress` round-trip with the server. |
+| `audiobookProgressRefreshOnResume` | Refresh server progress before resuming a paused streaming audiobook; enabled for Plex. Explicit seeks and downloaded playback retain their chosen local position. |
 | `ebookProgressPull` / `Push` | `fetchEbookProgress` / `updateEbookProgress` round-trip with the server. |
 | `downloads` | Provider can deliver a downloadable file or playable stream for offline use (`downloadEbook` and/or `getAudioURL`). |
 | `coverAuthHeader` | Cover URLs require `Authorization` / custom-header auth. |
@@ -52,20 +53,20 @@ The app **supports libraries up to hundreds of thousands of books per provider**
 
 ## Matrix
 
-Legend: ✓ supported, ✗ not supported, ⚠ partial / capped (note in §3 below).
+Legend: ✓ supported, ✗ not supported, Partial = partial / capped (note in §3 below).
 
 | Provider | full | paged | stream | delta | recent | series | coll. | absPull | absPush | epubPull | epubPush | dl | covH | covQ | pgStream | bg |
 |---|:-:|:-:|:-:|:-:|:-:|:-:|:-:|:-:|:-:|:-:|:-:|:-:|:-:|:-:|:-:|:-:|
-| Audiobookshelf | ✓ | ⚠¹ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✗ | ✓ | ✗ | ✓ |
+| Audiobookshelf | ✓ | Partial¹ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✗ | ✓ | ✗ | ✓ |
 | Plex            | ✓ | ✓ | ✗ | ✗ | ✓ | ✗ | ✗ | ✓ | ✓ | ✗ | ✗ | ✓ | ✗ | ✓ | ✗ | ✓ |
 | Jellyfin        | ✓ | ✓ | ✗ | ✗ | ✗ | ✗ | ✗ | ✓ | ✓ | ✗ | ✗ | ✓ | ✓ | ✗ | ✗ | ✓ |
 | Emby            | ✓ | ✓ | ✗ | ✗ | ✗ | ✗ | ✗ | ✓ | ✓ | ✗ | ✗ | ✓ | ✓ | ✗ | ✗ | ✓ |
-| Komga           | ✓ | ⚠¹ | ✗ | ✓ | ✓ | ✓ | ✓ | ✗ | ✗ | ✓ | ✓ | ✓ | ✓ | ✗ | ✓ | ✓ |
-| Kavita          | ✓ | ⚠¹ | ✗ | ✗ | ✓ | ✓ | ✓ | ✗ | ✗ | ✓ | ✓ | ✓ | ✓ | ✗ | ✓ | ✓ |
+| Komga           | ✓ | Partial¹ | ✗ | ✓ | ✓ | ✓ | ✓ | ✗ | ✗ | ✓ | ✓ | ✓ | ✓ | ✗ | ✓ | ✓ |
+| Kavita          | ✓ | Partial¹ | ✗ | ✗ | ✓ | ✓ | ✓ | ✗ | ✗ | ✓ | ✓ | ✓ | ✓ | ✗ | ✓ | ✓ |
 | Booklore        | ✓ | ✓ | ✗ | ✗ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✗ | ✓ |
 | BookOrbit       | ✓ | ✓ | ✗ | ✗ | ✗³ | ✗ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✗ | ✗ | ✓ |
 | Silo            | ✓ | ✓ | ✓ | ✗ | ✓ | ✗ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✗ | ✗ | ✓ |
-| OPDS            | ✓ | ✗ | ✗ | ✗ | ✗ | ✗ | ✗ | ⚠⁴ | ⚠⁴ | ⚠⁴ | ⚠⁴ | ✓ | ✗ | ✗ | ✗ | ✓ |
+| OPDS            | ✓ | ✗ | ✗ | ✗ | ✗ | ✗ | ✗ | Partial⁴ | Partial⁴ | Partial⁴ | Partial⁴ | ✓ | ✗ | ✗ | ✗ | ✓ |
 | Storyteller     | ✓ | ✗ | ✗ | ✗ | ✗ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✗ | ✓ |
 | WebDAV          | ✓ | ✗ | ✗ | ✗ | ✗ | ✗ | ✗ | ✗ | ✗ | ✗ | ✗ | ✓ | ✗ | ✗ | ✗ | ✓ |
 | OneDrive        | ✓ | ✗ | ✗ | ✗ | ✗ | ✗ | ✗ | ✗ | ✗ | ✗ | ✗ | ✓ | ✗ | ✗ | ✗ | ✗ |

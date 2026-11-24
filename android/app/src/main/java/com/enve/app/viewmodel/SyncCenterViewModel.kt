@@ -9,6 +9,11 @@ import com.enve.core.data.model.ProviderConnection
 import com.enve.app.data.repository.GrimmoryRepository
 import com.enve.app.data.sync.BookloreKoreaderSink
 import com.enve.core.data.local.PendingProgressPushDao
+import com.enve.core.data.local.PendingProgressPush
+import com.enve.core.data.local.BookCacheDao
+import com.enve.core.data.local.ProfileServerSyncStore
+import com.enve.app.data.sync.PendingProgressReplay
+import kotlinx.coroutines.flow.combine
 import com.enve.core.data.util.runSuspendCatching
 import dagger.hilt.android.lifecycle.HiltViewModel
 import kotlinx.coroutines.flow.MutableStateFlow
@@ -28,12 +33,21 @@ data class ProviderSyncStatus(
     val error: String? = null,
 )
 
+data class PendingSyncStatus(
+    val checkpoint: PendingProgressPush,
+    val title: String,
+    val destination: String,
+)
+
 data class SyncCenterState(
     val providers: List<ProviderSyncStatus> = emptyList(),
     val isSyncingAll: Boolean = false,
     val lastSyncTime: Long = 0L,
     val lastSyncResult: String? = null,
     val pendingCount: Int = 0,
+    val pendingUpdates: List<PendingSyncStatus> = emptyList(),
+    val serverSyncEnabled: Boolean = true,
+    val isRecovering: Boolean = false,
     val autoSyncOnLaunch: Boolean = true,
     val syncOnCellular: Boolean = false,
     val error: String? = null,
@@ -53,6 +67,9 @@ class SyncCenterViewModel @Inject constructor(
     private val repository: GrimmoryRepository,
     private val koreaderSink: BookloreKoreaderSink,
     private val pendingProgress: PendingProgressPushDao,
+    private val bookCache: BookCacheDao,
+    private val pendingReplay: PendingProgressReplay,
+    private val serverSync: ProfileServerSyncStore,
 ) : ViewModel() {
 
     private val _state = MutableStateFlow(SyncCenterState())
@@ -82,8 +99,16 @@ class SyncCenterViewModel @Inject constructor(
         }
 
         viewModelScope.launch {
-            pendingProgress.observeCount().collect { count ->
-                _state.update { it.copy(pendingCount = count) }
+            combine(pendingProgress.observeAll(), registry.connections, serverSync.enabled) { entries, connections, enabled ->
+                val rows = entries.map { entry ->
+                    val book = bookCache.getByCacheKey("${entry.connectionKey.ifEmpty { entry.source }}:${entry.bookId}")
+                    PendingSyncStatus(entry, book?.title ?: "Saved reading position",
+                        connections.find { it.id == entry.connectionKey }?.name
+                            ?: BookSource.entries.find { it.name == entry.source }?.displayName ?: "Unavailable server")
+                }
+                rows to enabled
+            }.collect { (rows, enabled) ->
+                _state.update { it.copy(pendingCount = rows.size, pendingUpdates = rows, serverSyncEnabled = enabled) }
             }
         }
         loadKoreaderCredentials()
@@ -132,10 +157,33 @@ class SyncCenterViewModel @Inject constructor(
                 }
                 if (error == null) prefs.setLastSyncTime(System.currentTimeMillis())
                 _state.update { it.copy(lastSyncResult = summary, error = error) }
-            }.onFailure { e ->
-                _state.update { it.copy(error = e.message ?: "Sync failed") }
+            }.onFailure {
+                _state.update { it.copy(error = "Sync failed. Check your server connections and try again.") }
             }
             _state.update { it.copy(isSyncingAll = false) }
+        }
+    }
+
+    fun retryPending(entry: PendingProgressPush) {
+        if (_state.value.isRecovering || !serverSync.isEnabled) return
+        _state.update { it.copy(isRecovering = true, error = null) }
+        viewModelScope.launch {
+            try {
+                runSuspendCatching { pendingReplay.replay(only = entry) }
+                    .onFailure { _state.update { it.copy(error = "Couldn't retry the update. Your position is still saved.") } }
+            } finally {
+                _state.update { it.copy(isRecovering = false) }
+            }
+        }
+    }
+
+    fun discardPending(entry: PendingProgressPush) {
+        viewModelScope.launch {
+            runSuspendCatching {
+                val removed = pendingProgress.deleteIfUnchanged(entry.bookId, entry.source, entry.connectionKey,
+                    entry.createdAt, entry.percentage, entry.mediaType, entry.isFinished)
+                if (removed == 0) _state.update { it.copy(error = "This update changed. Review the latest position before discarding it.") }
+            }.onFailure { _state.update { it.copy(error = "Couldn't discard the queued update.") } }
         }
     }
 

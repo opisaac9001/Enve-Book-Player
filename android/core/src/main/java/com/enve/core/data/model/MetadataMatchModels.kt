@@ -149,16 +149,23 @@ object MetadataMatchAnalyzer {
 
     private fun normalize(value: String): String {
         val stripped = Normalizer.normalize(value.lowercase(), Normalizer.Form.NFD)
-            .replace(Regex("""\p{Mn}+"""), "")
+            .replace(CombiningMarks, "")
         return stripped
             .replace("&", " and ")
-            .replace(Regex("""['’]s\b"""), "")
-            .replace(Regex("""\([^)]*\)|\[[^]]*]"""), " ")
-            .replace(Regex("""\b(the|a|an|book|volume|vol|edition|unabridged)\b"""), " ")
-            .replace(Regex("""[^a-z0-9]+"""), " ")
-            .replace(Regex("""\s+"""), " ")
+            .replace(Possessive, "")
+            .replace(Bracketed, " ")
+            .replace(NoiseWords, " ")
+            .replace(NonAlphanumeric, " ")
+            .replace(Whitespace, " ")
             .trim()
     }
+
+    private val CombiningMarks = Regex("""\p{Mn}+""")
+    private val Possessive = Regex("""['’]s\b""")
+    private val Bracketed = Regex("""\([^)]*\)|\[[^]]*]""")
+    private val NoiseWords = Regex("""\b(the|a|an|book|volume|vol|edition|unabridged)\b""")
+    private val NonAlphanumeric = Regex("""[^a-z0-9]+""")
+    private val Whitespace = Regex("""\s+""")
 
     private fun tokenSimilarity(left: String, right: String): Float {
         if (left.isBlank() || right.isBlank()) return 0f

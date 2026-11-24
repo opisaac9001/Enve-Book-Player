@@ -24,7 +24,7 @@ class PodcastEpisodeViewModel @Inject constructor(
     fun load(episode: Book) {
         downloadJob?.cancel()
         downloadJob = viewModelScope.launch {
-            library.downloadState(episode.id).collect { mutableDownload.value = it }
+            library.downloadState(episode).collect { mutableDownload.value = it }
         }
     }
 

@@ -4,7 +4,6 @@ import Foundation
 import Logging
 import MediaPlayer
 import SwiftUI
-import Zip
 
 enum GrimmoryOpenDecision: Equatable {
     case noServerData
@@ -150,6 +149,8 @@ final class PlaybackManager {
     private var playbackGeneration = 0
     private var audioSessionGeneration = 0
     private var isStartPending = false
+    private var needsResumeProgressRefresh = false
+    private var isRefreshingResumeProgress = false
     private var operations: [UUID: Task<Void, Never>] = [:]
     private var startupTask: Task<Void, Never>?
     private let startupTimeout: TimeInterval
@@ -251,6 +252,17 @@ final class PlaybackManager {
     private var currentTracks: [AudioTrackInfo] = []
     private var currentTrackIndex: Int = 0
     private var currentTrackStartOffset: TimeInterval = 0
+    // Track offsets describe this item until a replacement is ready.
+    private var activeItem: AVPlayerItem?
+
+    private struct PendingTrackSwitch {
+        let id: UUID
+        let origin: TimeInterval
+        let trackIndex: Int
+        let localTime: TimeInterval
+        let task: Task<Void, Never>?
+    }
+    private var pendingTrackSwitch: PendingTrackSwitch?
 
     var syncConflict: (local: TimeInterval, server: TimeInterval, bookId: String)? {
         didSet {
@@ -274,7 +286,9 @@ final class PlaybackManager {
 
     /// Read-only: nil while seeking, loading or switching tracks, so the track offset always matches the item.
     var livePosition: TimeInterval? {
-        guard let player, !isSeeking, !isLoading, player.currentItem?.status == .readyToPlay else { return nil }
+        guard let player, let activeItem, !isSeeking, !isLoading,
+            player.currentItem === activeItem, activeItem.status == .readyToPlay
+        else { return nil }
         let local = CMTimeGetSeconds(player.currentTime())
         guard local.isFinite, local >= 0 else { return nil }
         return local + currentTrackStartOffset
@@ -497,10 +511,12 @@ final class PlaybackManager {
                 try await PlaybackStartupDeadline.run(seconds: startupTimeout, operation: operation)
                 guard !Task.isCancelled, !isRetired, generation == playbackGeneration else { return }
                 isLoading = false
+                isRefreshingResumeProgress = false
                 startupTask = nil
                 play()
             } catch {
                 guard !Task.isCancelled, !isRetired, generation == playbackGeneration else { return }
+                isRefreshingResumeProgress = false
                 startupTask = nil
                 if let sessionID = currentSessionId, !sessionID.hasPrefix("local-"), let provider = currentProvider {
                     let closingPosition = currentTime
@@ -514,6 +530,7 @@ final class PlaybackManager {
                 resetPlaybackRecovery()
                 clearNowPlayingSession()
                 player = nil
+                activeItem = nil
                 isPlaying = false
                 isLoading = false
                 let detail = (error as? URLError)?.code == .timedOut
@@ -641,7 +658,7 @@ final class PlaybackManager {
     }
 
     private func applyPlaybackSpeed() {
-        player?.rate = isPlaying && !isStartPending ? playbackSpeed : 0
+        player?.rate = isPlaying && !isStartPending && pendingTrackSwitch == nil ? playbackSpeed : 0
         if currentItemIsPodcast {
             let existing = profileSession.defaults.float(forKey: "podcastPlaybackSpeed")
             if existing != playbackSpeed {
@@ -1057,6 +1074,17 @@ final class PlaybackManager {
         }
     }
 
+    private func startLocalTracks(_ tracks: [AudioTrackInfo], sessionId: String, resumeTime: TimeInterval) async throws {
+        currentSessionId = sessionId
+        currentTracks = normalizedTracks(tracks)
+        let state = currentTracks.playbackState(at: resumeTime)
+        let index = state?.index ?? 0
+        let track = currentTracks[index]
+        currentTrackIndex = index
+        currentTrackStartOffset = track.startOffset
+        try await loadAndPlayTrack(track, seekTime: state?.localTime ?? 0)
+    }
+
     private func setupLocalPlayer(for book: Book, resumeTime: TimeInterval) async throws {
         AppLogger.player.debug("Setting up local player bookDiagnosticID=\(diagnosticBookID(book))")
 
@@ -1089,19 +1117,7 @@ final class PlaybackManager {
                 let descriptor = localURL.map(DiagnosticLogSanitizer.fileDescriptor) ?? "file[unresolved]"
                 AppLogger.player.debug("Found local download: \(descriptor)")
             }
-            self.currentSessionId = "local-\(book.id)"
-            let orderedTracks = normalizedTracks(localTracks)
-            self.currentTracks = orderedTracks
-
-            if let state = orderedTracks.playbackState(at: resumeTime) {
-                self.currentTrackIndex = state.index
-                self.currentTrackStartOffset = state.track.startOffset
-                try await loadAndPlayTrack(state.track, seekTime: state.localTime)
-            } else {
-                self.currentTrackIndex = 0
-                self.currentTrackStartOffset = orderedTracks[0].startOffset
-                try await loadAndPlayTrack(orderedTracks[0], seekTime: 0)
-            }
+            try await startLocalTracks(localTracks, sessionId: "local-\(book.id)", resumeTime: resumeTime)
             return
         }
 
@@ -1150,37 +1166,13 @@ final class PlaybackManager {
                 cumulativeOffset += trackDuration
             }
 
-            self.currentSessionId = "smb-stream-\(book.id)"
-            let orderedTracks = normalizedTracks(smbTracks)
-            self.currentTracks = orderedTracks
-
-            if let state = orderedTracks.playbackState(at: resumeTime) {
-                self.currentTrackIndex = state.index
-                self.currentTrackStartOffset = state.track.startOffset
-                try await loadAndPlayTrack(state.track, seekTime: state.localTime)
-            } else {
-                self.currentTrackIndex = 0
-                self.currentTrackStartOffset = orderedTracks[0].startOffset
-                try await loadAndPlayTrack(orderedTracks[0], seekTime: 0)
-            }
+            try await startLocalTracks(smbTracks, sessionId: "smb-stream-\(book.id)", resumeTime: resumeTime)
             return
         }
 
         if let localTracks = buildLocalTrackInfos(from: book), !localTracks.isEmpty {
             AppLogger.player.info("Using \(localTracks.count) local track(s) from book metadata")
-            self.currentSessionId = "local-\(book.id)"
-            let orderedTracks = normalizedTracks(localTracks)
-            self.currentTracks = orderedTracks
-
-            if let state = orderedTracks.playbackState(at: resumeTime) {
-                self.currentTrackIndex = state.index
-                self.currentTrackStartOffset = state.track.startOffset
-                try await loadAndPlayTrack(state.track, seekTime: state.localTime)
-            } else {
-                self.currentTrackIndex = 0
-                self.currentTrackStartOffset = orderedTracks[0].startOffset
-                try await loadAndPlayTrack(orderedTracks[0], seekTime: 0)
-            }
+            try await startLocalTracks(localTracks, sessionId: "local-\(book.id)", resumeTime: resumeTime)
             return
         }
 
@@ -1222,7 +1214,9 @@ final class PlaybackManager {
         AppLogger.player.debug("Is playing: \(isPlaying)")
         AppLogger.player.debug("Current time in memory: \(currentTime)s")
 
-        if currentBook?.stableId == book.stableId, !isLoading, player?.currentItem?.status == .readyToPlay {
+        if currentBook?.stableId == book.stableId, !isLoading, playbackError == nil,
+            currentSessionId != nil, player?.currentItem === activeItem, activeItem?.status == .readyToPlay
+        {
             AppLogger.player.info("Same book already loaded, resuming from currentTime: \(currentTime)s...")
             refreshCurrentTimeFromPlayer()
             if let requestedStart { seek(to: requestedStart) }
@@ -1443,6 +1437,7 @@ final class PlaybackManager {
         initialResumeTime: TimeInterval,
         localUpdate: Date? = nil
     ) async -> TimeInterval {
+        let generation = playbackGeneration
         guard profileSession.serverSyncEnabled, NetworkPolicyService.shared.isConnected,
             let provider,
             book.mediaType == .audiobook,
@@ -1457,8 +1452,8 @@ final class PlaybackManager {
             return initialResumeTime
         }
 
-        guard !Task.isCancelled, !isRetired, currentBook?.uniqueId == book.uniqueId,
-            profileSession.serverSyncEnabled else { return initialResumeTime }
+        guard !Task.isCancelled, !isRetired, generation == playbackGeneration,
+            currentBook?.uniqueId == book.uniqueId, profileSession.serverSyncEnabled else { return initialResumeTime }
         var serverTime = result.positionSeconds
         if serverTime <= 0,
             let duration = book.duration,
@@ -1466,6 +1461,16 @@ final class PlaybackManager {
             result.percentage > 0
         {
             serverTime = result.percentage * duration
+        }
+
+        if provider.capabilities.contains(.audiobookProgressRefreshOnResume),
+            let serverDate = result.updatedAt, serverDate > .distantPast,
+            let localUpdate, localUpdate > .distantPast
+        {
+            guard serverDate > localUpdate, serverTime.isFinite, serverTime >= 0,
+                abs(serverTime - initialResumeTime) > 0.5 else { return initialResumeTime }
+            applyOpenResumeTime(serverTime, for: book, updatedAt: serverDate, persist: true)
+            return serverTime
         }
 
         guard serverTime > 0 else { return initialResumeTime }
@@ -1520,7 +1525,7 @@ final class PlaybackManager {
             $0.lastUpdate = stamp
         }
 
-        guard persist, time > 0 else { return }
+        guard persist, time >= 0 else { return }
 
         let duration = book.duration ?? self.duration
         profileSession.bookProgress.saveProgress(
@@ -1568,18 +1573,7 @@ final class PlaybackManager {
         {
             let reason = NetworkPolicyService.shared.isConnected ? "downloaded book" : "offline mode"
             AppLogger.player.info("Using \(localTracks.count) local file(s) (\(reason))")
-            self.currentSessionId = "local-\(book.id)"
-            let orderedTracks = normalizedTracks(localTracks)
-            self.currentTracks = orderedTracks
-            if let state = orderedTracks.playbackState(at: resumeTime) {
-                self.currentTrackIndex = state.index
-                self.currentTrackStartOffset = state.track.startOffset
-                try await loadAndPlayTrack(state.track, seekTime: state.localTime)
-            } else {
-                self.currentTrackIndex = 0
-                self.currentTrackStartOffset = 0
-                try await loadAndPlayTrack(orderedTracks[0], seekTime: 0)
-            }
+            try await startLocalTracks(localTracks, sessionId: "local-\(book.id)", resumeTime: resumeTime)
             return
         }
 
@@ -1606,18 +1600,7 @@ final class PlaybackManager {
                 let localTracks = makeLocalTracks(for: book), !localTracks.isEmpty
             {
                 AppLogger.player.error("Streaming session failed, falling back to \(localTracks.count) local file(s): \(error)")
-                self.currentSessionId = "local-\(book.id)"
-                let orderedTracks = normalizedTracks(localTracks)
-                self.currentTracks = orderedTracks
-                if let state = orderedTracks.playbackState(at: resumeTime) {
-                    self.currentTrackIndex = state.index
-                    self.currentTrackStartOffset = state.track.startOffset
-                    try await loadAndPlayTrack(state.track, seekTime: state.localTime)
-                } else {
-                    self.currentTrackIndex = 0
-                    self.currentTrackStartOffset = 0
-                    try await loadAndPlayTrack(orderedTracks[0], seekTime: 0)
-                }
+                try await startLocalTracks(localTracks, sessionId: "local-\(book.id)", resumeTime: resumeTime)
                 return
             }
             throw error
@@ -1861,16 +1844,15 @@ final class PlaybackManager {
             resetPlaybackRecovery()
         }
 
+        let trackIndex: Int
         if let foundIndex = currentTracks.firstIndex(where: {
             $0.startOffset == track.startOffset && $0.contentUrl == track.contentUrl
         }) {
-            currentTrackIndex = foundIndex
+            trackIndex = foundIndex
         } else {
             debugLog(" [PlaybackManager] Track index fallback")
-            currentTrackIndex = currentTracks.firstIndex(where: { $0.index == track.index }) ?? 0
+            trackIndex = currentTracks.firstIndex(where: { $0.index == track.index }) ?? 0
         }
-
-        currentTrackStartOffset = track.startOffset
 
         guard let url = URL(string: track.contentUrl) else {
             AppLogger.player.error("Invalid audio URL for track \(track.index)")
@@ -1918,7 +1900,7 @@ final class PlaybackManager {
                             startOffset: currentTracks[idx].startOffset,
                             duration: currentTracks[idx].duration,
                             contentUrl: correctedURL.absoluteString,
-                            mimeType: mimeType(forFileExtension: correctedURL.pathExtension),
+                            mimeType: Self.mimeType(forFileExtension: correctedURL.pathExtension),
                             title: currentTracks[idx].title
                         )
                     }
@@ -1932,6 +1914,124 @@ final class PlaybackManager {
             }
         }
         let playerItem = AVPlayerItem(asset: playableAsset)
+
+        #if targetEnvironment(simulator)
+        AppLogger.player.warning("Skipping audio tap on simulator")
+        #else
+        if let assetTrack = try? await playableAsset.loadTracks(withMediaType: AVMediaType.audio).first {
+            try validatePlaybackSession(expectedSessionId, expectedGeneration: generation)
+            let audioMix = AVMutableAudioMix()
+            let parameters = AVMutableAudioMixInputParameters(track: assetTrack)
+            if let tap = audioProcessor.createTap() {
+                parameters.audioTapProcessor = tap
+                AppLogger.player.info("Attached audio processing tap")
+            }
+            audioMix.inputParameters = [parameters]
+            playerItem.audioMix = audioMix
+        }
+        #endif
+        try validatePlaybackSession(expectedSessionId, expectedGeneration: generation)
+
+        let replacedItem = activeItem
+        let restoreTime = player?.currentTime() ?? .zero
+        if let player = self.player {
+            player.pause()
+            player.replaceCurrentItem(with: playerItem)
+        } else {
+            let player = AVPlayer(playerItem: playerItem)
+            self.player = player
+        }
+
+        guard let player = self.player else { return }
+        activateNowPlayingSession(for: player)
+
+        do {
+            let startTime = Date()
+            while playerItem.status != .readyToPlay && playerItem.status != .failed {
+                if Date().timeIntervalSince(startTime) > AppConstants.Playback.mediaLoadTimeout {
+                    throw PlaybackError.mediaLoadTimeout
+                }
+                try await Task.sleep(nanoseconds: 100_000_000)
+                try validatePlaybackSession(expectedSessionId, expectedGeneration: generation)
+            }
+
+            if playerItem.status == .failed {
+                if let itemError = playerItem.error {
+                    logStreamingFailureContext(itemError, track: track, url: url, playerItem: playerItem, phase: "playerItemStatusFailed")
+                }
+                throw PlaybackError.playerItemFailed(underlying: playerItem.error)
+            }
+
+            AppLogger.player.info("Player item ready, duration: \(playerItem.duration.seconds)s")
+
+            let itemDuration = playerItem.duration.seconds
+            if itemDuration.isFinite && itemDuration > 0 && self.duration <= 0 {
+                if let idx = currentTracks.firstIndex(where: { $0.contentUrl == track.contentUrl }),
+                    currentTracks[idx].duration <= 0
+                {
+                    currentTracks[idx] = AudioTrackInfo(
+                        id: currentTracks[idx].id,
+                        index: currentTracks[idx].index,
+                        startOffset: currentTracks[idx].startOffset,
+                        duration: itemDuration,
+                        contentUrl: currentTracks[idx].contentUrl,
+                        mimeType: currentTracks[idx].mimeType,
+                        title: currentTracks[idx].title
+                    )
+                }
+                let totalDuration: TimeInterval
+                if currentTracks.count <= 1 {
+                    totalDuration = itemDuration
+                } else {
+                    let sum = currentTracks.reduce(TimeInterval(0)) { acc, t in
+                        if t.contentUrl == track.contentUrl {
+                            return acc + max(itemDuration, t.duration)
+                        }
+                        return acc + max(t.duration, 0)
+                    }
+                    totalDuration = sum > 0 ? sum : track.startOffset + itemDuration
+                }
+                AppLogger.player.info("Updating duration from player item: \(totalDuration)s (\(currentTracks.count) track(s))")
+                self.duration = totalDuration
+                if var updatedBook = self.currentBook, (updatedBook.duration ?? 0) <= 0 {
+                    updatedBook.duration = totalDuration
+                    self.currentBook = updatedBook
+                    self.bookSession.currentBook = updatedBook
+                    self.libraryCache.mutateBook(uniqueId: updatedBook.uniqueId) { $0.duration = totalDuration }
+                }
+            }
+            if itemDuration.isFinite && itemDuration > 0 {
+                let chapterDuration: TimeInterval
+                if self.duration > 0 {
+                    chapterDuration = self.duration
+                } else if currentTracks.count > 1 {
+                    let sum = currentTracks.totalDuration
+                    chapterDuration = sum > 0 ? sum : track.startOffset + itemDuration
+                } else {
+                    chapterDuration = itemDuration
+                }
+                normalizeChaptersIfNeeded(totalDuration: chapterDuration)
+            }
+
+            if seekTime > 0 {
+                let safeSeek = min(seekTime, playerItem.duration.seconds - 0.1)
+                AppLogger.player.info("Seeking to local position: \(safeSeek)s")
+                let seekCMTime = CMTime(seconds: safeSeek, preferredTimescale: 1000)
+                await player.seek(to: seekCMTime)
+                try validatePlaybackSession(expectedSessionId, expectedGeneration: generation)
+            }
+        } catch {
+            // The replaced item's observers were never cleared, so putting it back restores it fully.
+            if player.currentItem === playerItem, let replacedItem {
+                player.replaceCurrentItem(with: replacedItem)
+                await player.seek(to: restoreTime, toleranceBefore: .zero, toleranceAfter: .zero)
+            }
+            throw error
+        }
+
+        currentTrackIndex = trackIndex
+        currentTrackStartOffset = track.startOffset
+        activeItem = playerItem
 
         clearPlaybackItemObservers()
         playbackFailureObserver = NotificationCenter.default.addObserver(
@@ -1980,108 +2080,6 @@ final class PlaybackManager {
                     )
                 }
             }
-        }
-
-        #if targetEnvironment(simulator)
-        AppLogger.player.warning("Skipping audio tap on simulator")
-        #else
-        if let assetTrack = try? await playableAsset.loadTracks(withMediaType: AVMediaType.audio).first {
-            try validatePlaybackSession(expectedSessionId, expectedGeneration: generation)
-            let audioMix = AVMutableAudioMix()
-            let parameters = AVMutableAudioMixInputParameters(track: assetTrack)
-            if let tap = audioProcessor.createTap() {
-                parameters.audioTapProcessor = tap
-                AppLogger.player.info("Attached audio processing tap")
-            }
-            audioMix.inputParameters = [parameters]
-            playerItem.audioMix = audioMix
-        }
-        #endif
-        try validatePlaybackSession(expectedSessionId, expectedGeneration: generation)
-
-        if let player = self.player {
-            player.replaceCurrentItem(with: playerItem)
-        } else {
-            let player = AVPlayer(playerItem: playerItem)
-            self.player = player
-        }
-
-        guard let player = self.player else { return }
-        activateNowPlayingSession(for: player)
-
-        let startTime = Date()
-        while playerItem.status != .readyToPlay && playerItem.status != .failed {
-            if Date().timeIntervalSince(startTime) > AppConstants.Playback.mediaLoadTimeout {
-                throw PlaybackError.mediaLoadTimeout
-            }
-            try await Task.sleep(nanoseconds: 100_000_000)
-            try validatePlaybackSession(expectedSessionId, expectedGeneration: generation)
-        }
-
-        if playerItem.status == .failed {
-            if let itemError = playerItem.error {
-                logStreamingFailureContext(itemError, track: track, url: url, playerItem: playerItem, phase: "playerItemStatusFailed")
-            }
-            throw PlaybackError.playerItemFailed(underlying: playerItem.error)
-        }
-
-        AppLogger.player.info("Player item ready, duration: \(playerItem.duration.seconds)s")
-
-        let itemDuration = playerItem.duration.seconds
-        if itemDuration.isFinite && itemDuration > 0 && self.duration <= 0 {
-            if let idx = currentTracks.firstIndex(where: { $0.contentUrl == track.contentUrl }),
-                currentTracks[idx].duration <= 0
-            {
-                currentTracks[idx] = AudioTrackInfo(
-                    id: currentTracks[idx].id,
-                    index: currentTracks[idx].index,
-                    startOffset: currentTracks[idx].startOffset,
-                    duration: itemDuration,
-                    contentUrl: currentTracks[idx].contentUrl,
-                    mimeType: currentTracks[idx].mimeType,
-                    title: currentTracks[idx].title
-                )
-            }
-            let totalDuration: TimeInterval
-            if currentTracks.count <= 1 {
-                totalDuration = itemDuration
-            } else {
-                let sum = currentTracks.reduce(TimeInterval(0)) { acc, t in
-                    if t.contentUrl == track.contentUrl {
-                        return acc + max(itemDuration, t.duration)
-                    }
-                    return acc + max(t.duration, 0)
-                }
-                totalDuration = sum > 0 ? sum : currentTrackStartOffset + itemDuration
-            }
-            AppLogger.player.info("Updating duration from player item: \(totalDuration)s (\(currentTracks.count) track(s))")
-            self.duration = totalDuration
-            if var updatedBook = self.currentBook, (updatedBook.duration ?? 0) <= 0 {
-                updatedBook.duration = totalDuration
-                self.currentBook = updatedBook
-                self.bookSession.currentBook = updatedBook
-                self.libraryCache.mutateBook(uniqueId: updatedBook.uniqueId) { $0.duration = totalDuration }
-            }
-        }
-        if itemDuration.isFinite && itemDuration > 0 {
-            let chapterDuration: TimeInterval
-            if self.duration > 0 {
-                chapterDuration = self.duration
-            } else if currentTracks.count > 1 {
-                let sum = currentTracks.totalDuration
-                chapterDuration = sum > 0 ? sum : currentTrackStartOffset + itemDuration
-            } else {
-                chapterDuration = itemDuration
-            }
-            normalizeChaptersIfNeeded(totalDuration: chapterDuration)
-        }
-
-        if seekTime > 0 {
-            let safeSeek = min(seekTime, playerItem.duration.seconds - 0.1)
-            AppLogger.player.info("Seeking to local position: \(safeSeek)s")
-            let seekCMTime = CMTime(seconds: safeSeek, preferredTimescale: 1000)
-            await player.seek(to: seekCMTime)
-            try validatePlaybackSession(expectedSessionId, expectedGeneration: generation)
         }
 
         setupTimeObserver(for: player)
@@ -2144,22 +2142,113 @@ final class PlaybackManager {
 
         let nextIndex = currentTrackIndex + 1
         let nextTrack = currentTracks[nextIndex]
-        let sessionId = expectedSessionId
-        debugLog("⏭ [PlaybackManager] Advancing to track \(nextIndex)")
+        debugLog("[PlaybackManager] Advancing to track \(nextIndex)")
+        switchTrack(to: nextTrack, index: nextIndex, localTime: 0, globalTime: nextTrack.startOffset)
+    }
 
-        runOperation { [self] in
+    private var committedPosition: TimeInterval {
+        guard let player, let activeItem, player.currentItem === activeItem else { return currentTime }
+        let local = player.currentTime().seconds
+        return local.isFinite && local >= 0 ? local + currentTrackStartOffset : currentTime
+    }
+
+    private func publishPosition(_ time: TimeInterval) {
+        currentTime = time
+        if var book = bookSession.currentBook {
+            book.currentTime = time
+            bookSession.currentBook = book
+        }
+    }
+
+    private func switchTrack(to track: AudioTrackInfo, index: Int, localTime: TimeInterval, globalTime: TimeInterval) {
+        let origin = pendingTrackSwitch?.origin ?? committedPosition
+        pendingTrackSwitch?.task?.cancel()
+        player?.pause()
+        isSeeking = true
+        publishPosition(globalTime)
+        let id = UUID()
+        let sessionId = currentSessionId
+        let generation = playbackGeneration
+        let task = makeOperation { [self] in
             do {
-                try await loadAndPlayTrack(nextTrack, expectedSessionId: sessionId)
-                guard self.currentSessionId == sessionId else { return }
+                try await loadTrackReopeningSessionOnce(
+                    track, localTime: localTime, globalTime: globalTime,
+                    origin: origin, sessionId: sessionId, generation: generation
+                )
+                guard pendingTrackSwitch?.id == id else { return }
+                pendingTrackSwitch = nil
+                isSeeking = false
+                currentTime = globalTime
+                updateNowPlayingInfo()
+                syncProgress(forceLocalWrite: true)
             } catch {
+                guard pendingTrackSwitch?.id == id else { return }
+                pendingTrackSwitch = nil
+                isSeeking = false
+                publishPosition(origin)
                 if error is CancellationError { return }
-                AppLogger.player.error("Failed to transition to next track: \(error)")
-                await MainActor.run {
-                    self.isPlaying = false
-                    self.playbackError = "Unable to continue \"\(self.currentBook?.title ?? "this book")\": \(error.localizedDescription)"
-                }
+                AppLogger.player.error("Failed to switch to track \(track.index): \(error.localizedDescription)")
+                failPlaybackRecovery(phase: "track switch", error: error)
             }
         }
+        pendingTrackSwitch = PendingTrackSwitch(id: id, origin: origin, trackIndex: index, localTime: localTime, task: task)
+    }
+
+    private func loadTrackReopeningSessionOnce(
+        _ track: AudioTrackInfo,
+        localTime: TimeInterval,
+        globalTime: TimeInterval,
+        origin: TimeInterval,
+        sessionId: String?,
+        generation: Int
+    ) async throws {
+        do {
+            try await loadAndPlayTrack(track, seekTime: localTime, expectedSessionId: sessionId)
+        } catch {
+            try validatePlaybackSession(sessionId, expectedGeneration: generation)
+            guard !(error is CancellationError),
+                let sessionId,
+                let url = URL(string: track.contentUrl), !url.isFileURL,
+                url.host != "127.0.0.1", url.host != "localhost",
+                let provider = currentProvider, let book = currentBook
+            else { throw error }
+            AppLogger.player.warning("Track \(track.index) failed to load; reopening the playback session once")
+            // Await the close: a late stop for the old session can tear down the replacement's server-side state.
+            await provider.reportPlayback(.stopped, book: book, sessionId: sessionId, position: origin)
+            if currentSessionId == sessionId { currentSessionId = nil }
+            try validatePlaybackSession(nil, expectedGeneration: generation)
+            let session = try await provider.startPlaybackSession(for: book)
+            let tracks = normalizedTracks(session.audioTracks)
+            guard (try? validatePlaybackSession(nil, expectedGeneration: generation)) != nil,
+                tracks.map(\.startOffset) == currentTracks.map(\.startOffset),
+                let state = tracks.playbackState(at: globalTime)
+            else {
+                let staleSessionId = session.sessionId
+                Task { await provider.reportPlayback(.stopped, book: book, sessionId: staleSessionId, position: origin) }
+                try validatePlaybackSession(nil, expectedGeneration: generation)
+                throw error
+            }
+            currentSessionId = session.sessionId
+            currentTracks = tracks
+            try await loadAndPlayTrack(state.track, seekTime: state.localTime, expectedSessionId: session.sessionId)
+            if isPlaying {
+                reportPlayback(.started)
+                reportedPlaybackSessionId = session.sessionId
+            }
+        }
+    }
+
+    private func abandonTrackSwitch() {
+        guard let pending = pendingTrackSwitch else { return }
+        pendingTrackSwitch = nil
+        pending.task?.cancel()
+        if let player, let activeItem, player.currentItem !== activeItem {
+            player.replaceCurrentItem(with: activeItem)
+            let local = CMTime(seconds: max(0, pending.origin - currentTrackStartOffset), preferredTimescale: 1000)
+            player.seek(to: local, toleranceBefore: .zero, toleranceAfter: .zero)
+        }
+        isSeeking = false
+        publishPosition(pending.origin)
     }
 
     private func setupTimeObserver(for player: AVPlayer) {
@@ -2168,9 +2257,11 @@ final class PlaybackManager {
             timeObserver = nil
         }
         let interval = CMTime(seconds: 1.0, preferredTimescale: CMTimeScale(NSEC_PER_SEC))
-        timeObserver = player.addPeriodicTimeObserver(forInterval: interval, queue: .main) { [weak self] time in
+        timeObserver = player.addPeriodicTimeObserver(forInterval: interval, queue: .main) { [weak self, weak player] time in
             MainActor.assumeIsolated {
-                guard let self = self, !self.isSeeking else { return }
+                guard let self, let player, !self.isSeeking,
+                    let activeItem = self.activeItem, player.currentItem === activeItem
+                else { return }
                 let oldTime = self.currentTime
                 let localTime = CMTimeGetSeconds(time)
                 let newTime = localTime + self.currentTrackStartOffset
@@ -2238,14 +2329,17 @@ final class PlaybackManager {
     }
 
     func play() {
-        guard !isRetired else { return }
+        guard !isRetired, !isRefreshingResumeProgress else { return }
         AppLogger.player.info("play() called")
-        guard let player, player.currentItem?.status == .readyToPlay else {
+        guard let player, activeItem?.status == .readyToPlay, playbackError == nil,
+            currentProvider == nil || currentSessionId != nil
+        else {
             isPlaying = false
             guard !isLoading, let book = currentBook else { return }
             if let provider = currentProvider {
+                let resumeTime = committedPosition
                 stop()
-                playBook(book, provider: provider)
+                playBook(book, provider: provider, startPosition: resumeTime)
             } else if currentTracks.count == 1,
                 let url = URL(string: currentTracks[0].contentUrl)
             {
@@ -2254,6 +2348,34 @@ final class PlaybackManager {
             }
             return
         }
+
+        if needsResumeProgressRefresh, !isPlaying,
+            let book = currentBook, book.mediaType == .audiobook,
+            let provider = currentProvider,
+            provider.capabilities.contains(.audiobookProgressRefreshOnResume),
+            profileSession.serverSyncEnabled,
+            !profileSession.localStorage.isAudiobookDownloaded(book)
+        {
+            needsResumeProgressRefresh = false
+            isRefreshingResumeProgress = true
+            refreshCurrentTimeFromPlayer()
+            let position = currentTime
+            let updatedAt = profileSession.bookProgress.loadProgress(for: book)
+                .map { Date(timeIntervalSince1970: $0.lastUpdated) } ?? book.lastUpdate
+            let generation = playbackGeneration
+            let sessionId = currentSessionId
+            startPlaybackPreparation(for: book) { [self] in
+                let resolved = await resolveProviderOpenResumeTime(
+                    for: book, provider: provider, initialResumeTime: position, localUpdate: updatedAt
+                )
+                try validatePlaybackSession(sessionId, expectedGeneration: generation)
+                if abs(resolved - position) > 0.25 {
+                    seekInCurrentSession(to: resolved)
+                }
+            }
+            return
+        }
+        needsResumeProgressRefresh = false
 
         if duration > 0, currentTime >= duration {
             seek(to: 0)
@@ -2274,7 +2396,7 @@ final class PlaybackManager {
         guard let player else { return }
         isStartPending = false
         AppLogger.player.info("Setting player rate to \(playbackSpeed)x")
-        player.rate = playbackSpeed
+        if pendingTrackSwitch == nil { player.rate = playbackSpeed }
         isPlaying = true
         AppLogger.player.info("Now playing at \(playbackSpeed)x speed")
 
@@ -2302,6 +2424,11 @@ final class PlaybackManager {
 
     private func pause(userInitiated: Bool) {
         AppLogger.player.info("pause() called")
+        let wasRefreshingResumeProgress = isRefreshingResumeProgress
+        isRefreshingResumeProgress = false
+        needsResumeProgressRefresh = true
+        refreshCurrentTimeFromPlayer()
+        abandonTrackSwitch()
         playbackGeneration &+= 1
         audioSessionGeneration &+= 1
         startupTask?.cancel()
@@ -2312,15 +2439,18 @@ final class PlaybackManager {
         isPlaying = false
         stopSyncTimer()
         lastStatsTickAt = .distantPast
-        reportPlayback(.paused)
+        if !wasRefreshingResumeProgress { reportPlayback(.paused) }
         AppLogger.player.info("Paused")
 
-        guard userInitiated else { return }
+        guard userInitiated, !wasRefreshingResumeProgress else { return }
         let pausedOverlayPlayback = isOverlayPlaybackActive
         let pausedBook = currentBook
         let pausedTime = currentTime
         let pausedDuration = duration
-        syncProgress(forceLocalWrite: true, includeLocalState: pausedOverlayPlayback)
+        if !pausedOverlayPlayback, let pausedBook {
+            profileSession.bookProgress.saveProgress(for: pausedBook, progress: pausedTime, duration: pausedDuration)
+        }
+        syncProgress(forceLocalWrite: true, includeLocalState: pausedOverlayPlayback, position: pausedTime)
 
         runOperation { @MainActor [weak self] in
             try? await Task.sleep(nanoseconds: 450_000_000)
@@ -2378,6 +2508,10 @@ final class PlaybackManager {
 
     func stop(invalidatePendingOverlayPreparation: Bool = true) {
         AppLogger.player.info("stop() called")
+        let wasRefreshingResumeProgress = isRefreshingResumeProgress
+        isRefreshingResumeProgress = false
+        needsResumeProgressRefresh = false
+        abandonTrackSwitch()
         if showedDownloadedProgressConflict {
             syncConflict = nil
             showedDownloadedProgressConflict = false
@@ -2411,10 +2545,11 @@ final class PlaybackManager {
         resetPlaybackRecovery()
         clearNowPlayingSession()
         player = nil
+        activeItem = nil
 
         stopSyncTimer()
         lastStatsTickAt = .distantPast
-        syncProgress(forceLocalWrite: true, closingSession: true)
+        if !wasRefreshingResumeProgress { syncProgress(forceLocalWrite: true, closingSession: true) }
         reportedPlaybackSessionId = nil
         if var b = self.bookSession.currentBook,
             b.uniqueId == stoppedBook?.uniqueId
@@ -2483,6 +2618,29 @@ final class PlaybackManager {
     }
 
     func seek(to time: TimeInterval) {
+        cancelResumeProgressRefresh()
+        seekInCurrentSession(to: time)
+    }
+
+    private func cancelResumeProgressRefresh() {
+        needsResumeProgressRefresh = false
+        guard isRefreshingResumeProgress else { return }
+        isRefreshingResumeProgress = false
+        playbackGeneration &+= 1
+        startupTask?.cancel()
+        startupTask = nil
+        isLoading = false
+    }
+
+    private func seekInCurrentSession(to time: TimeInterval) {
+        if let state = currentTracks.playbackState(at: time),
+            state.index != currentTrackIndex || pendingTrackSwitch != nil
+        {
+            AppLogger.player.info("Seeking to global \(time)s requires track switch to index \(state.index)")
+            switchTrack(to: state.track, index: state.index, localTime: state.localTime, globalTime: time)
+            return
+        }
+
         isSeeking = true
         currentTime = time
 
@@ -2501,39 +2659,7 @@ final class PlaybackManager {
             return
         }
 
-        let targetIndex = state.index
-        let targetTrack = state.track
         let localSeekTime = state.localTime
-
-        if targetIndex != currentTrackIndex {
-            AppLogger.player.info("Seeking requires track switch to index \(targetIndex)")
-            let sessionId = currentSessionId
-            runOperation { [self] in
-                do {
-                    try await loadAndPlayTrack(
-                        targetTrack,
-                        seekTime: localSeekTime,
-                        expectedSessionId: sessionId
-                    )
-
-                    await MainActor.run {
-                        guard self.currentSessionId == sessionId else { return }
-                        self.currentTime = time
-                        self.isSeeking = false
-                        self.updateNowPlayingInfo()
-                        self.syncProgress(forceLocalWrite: true)
-                    }
-                } catch {
-                    if error is CancellationError { return }
-                    AppLogger.player.error("Failed to seek to other track: \(error)")
-                    await MainActor.run {
-                        self.isSeeking = false
-                    }
-                }
-            }
-            return
-        }
-
         let cmTime = CMTime(seconds: localSeekTime, preferredTimescale: CMTimeScale(NSEC_PER_SEC))
 
         player?.seek(to: cmTime, toleranceBefore: .zero, toleranceAfter: .zero) { [weak self] finished in
@@ -2567,19 +2693,27 @@ final class PlaybackManager {
     }
 
     private func seekRelativelyInQueue(by delta: TimeInterval) {
+        cancelResumeProgressRefresh()
         guard !currentTracks.isEmpty else { return }
 
         var durations = currentTracks.map(\.duration)
-        let index = min(max(currentTrackIndex, 0), currentTracks.count - 1)
-        let localPosition =
-            player?.currentTime().seconds.isFinite == true
-            ? max(0, player?.currentTime().seconds ?? 0)
-            : max(0, currentTime - currentTrackStartOffset)
-        if let itemDuration = player?.currentItem?.duration.seconds,
-            itemDuration.isFinite,
-            itemDuration > 0
-        {
-            durations[index] = itemDuration
+        let index: Int
+        let localPosition: TimeInterval
+        if let pending = pendingTrackSwitch {
+            index = pending.trackIndex
+            localPosition = pending.localTime
+        } else {
+            index = min(max(currentTrackIndex, 0), currentTracks.count - 1)
+            localPosition =
+                player?.currentTime().seconds.isFinite == true
+                ? max(0, player?.currentTime().seconds ?? 0)
+                : max(0, currentTime - currentTrackStartOffset)
+            if let itemDuration = player?.currentItem?.duration.seconds,
+                itemDuration.isFinite,
+                itemDuration > 0
+            {
+                durations[index] = itemDuration
+            }
         }
 
         let target = resolveRelativeTrackSeek(
@@ -2591,35 +2725,13 @@ final class PlaybackManager {
         let targetTrack = currentTracks[target.index]
         let targetGlobalTime = targetTrack.startOffset + target.position
 
-        isSeeking = true
-        currentTime = targetGlobalTime
-        if var book = self.bookSession.currentBook {
-            book.currentTime = targetGlobalTime
-            self.bookSession.currentBook = book
-        }
-
-        if target.index != currentTrackIndex {
-            let sessionId = currentSessionId
-            runOperation { [self] in
-                do {
-                    try await loadAndPlayTrack(
-                        targetTrack,
-                        seekTime: target.position,
-                        expectedSessionId: sessionId
-                    )
-                    guard currentSessionId == sessionId else { return }
-                    currentTime = targetGlobalTime
-                    isSeeking = false
-                    updateNowPlayingInfo()
-                    syncProgress(forceLocalWrite: true)
-                } catch {
-                    if error is CancellationError { return }
-                    AppLogger.player.error("Failed to seek to adjacent track: \(error)")
-                    isSeeking = false
-                }
-            }
+        if target.index != currentTrackIndex || pendingTrackSwitch != nil {
+            switchTrack(to: targetTrack, index: target.index, localTime: target.position, globalTime: targetGlobalTime)
             return
         }
+
+        isSeeking = true
+        publishPosition(targetGlobalTime)
 
         let seekTime = CMTime(seconds: target.position, preferredTimescale: CMTimeScale(NSEC_PER_SEC))
         player?.seek(to: seekTime, toleranceBefore: .zero, toleranceAfter: .zero) { [weak self] finished in
@@ -2690,61 +2802,8 @@ final class PlaybackManager {
     }
 
     func makeLocalTracks(for book: Book) -> [AudioTrackInfo]? {
-        let storage = profileSession.localStorage
-        guard let localFiles = storage.localAudiobookFilesIfExists(for: book),
-            !localFiles.isEmpty
-        else {
-            return nil
-        }
-
-        if localFiles.count == 1, let singleFile = localFiles.first {
-            return [
-                AudioTrackInfo(
-                    index: 0,
-                    startOffset: 0,
-                    duration: book.duration ?? 0,
-                    contentUrl: singleFile.absoluteString,
-                    mimeType: mimeType(forFileExtension: singleFile.pathExtension)
-                )
-            ]
-        }
-
-        var result: [AudioTrackInfo] = []
-        var runningOffset: TimeInterval = 0
-        let bookTracks = (book.audioTracks ?? []).sorted {
-            $0.startOffset == $1.startOffset ? $0.index < $1.index : $0.startOffset < $1.startOffset
-        }
-
-        let fallbackPerTrackDuration: TimeInterval = {
-            if let totalDuration = book.duration, totalDuration > 0, localFiles.count > 0 {
-                return totalDuration / Double(localFiles.count)
-            }
-            return 3600
-        }()
-
-        for (idx, fileURL) in localFiles.enumerated() {
-            let trackDuration: TimeInterval
-            if idx < bookTracks.count,
-                bookTracks[idx].duration > 0
-            {
-                trackDuration = bookTracks[idx].duration
-            } else {
-                trackDuration = fallbackPerTrackDuration
-            }
-
-            result.append(
-                AudioTrackInfo(
-                    index: idx,
-                    startOffset: runningOffset,
-                    duration: trackDuration,
-                    contentUrl: fileURL.absoluteString,
-                    mimeType: mimeType(forFileExtension: fileURL.pathExtension)
-                )
-            )
-            runningOffset += trackDuration
-        }
-
-        return result.isEmpty ? nil : result
+        guard let files = profileSession.localStorage.localAudiobookFilesIfExists(for: book), !files.isEmpty else { return nil }
+        return Self.downloadedTracks(for: book, files: files)
     }
 
     /// The on-device track layout playback would use for this book: the timeline passage mappings are expressed in.
@@ -2754,7 +2813,7 @@ final class PlaybackManager {
         guard let filePath = book.filePath else { return nil }
         let url = Self.resolveLocalPath(filePath)
         guard FileManager.default.fileExists(atPath: url.path) else { return nil }
-        return [AudioTrackInfo(index: 0, startOffset: 0, duration: book.duration ?? 0, contentUrl: url.absoluteString, mimeType: mimeType(forFileExtension: url.pathExtension))]
+        return [AudioTrackInfo(index: 0, startOffset: 0, duration: book.duration ?? 0, contentUrl: url.absoluteString, mimeType: Self.mimeType(forFileExtension: url.pathExtension))]
     }
 
     func readAlongPlaybackLayout(for book: Book) -> (tracks: [AudioTrackInfo], headers: [String: String], streamSession: String?)? {
@@ -2763,157 +2822,6 @@ final class PlaybackManager {
             !currentTracks.isEmpty, currentTracks.allSatisfy({ $0.duration.isFinite && $0.duration > 0 && $0.startOffset.isFinite }), hasReliableTrackTimeline
         else { return nil }
         return (currentTracks, currentProvider?.getStreamingHeaders() ?? [:], "\(currentSessionId):\(playbackGeneration)")
-    }
-
-    private func buildLocalTrackInfos(from book: Book) -> [AudioTrackInfo]? {
-        guard let tracks = book.audioTracks, !tracks.isEmpty else { return nil }
-
-        let sortedTracks = tracks.sorted { lhs, rhs in
-            if lhs.index == rhs.index {
-                return lhs.startOffset < rhs.startOffset
-            }
-            return lhs.index < rhs.index
-        }
-
-        var result: [AudioTrackInfo] = []
-        for track in sortedTracks {
-            guard let trackPath = track.filePath else { continue }
-            let resolvedURL = Self.resolveLocalPath(trackPath)
-            guard FileManager.default.fileExists(atPath: resolvedURL.path) else {
-                AppLogger.player.warning(
-                    "Track file not found: \(DiagnosticLogSanitizer.fileDescriptor(for: resolvedURL))"
-                )
-                continue
-            }
-
-            result.append(
-                AudioTrackInfo(
-                    index: track.index,
-                    startOffset: track.startOffset,
-                    duration: track.duration,
-                    contentUrl: resolvedURL.absoluteString,
-                    mimeType: mimeType(forFileExtension: resolvedURL.pathExtension)
-                )
-            )
-        }
-
-        return result.isEmpty ? nil : result
-    }
-
-    static func resolveLocalPath(_ storedPath: String) -> URL {
-        if FileManager.default.fileExists(atPath: storedPath) {
-            return URL(fileURLWithPath: storedPath)
-        }
-
-        let markers = ["/Documents/", "/Documents"]
-        for marker in markers {
-            if let range = storedPath.range(of: marker) {
-                let relativePart = String(storedPath[range.upperBound...])
-                if !relativePart.isEmpty {
-                    let resolved = URL.documentsDirectory.appendingPathComponent(relativePart)
-                    if FileManager.default.fileExists(atPath: resolved.path) {
-                        return resolved
-                    }
-                }
-            }
-        }
-
-        return URL(fileURLWithPath: storedPath)
-    }
-
-    private func mimeType(forFileExtension ext: String) -> String {
-        switch ext.lowercased() {
-        case "m4b", "m4a", "mp4":
-            return "audio/mp4"
-        case "aac":
-            return "audio/aac"
-        case "flac":
-            return "audio/flac"
-        case "ogg":
-            return "audio/ogg"
-        case "wav":
-            return "audio/wav"
-        default:
-            return "audio/mpeg"
-        }
-    }
-
-    static func correctFileExtensionIfNeeded(for fileURL: URL) -> URL? {
-        guard let detectedExt = UnifiedDownloadService.detectExtensionFromMagicBytes(at: fileURL) else {
-            return nil
-        }
-        let currentExt = fileURL.pathExtension.lowercased()
-        guard detectedExt != currentExt else { return nil }
-
-        AppLogger.player.info("Format mismatch: file has .\(currentExt) extension but content is .\(detectedExt)")
-        let correctedURL = fileURL.deletingPathExtension().appendingPathExtension(detectedExt)
-        do {
-            if FileManager.default.fileExists(atPath: correctedURL.path) {
-                try FileManager.default.removeItem(at: correctedURL)
-            }
-            try FileManager.default.moveItem(at: fileURL, to: correctedURL)
-            return correctedURL
-        } catch {
-            AppLogger.player.error("Failed to rename file: \(error.localizedDescription)")
-            return nil
-        }
-    }
-
-    static func logLocalFileInfo(_ url: URL) {
-        let fm = FileManager.default
-        if let attrs = try? fm.attributesOfItem(atPath: url.path),
-            let size = attrs[.size] as? Int64
-        {
-            AppLogger.player.info("File size: \(size) bytes (\(size / 1024)KB)")
-        }
-        if let handle = try? FileHandle(forReadingFrom: url),
-            let header = try? handle.read(upToCount: 16)
-        {
-            let hex = header.map { String(format: "%02X", $0) }.joined(separator: " ")
-            AppLogger.player.info("File header bytes: \(hex)")
-            try? handle.close()
-        }
-    }
-
-    private func isZipFile(at url: URL) -> Bool {
-        guard let handle = try? FileHandle(forReadingFrom: url) else { return false }
-        defer { handle.closeFile() }
-        let header = handle.readData(ofLength: 4)
-        return header.count >= 4
-            && header[0] == 0x50
-            && header[1] == 0x4B
-            && header[2] == 0x03
-            && header[3] == 0x04
-    }
-
-    private func extractZipAndRebuild(at zipURL: URL, destinationDir: URL) throws {
-        let unzipDir = destinationDir.appendingPathComponent("temp_unzip")
-        try FileManager.default.createDirectory(at: unzipDir, withIntermediateDirectories: true)
-
-        try Zip.unzipFile(zipURL, destination: unzipDir, overwrite: true, password: nil)
-
-        let audioExtensions = Set(["m4b", "mp3", "m4a", "aac", "wav", "flac", "ogg", "opus"])
-        var extractedCount = 0
-        let enumerator = FileManager.default.enumerator(at: unzipDir, includingPropertiesForKeys: nil)
-
-        while let itemURL = enumerator?.nextObject() as? URL {
-            var isDir: ObjCBool = false
-            if FileManager.default.fileExists(atPath: itemURL.path, isDirectory: &isDir), !isDir.boolValue {
-                let ext = itemURL.pathExtension.lowercased()
-                if audioExtensions.contains(ext) {
-                    let outputURL = destinationDir.appendingPathComponent("chapter_\(extractedCount).\(ext)")
-                    try? FileManager.default.removeItem(at: outputURL)
-                    try? FileManager.default.moveItem(at: itemURL, to: outputURL)
-                    extractedCount += 1
-                }
-            }
-        }
-
-        try? FileManager.default.removeItem(at: unzipDir)
-        try? FileManager.default.removeItem(at: zipURL)
-        if extractedCount == 0 {
-            throw PlaybackError.downloadedFileEmpty(path: zipURL.path)
-        }
     }
 
     func skipForward(seconds: TimeInterval? = nil) {
@@ -2991,11 +2899,11 @@ final class PlaybackManager {
         syncTimer = nil
     }
 
-    private func syncProgress(forceLocalWrite: Bool = false, includeLocalState: Bool = true, closingSession: Bool = false) {
-        guard let book = currentBook else { return }
+    private func syncProgress(forceLocalWrite: Bool = false, includeLocalState: Bool = true, closingSession: Bool = false, position: TimeInterval? = nil) {
+        guard let book = currentBook, pendingTrackSwitch == nil else { return }
         let provider = currentProvider
-        refreshCurrentTimeFromPlayer()
-        let time = currentTime
+        if position == nil { refreshCurrentTimeFromPlayer() }
+        let time = position ?? currentTime
         let finished = isFinishedLocal()
         let sessionId = currentSessionId
 
@@ -3120,7 +3028,7 @@ final class PlaybackManager {
     }
 
     private func refreshCurrentTimeFromPlayer() {
-        guard !isSeeking, let player else { return }
+        guard !isSeeking, let player, let activeItem, player.currentItem === activeItem else { return }
         let localTime = player.currentTime().seconds
         guard localTime.isFinite, localTime >= 0 else { return }
         let globalTime = max(0, localTime + currentTrackStartOffset)

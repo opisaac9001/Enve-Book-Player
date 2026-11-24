@@ -44,7 +44,7 @@ class PlexProvider: IncrementalCatalogProvider, PlaybackSessionProvider, Audiobo
         [
             .fullImport, .pagedImport,
             .recentBooks,
-            .audiobookProgressPull, .audiobookProgressPush,
+            .audiobookProgressPull, .audiobookProgressPush, .audiobookProgressRefreshOnResume,
             .downloads, .coverAuthQuery, .backgroundOperation,
         ]
     }
@@ -52,20 +52,17 @@ class PlexProvider: IncrementalCatalogProvider, PlaybackSessionProvider, Audiobo
     private let appState: AppState
     private let localStorage: LocalStorageManager
     private let rejectedContent: RejectedContentStore
-    private let certificateTransport: InsecureURLSession
-    private let isolatesCredentials: Bool
     private let storageService: StorageService
     private let session: URLSession
+    private var connectionRecovery: Task<String?, Error>?
 
-    init(connection: ServerConnection, profileSession: ProfileSession? = nil) {
+    init(connection: ServerConnection, profileSession: ProfileSession? = nil, session: URLSession? = nil) {
         self.connection = connection
-        certificateTransport = profileSession?.transport ?? .delegateInstance
-        isolatesCredentials = profileSession?.isOwner == false
         appState = profileSession?.appState ?? .shared
         localStorage = profileSession?.localStorage ?? .shared
         rejectedContent = profileSession?.rejectedContent ?? .shared
         storageService = profileSession?.storageService ?? .shared
-        session = profileSession?.networkSession ?? InsecureURLSession.shared
+        self.session = session ?? profileSession?.networkSession ?? InsecureURLSession.shared
     }
 
     private static let maxTracksForMultiFileBook: Int = 200
@@ -529,14 +526,9 @@ class PlexProvider: IncrementalCatalogProvider, PlaybackSessionProvider, Audiobo
     }
 
     func validateConnection() async throws -> Bool {
-        let request = try buildRequest(path: "identity")
-
-        let config: URLSessionConfiguration = isolatesCredentials ? .ephemeral : .default
-        config.timeoutIntervalForRequest = 10.0
-        let session = URLSession(configuration: config, delegate: certificateTransport, delegateQueue: nil)
-
-        defer { session.finishTasksAndInvalidate() }
-        let (_, response) = try await session.data(for: request)
+        var request = try buildRequest(path: "library/sections")
+        request.timeoutInterval = 10
+        let (_, response) = try await performDataTask(for: request, retryCount: 0)
 
         guard let httpResponse = response as? HTTPURLResponse else {
             throw ProviderError.invalidResponse
@@ -1642,7 +1634,7 @@ class PlexProvider: IncrementalCatalogProvider, PlaybackSessionProvider, Audiobo
     private func playbackMetadata(path: String) async throws -> [PlexMetadata] {
         try Task.checkCancellation()
         var request = try buildRequest(path: path)
-        // Two attempts plus backoff stay inside PlaybackManager's 20s startup deadline after its 5s progress pull.
+        // Keep metadata attempts short enough for the playback startup deadline.
         request.timeoutInterval = 6
         let (data, response) = try await performDataTask(for: request, retryCount: 1)
         try Task.checkCancellation()
@@ -1756,7 +1748,75 @@ class PlexProvider: IncrementalCatalogProvider, PlaybackSessionProvider, Audiobo
     }
 
     func performDataTask(for request: URLRequest, retryCount: Int = 3) async throws -> (Data, URLResponse) {
-        try await session.retryingData(for: request, retryCount: retryCount)
+        try Task.checkCancellation()
+        let failedConnection = connection
+        var retryRequest = request
+        do {
+            return try await session.data(for: retryRequest)
+        } catch {
+            try Task.checkCancellation()
+            guard let urlError = error as? URLError,
+                  [.timedOut, .cannotFindHost, .cannotConnectToHost, .dnsLookupFailed,
+                   .networkConnectionLost, .notConnectedToInternet, .secureConnectionFailed,
+                   .serverCertificateUntrusted].contains(urlError.code) else { throw error }
+
+            if connection.url == failedConnection.url {
+                let recovery: Task<String?, Error>
+                let ownsRecovery = connectionRecovery == nil
+                if let existing = connectionRecovery {
+                    recovery = existing
+                } else {
+                    recovery = Task {
+                        try await PlexService(session: session, storageService: storageService).recoverConnection(failedConnection)
+                    }
+                    connectionRecovery = recovery
+                }
+                defer { if ownsRecovery { connectionRecovery = nil } }
+                let recoveredURL: String?
+                do {
+                    recoveredURL = try await recovery.value
+                } catch {
+                    try Task.checkCancellation()
+                    recoveredURL = nil
+                }
+                try Task.checkCancellation()
+                guard connection.id == failedConnection.id,
+                      connection.effectivePlexToken == failedConnection.effectivePlexToken else { throw error }
+                if let recoveredURL, connection.url == failedConnection.url {
+                    connection.url = recoveredURL
+                    if let index = appState.providerConnections.connections.firstIndex(where: {
+                        $0.id == failedConnection.id && $0.url == failedConnection.url
+                            && $0.effectivePlexToken == failedConnection.effectivePlexToken
+                    }) {
+                        appState.providerConnections.connections[index].url = recoveredURL
+                    }
+                }
+            }
+
+            guard connection.id == failedConnection.id,
+                  connection.effectivePlexToken == failedConnection.effectivePlexToken else { throw error }
+            if connection.url == failedConnection.url {
+                guard retryCount > 0 else { throw error }
+                return try await session.retryingData(for: retryRequest, retryCount: retryCount - 1)
+            }
+            guard let oldBase = URLComponents(string: failedConnection.url),
+                  let newBase = URLComponents(string: connection.url),
+                  var target = request.url.flatMap({ URLComponents(url: $0, resolvingAgainstBaseURL: false) }),
+                  target.scheme == oldBase.scheme, target.host == oldBase.host,
+                  target.port == oldBase.port else { throw error }
+            let oldPath = oldBase.percentEncodedPath.trimmingCharacters(in: CharacterSet(charactersIn: "/"))
+            let oldPrefix = oldPath.isEmpty ? "" : "/" + oldPath
+            guard target.percentEncodedPath.hasPrefix(oldPrefix + "/") else { throw error }
+            let newPath = newBase.percentEncodedPath.trimmingCharacters(in: CharacterSet(charactersIn: "/"))
+            let newPrefix = newPath.isEmpty ? "" : "/" + newPath
+            target.percentEncodedPath = newPrefix + target.percentEncodedPath.dropFirst(oldPrefix.count)
+            target.scheme = newBase.scheme
+            target.host = newBase.host
+            target.port = newBase.port
+            guard let url = target.url else { throw ProviderError.invalidURL }
+            retryRequest.url = url
+            return try await session.retryingData(for: retryRequest, retryCount: max(0, retryCount - 1))
+        }
     }
 
     private func mapPlexMetadataToBook(

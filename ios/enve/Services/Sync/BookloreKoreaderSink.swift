@@ -16,8 +16,6 @@ struct BookloreKoreaderCredentials: Codable {
 @MainActor
 final class BookloreKoreaderSink {
 
-    static let shared = BookloreKoreaderSink(providerConnections: AppState.shared.providerConnections)
-
     private var credentialsCache: [UUID: BookloreKoreaderCredentials] = [:]
     private var documentHashCache: [String: String] = [:]
     private var documentHashFingerprint: [String: String] = [:]
@@ -30,9 +28,9 @@ final class BookloreKoreaderSink {
         return URLSession(configuration: cfg)
     }()
 
-    private unowned let profileSession: ProfileSession?
+    private unowned let profileSession: ProfileSession
 
-    init(providerConnections: any ProviderConnectionAccessing, profileSession: ProfileSession? = nil) {
+    init(providerConnections: any ProviderConnectionAccessing, profileSession: ProfileSession) {
         self.profileSession = profileSession
         self.providerConnections = providerConnections
         loadAllCredentials()
@@ -180,7 +178,7 @@ final class BookloreKoreaderSink {
         guard let hash = await KOReaderSyncService.computePartialMD5(fileURL: fileURL) else { return nil }
         documentHashCache[bookId] = hash
         if let fingerprint { documentHashFingerprint[bookId] = fingerprint }
-        (profileSession?.defaults ?? UserDefaults.standard).set(hash, forKey: "enve.booklore.koreader.documentHash.\(bookId)")
+        profileSession.defaults.set(hash, forKey: "enve.booklore.koreader.documentHash.\(bookId)")
         return hash
     }
 
@@ -192,7 +190,7 @@ final class BookloreKoreaderSink {
     }
 
     private func findLocalEpubURL(for book: Book) -> URL? {
-        (profileSession?.ebookChapters ?? EbookChapterSyncService.shared).resolvedFileURL(for: book)
+        profileSession.ebookChapters.resolvedFileURL(for: book)
     }
 
     private func addKoreaderHeaders(_ req: inout URLRequest, creds: BookloreKoreaderCredentials) {
@@ -218,7 +216,7 @@ final class BookloreKoreaderSink {
     }
 
     private func deviceId() -> String {
-        (profileSession?.storageService ?? StorageService.shared).loadDeviceUUID()
+        profileSession.storageService.loadDeviceUUID()
     }
 
     private func keychainKey(_ field: String, providerId: UUID) -> String {
@@ -231,13 +229,13 @@ final class BookloreKoreaderSink {
 
     private func persistCredentials(_ creds: BookloreKoreaderCredentials, for providerId: UUID) {
         if !creds.username.isEmpty {
-            (profileSession?.legacyKeychain ?? KeychainHelper.shared).set(creds.username, key: keychainKey("username", providerId: providerId))
+            profileSession.legacyKeychain.set(creds.username, key: keychainKey("username", providerId: providerId))
         }
         if !creds.passwordMD5.isEmpty {
-            (profileSession?.legacyKeychain ?? KeychainHelper.shared).set(creds.passwordMD5, key: keychainKey("passwordMD5", providerId: providerId))
+            profileSession.legacyKeychain.set(creds.passwordMD5, key: keychainKey("passwordMD5", providerId: providerId))
         }
-        (profileSession?.defaults ?? UserDefaults.standard).set(creds.enabled, forKey: udKey("enabled", providerId: providerId))
-        (profileSession?.defaults ?? UserDefaults.standard).set(creds.syncWithBookloreReader, forKey: udKey("syncWithReader", providerId: providerId))
+        profileSession.defaults.set(creds.enabled, forKey: udKey("enabled", providerId: providerId))
+        profileSession.defaults.set(creds.syncWithBookloreReader, forKey: udKey("syncWithReader", providerId: providerId))
     }
 
     private func loadAllCredentials() {
@@ -248,10 +246,10 @@ final class BookloreKoreaderSink {
             let enabledKey = udKey("enabled", providerId: conn.id)
             let readerKey = udKey("syncWithReader", providerId: conn.id)
 
-            guard let username = (profileSession?.legacyKeychain ?? KeychainHelper.shared).get(usernameKey), !username.isEmpty else { continue }
-            let passwordMD5 = (profileSession?.legacyKeychain ?? KeychainHelper.shared).get(passwordKey) ?? ""
-            let enabled = (profileSession?.defaults ?? UserDefaults.standard).bool(forKey: enabledKey)
-            let syncWithReader = (profileSession?.defaults ?? UserDefaults.standard).bool(forKey: readerKey)
+            guard let username = profileSession.legacyKeychain.get(usernameKey), !username.isEmpty else { continue }
+            let passwordMD5 = profileSession.legacyKeychain.get(passwordKey) ?? ""
+            let enabled = profileSession.defaults.bool(forKey: enabledKey)
+            let syncWithReader = profileSession.defaults.bool(forKey: readerKey)
 
             credentialsCache[conn.id] = BookloreKoreaderCredentials(
                 username: username,
@@ -261,7 +259,7 @@ final class BookloreKoreaderSink {
             )
         }
 
-        let hashKeys = (profileSession?.defaults ?? UserDefaults.standard).dictionaryRepresentation()
+        let hashKeys = profileSession.defaults.dictionaryRepresentation()
             .filter { $0.key.hasPrefix("enve.booklore.koreader.documentHash.") }
         for (key, value) in hashKeys {
             if let hash = value as? String {
@@ -294,7 +292,7 @@ extension BookloreKoreaderSink: SyncSink {
     func pull(book: Book, domain: ProgressSyncDomain) async -> SyncSnapshot? {
         guard domain.usesEbookProgress else { return nil }
         guard let provider = providerConnections.provider(for: book) as? BookloreProvider else { return nil }
-        let epubURL = (profileSession?.ebookChapters ?? EbookChapterSyncService.shared).resolvedFileURL(for: book)
+        let epubURL = profileSession.ebookChapters.resolvedFileURL(for: book)
         guard let raw = await pull(book: book, provider: provider, epubFileURL: epubURL) else { return nil }
         let sourceName = provider.connection.name.isEmpty ? provider.connection.type.rawValue : provider.connection.name
         return SyncSnapshot(
@@ -309,7 +307,7 @@ extension BookloreKoreaderSink: SyncSink {
 
     func push(_ update: ProgressUpdate) async throws {
         guard let provider = providerConnections.provider(for: update.book) as? BookloreProvider else { return }
-        let epubURL = (profileSession?.ebookChapters ?? EbookChapterSyncService.shared).resolvedFileURL(for: update.book)
+        let epubURL = profileSession.ebookChapters.resolvedFileURL(for: update.book)
         await push(
             book: update.book,
             locatorJSON: update.locator,

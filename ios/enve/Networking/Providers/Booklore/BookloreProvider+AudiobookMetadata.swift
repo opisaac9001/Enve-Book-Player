@@ -178,13 +178,11 @@ extension BookloreProvider {
         var enriched = book
         var detailProgressFraction: Double?
 
-        if let detailReq = try? makeRequest(path: "/api/v1/app/books/\(grimmoryNumericId(book))"),
-            let (detailData, detailResp) = try? await performAuthorizedRequest(detailReq),
-            detailResp.statusCode == 200,
-            let detail = try? JSONDecoder().decode(BookloreBookDetail.self, from: detailData)
-        {
+        let bookId = grimmoryNumericId(book)
+        if let detail = try? await fetchGrimmoryBook(bookId: bookId, withDescription: true) {
             enriched = mergeListedAudiobook(enriched, with: detail)
-            detailProgressFraction = BookloreBookMapper.fraction(fromPercent: detail.audiobookProgress?.percentage)
+            let audiobookPercentage = await progressClient.fetchAudiobookPercentage(bookId: bookId)
+            detailProgressFraction = BookloreBookMapper.fraction(fromPercent: audiobookPercentage)
 
             if let fraction = detailProgressFraction,
                 let duration = enriched.duration,
@@ -197,11 +195,11 @@ extension BookloreProvider {
                 )
             } else {
                 AppLogger.network.info(
-                    "[Booklore] Enriching '\(book.title)': audiobookProgress=\(String(describing: detail.audiobookProgress?.percentage)), duration=\(String(describing: enriched.duration)) - currentTime not set yet"
+                    "[Booklore] Enriching '\(book.title)': audiobookProgress=\(String(describing: audiobookPercentage)), duration=\(String(describing: enriched.duration)) - currentTime not set yet"
                 )
             }
         } else {
-            AppLogger.network.warning("[Booklore] Enriching '\(book.title)': detail fetch failed or returned nil audiobookProgress")
+            AppLogger.network.warning("[Booklore] Enriching '\(book.title)': detail fetch failed")
         }
 
         if let info = try? await playbackClient.fetchInfo(
@@ -236,11 +234,12 @@ extension BookloreProvider {
         return enriched
     }
 
-    private func mergeListedAudiobook(_ book: Book, with detail: BookloreBookDetail) -> Book {
+    private func mergeListedAudiobook(_ book: Book, with detail: BookloreLegacyBook) -> Book {
         var enriched = book
-        let primaryFile = detail.files?.first { BookloreBookMapper.mediaType(from: resolvedFileType(file: $0)) == .audiobook }
-            ?? detail.files?.first(where: { $0.isPrimary == true }) ?? detail.files?.first
-        let detailDuration = detail.durationSeconds.map(Double.init) ?? detail.duration
+        let metadata = detail.metadata
+        let primaryFile = detail.files.first {
+            BookloreBookMapper.mediaType(from: BookloreCatalogMapper.resolvedFileType(file: $0)) == .audiobook
+        } ?? detail.files.first
 
         if enriched.mediaType == .audiobook,
             let titleFromFile = BookloreBookMapper.title(fromPrimaryFileName: primaryFile?.fileName)
@@ -248,32 +247,28 @@ extension BookloreProvider {
             enriched.title = titleFromFile
         }
 
-        if let detailAuthors = detail.authors, !detailAuthors.isEmpty,
+        if let detailAuthors = metadata?.authors, !detailAuthors.isEmpty,
             (enriched.author?.isEmpty ?? true) || enriched.author == "Unknown Author"
         {
             enriched.author = BookloreBookMapper.displayAuthor(from: detailAuthors)
             enriched.authors = detailAuthors
         }
 
-        if let detailDuration, detailDuration > 0 {
-            enriched.duration = max(enriched.duration ?? 0, detailDuration)
-        }
-
-        if let description = detail.description,
+        if let description = metadata?.description,
             !description.isEmpty,
             enriched.description?.isEmpty ?? true
         {
             enriched.description = description
         }
 
-        if let publisher = detail.publisher,
+        if let publisher = metadata?.publisher,
             !publisher.isEmpty,
             enriched.publisher?.isEmpty ?? true
         {
             enriched.publisher = publisher
         }
 
-        if let language = detail.language,
+        if let language = metadata?.language,
             !language.isEmpty,
             enriched.language?.isEmpty ?? true
         {
@@ -287,37 +282,32 @@ extension BookloreProvider {
             enriched.libraryName = libraryName
         }
 
-        if let publishedYear = BookloreBookMapper.publishedYear(from: detail.publishedDate),
+        if let publishedYear = BookloreBookMapper.publishedYear(from: metadata?.publishedDate),
             enriched.publishedYear == nil
         {
             enriched.publishedYear = publishedYear
         }
 
-        if let goodreadsRating = detail.goodreadsRating,
+        if let goodreadsRating = metadata?.goodreadsRating,
             enriched.goodreadsRating == nil
         {
             enriched.goodreadsRating = goodreadsRating
         }
 
-        if let isbn13 = detail.isbn13,
+        if let isbn13 = metadata?.isbn13,
             !isbn13.isEmpty,
             enriched.isbn?.isEmpty ?? true
         {
             enriched.isbn = isbn13
         }
 
-        if let categories = detail.categories,
+        if let categories = metadata?.categories,
             !categories.isEmpty,
             enriched.genres?.isEmpty ?? true
         {
-            enriched.genres = Array(categories).sorted { lhs, rhs in
+            enriched.genres = categories.sorted { lhs, rhs in
                 lhs.localizedCaseInsensitiveCompare(rhs) == .orderedAscending
             }
-        }
-
-        let mappedDetailChapters = BookloreBookMapper.chapters(from: detail.chapters, bookDuration: enriched.duration ?? detailDuration ?? 0)
-        if !mappedDetailChapters.isEmpty {
-            enriched.chapters = mappedDetailChapters
         }
 
         let detailReadStatus = detail.readStatus?.uppercased()

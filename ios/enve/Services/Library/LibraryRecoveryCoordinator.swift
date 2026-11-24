@@ -40,7 +40,7 @@ struct LibraryRecoveryStores {
                 profileSession.bookProgress.remove(stableId: book.stableId)
                 profileSession.removeCachedArtwork(for: book)
                 if book.epub3Features?.hasMediaOverlay == true || book.source == .storyteller {
-                    profileSession.ebooks.removeReadaloudCache(forBookId: book.id, stableId: book.stableId)
+                    profileSession.ebooks.removeReadaloudCache(forBookId: book.ebookStorageID, stableId: book.stableId)
                 }
             },
             purgeDownloadArtifacts: { [unowned profileSession] diskId in
@@ -78,7 +78,7 @@ struct LibraryRecoveryStores {
                 Task { await AppCache.shared.removeCoverData(for: book) }
 
                 if book.epub3Features?.hasMediaOverlay == true || book.source == .storyteller {
-                    LocalEbookImporter.shared.removeReadaloudCache(forBookId: book.id, stableId: book.stableId)
+                    LocalEbookImporter.shared.removeReadaloudCache(forBookId: book.ebookStorageID, stableId: book.stableId)
                 }
             },
             purgeDownloadArtifacts: { diskId in
@@ -941,6 +941,7 @@ final class LibraryRecoveryCoordinator {
     }
 
     func pruneStaleBooksCacheEarly() {
+        guard providerConnections.isConfigurationAuthoritative else { return }
         guard !library.books.isEmpty else { return }
         let activeConnections = providerConnections.connections.filter { !$0.isArchived }
         guard !activeConnections.isEmpty else { return }
@@ -976,6 +977,7 @@ final class LibraryRecoveryCoordinator {
     }
 
     func pruneDisconnectedProviderData() {
+        guard providerConnections.isConfigurationAuthoritative else { return }
         guard startup.isStartupCacheLoaded else { return }
 
         let activeConnections = providerConnections.connections.filter { !$0.isArchived }
@@ -1043,7 +1045,7 @@ final class LibraryRecoveryCoordinator {
             guard !remainingBookIds.contains(orphan.id),
                 !localTitles.contains(orphan.title.lowercased())
             else { continue }
-            if let cachedURL = orphan.ebookFileURL ?? (profileSession?.ebooks ?? LocalEbookImporter.shared).cachedEbook(forBookId: orphan.id),
+            if let cachedURL = orphan.ebookFileURL ?? (profileSession?.ebooks ?? LocalEbookImporter.shared).cachedEbook(for: orphan),
                 FileManager.default.fileExists(atPath: cachedURL.path),
                 let localURL = (profileSession?.ebooks ?? LocalEbookImporter.shared).migrateToLocal(cachedURL: cachedURL)
             {
@@ -1394,7 +1396,7 @@ final class LibraryRecoveryCoordinator {
         (profileSession?.deletedBooks ?? DeletedBooksTombstoneStore.shared).markDeleted(book.stableId, title: book.title)
 
         _ = (profileSession?.localStorage ?? LocalStorageManager.shared).deleteAudiobook(book)
-        try? (profileSession?.ebooks ?? LocalEbookImporter.shared).deleteRemoteEbookArtifacts(forBookId: book.id)
+        try? (profileSession?.ebooks ?? LocalEbookImporter.shared).deleteRemoteEbookArtifacts(for: book)
         if profileSession?.isOwner ?? true {
             (profileSession?.storyAlignService ?? StoryAlignService.shared).deleteConversions(involving: book)
         }

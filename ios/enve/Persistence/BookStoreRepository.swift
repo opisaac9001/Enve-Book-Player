@@ -94,12 +94,20 @@ struct BrowseAuthorAggregate: Sendable, Hashable {
     let name: String
     let bookCount: Int
     let representativeThumb: String?
+    let representativeBookUniqueID: String
     let matchingNames: [String]
 
-    nonisolated init(name: String, bookCount: Int, representativeThumb: String?, matchingNames: [String]? = nil) {
+    nonisolated init(
+        name: String,
+        bookCount: Int,
+        representativeThumb: String?,
+        representativeBookUniqueID: String,
+        matchingNames: [String]? = nil
+    ) {
         self.name = name
         self.bookCount = bookCount
         self.representativeThumb = representativeThumb
+        self.representativeBookUniqueID = representativeBookUniqueID
         self.matchingNames = matchingNames ?? [name]
     }
 }
@@ -241,7 +249,9 @@ struct BookStoreSortDescriptor: Sendable, Hashable {
 
 protocol BookQuerying: Sendable {
     func allBooks() async -> [Book]
+    func rediscoverCandidates(after cursor: String?, limit: Int) async -> [RediscoverPolicy.Candidate]
     func downloadedAudiobooks(storageKeys: Set<String>) async -> [Book]
+    func booksForDownloadImport(stableIds: Set<String>) async throws -> [Book]
     func readerArtifactBookStableIds() async -> Set<String>
     func finishedBookSummaries() async -> [FinishedBookSummary]
     func bookStatisticsSlices() async -> [BookStatisticsSlice]
@@ -276,6 +286,7 @@ protocol BookQuerying: Sendable {
     func titleAuthorPairs() async -> [(title: String, author: String)]
     func book(uniqueId: String) async -> Book?
     func book(stableId: String) async -> Book?
+    func visibleEbook(stableId: String) async -> Book?
     func absorbedStableIds() async -> Set<String>
     func booksByUniqueIds(_ ids: Set<String>) async -> [String: Book]
     func booksByIds(_ ids: Set<String>) async -> [String: Book]
@@ -311,6 +322,15 @@ protocol BookQuerying: Sendable {
     ) async -> [Book]
     func searchBooks(query: String, limit: Int) async -> [Book]
     func searchBooks(query: String, mediaType: String, limit: Int) async -> [Book]
+    /// Filters, searches, and sorts before the page limit; rows owned by `excludingProviderIds` never count toward it.
+    func catalogPage(
+        excludingProviderIds: Set<UUID>,
+        mediaType: String?,
+        search: String?,
+        sort: [BookStoreSortDescriptor],
+        offset: Int,
+        limit: Int
+    ) async -> [Book]
     func browseAuthorAggregates(mediaType: String) async -> [BrowseAuthorAggregate]
     func browseNarratorAggregates(mediaType: String) async -> [BrowseNarratorAggregate]
     func browseSeriesAggregates(mediaType: String) async -> [BrowseSeriesAggregate]
@@ -336,6 +356,25 @@ protocol BookQuerying: Sendable {
 
 // In-memory defaults for fakes; SwiftDataBookStore filters, orders and pages in the store.
 extension BookQuerying {
+    func booksForDownloadImport(stableIds: Set<String>) async throws -> [Book] {
+        try Task.checkCancellation()
+        guard !stableIds.isEmpty else { return [] }
+        let books = await allBooks()
+        try Task.checkCancellation()
+        let downloaded = books.filter { stableIds.contains($0.stableId) }
+        let linkedIds = Set(downloaded.flatMap { [$0.linkedAudiobookStableId, $0.readAloudSourceStableId].compactMap { $0 } })
+        return books.filter {
+            stableIds.contains($0.stableId) || linkedIds.contains($0.stableId)
+                || stableIds.contains($0.linkedAudiobookStableId ?? "")
+                || stableIds.contains($0.readAloudSourceStableId ?? "")
+        }
+    }
+
+    func visibleEbook(stableId: String) async -> Book? {
+        guard let book = await book(stableId: stableId), book.mediaType == .ebook else { return nil }
+        return book
+    }
+
     func seriesBooksPage(for aggregate: BrowseSeriesAggregate, mediaScope: [String], offset: Int, limit: Int, slice: ComicSeriesSlice) async -> [Book] {
         guard limit > 0 else { return [] }
         let books = await seriesBooksPage(for: aggregate, mediaScope: mediaScope, offset: 0, limit: await bookCount())

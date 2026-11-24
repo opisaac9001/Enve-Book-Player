@@ -1,6 +1,6 @@
 package com.enve.app.data.repository
 
-import com.enve.app.data.remote.dto.GrimmoryUpdateProgressRequest
+import com.enve.app.data.remote.dto.GrimmoryProgressRequest
 import com.enve.core.reader.EpubBridgeCheckpoint
 import com.enve.core.reader.EpubBridgeCheckpointCodec
 import com.enve.core.reader.ReaderEngineKind
@@ -160,8 +160,9 @@ class GrimmoryEbookProgressPayloadTest {
     }
 
     @Test
-    fun wirePayloadMatchesCurrentGrimmoryAppContract() {
-        val request = GrimmoryUpdateProgressRequest(
+    fun wirePayloadMatchesCanonicalBookProgressContract() {
+        val request = GrimmoryProgressRequest(
+            bookId = 7,
             fileProgress = grimmoryEbookFileProgress(
                 bookFileId = 107,
                 totalProgression = 0.42f,
@@ -178,7 +179,9 @@ class GrimmoryEbookProgressPayloadTest {
         val root = Json.parseToJsonElement(Json.encodeToString(request)).jsonObject
         val fileProgress = root.getValue("fileProgress").jsonObject
 
-        assertEquals(setOf("fileProgress"), root.keys)
+        assertEquals(setOf("bookId", "fileProgress"), root.keys)
+        assertEquals(7L, root.getValue("bookId").jsonPrimitive.content.toLong())
+        assertEquals(42.0, fileProgress.getValue("progressPercent").jsonPrimitive.content.toDouble(), 0.001)
         assertEquals(
             setOf(
                 "bookFileId",

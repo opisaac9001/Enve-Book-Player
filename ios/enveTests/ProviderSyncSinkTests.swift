@@ -187,7 +187,7 @@ struct ProviderSyncSinkTests {
         let resolver = ProviderResolverStub()
         resolver.providers[providerId] = provider
         let book = makeBook(providerId: providerId)
-        let sink = ProviderSyncSink(providerResolver: resolver)
+        let sink = ProviderSyncSink(providerResolver: resolver, storytellerPositions: { .shared })
 
         let snapshot = try await sink.pull(book: book, domain: .audiobook)
 
@@ -204,7 +204,7 @@ struct ProviderSyncSinkTests {
         provider.pullError = URLError(.timedOut)
         let resolver = ProviderResolverStub()
         resolver.providers[connection.id] = provider
-        let sink = ProviderSyncSink(providerResolver: resolver)
+        let sink = ProviderSyncSink(providerResolver: resolver, storytellerPositions: { .shared })
         let book = makeBook(providerId: connection.id)
         await #expect(throws: URLError.self) {
             _ = try await sink.pull(book: book, domain: .audiobook)
@@ -229,9 +229,9 @@ struct ProviderSyncSinkTests {
             downloadedBaseline: DownloadedProgressBaseline(position: 20, updatedAt: baselineDate, isFinished: false)
         )
         pending.enqueue(entry)
-        let sink = ProviderSyncSink(providerResolver: resolver, pendingSync: pending)
+        let sink = ProviderSyncSink(providerResolver: resolver, storytellerPositions: { .shared }, pendingSync: pending)
         let transport = ProviderPendingSyncTransport(
-            providerResolver: resolver, bookLookup: { _ in book }, pendingSync: pending,
+            providerResolver: resolver, storytellerPositions: { .shared }, bookLookup: { _ in book }, pendingSync: pending,
             serialQueue: PerBookSerialQueue()
         )
         let update = ProgressUpdate(
@@ -285,7 +285,7 @@ struct ProviderSyncSinkTests {
         PendingSyncQueueStore(defaults: defaults).enqueue(entry)
         let pending = PendingSyncQueueStore(defaults: defaults)
         let transport = ProviderPendingSyncTransport(
-            providerResolver: resolver, bookLookup: { _ in book }, pendingSync: pending,
+            providerResolver: resolver, storytellerPositions: { .shared }, bookLookup: { _ in book }, pendingSync: pending,
             serialQueue: PerBookSerialQueue(), isDownloaded: { _ in true }
         )
         provider.audiobookProgress = ProviderAudiobookProgress(
@@ -316,7 +316,7 @@ struct ProviderSyncSinkTests {
         let resolver = ProviderResolverStub()
         resolver.providers[providerId] = provider
         let book = makeBook(providerId: providerId)
-        let sink = ProviderSyncSink(providerResolver: resolver)
+        let sink = ProviderSyncSink(providerResolver: resolver, storytellerPositions: { .shared })
 
         try await sink.push(
             ProgressUpdate(
@@ -348,9 +348,41 @@ struct ProviderSyncSinkTests {
 
     @Test func isNotApplicableWithoutAResolvedProvider() {
         let resolver = ProviderResolverStub()
-        let sink = ProviderSyncSink(providerResolver: resolver)
+        let sink = ProviderSyncSink(providerResolver: resolver, storytellerPositions: { .shared })
 
         #expect(!sink.isApplicable(to: makeBook(providerId: UUID()), domain: .audiobook))
+    }
+
+    @Test func readaloudSinkRetainsFailedPositionsOnlyInItsInjectedProfileLedger() async throws {
+        let firstSuite = "sink-first-\(UUID())"
+        let secondSuite = "sink-second-\(UUID())"
+        let firstDefaults = try #require(UserDefaults(suiteName: firstSuite))
+        let secondDefaults = try #require(UserDefaults(suiteName: secondSuite))
+        defer {
+            firstDefaults.removePersistentDomain(forName: firstSuite)
+            secondDefaults.removePersistentDomain(forName: secondSuite)
+        }
+        let firstLedger = StorytellerPositionLedger(defaults: firstDefaults)
+        let secondLedger = StorytellerPositionLedger(defaults: secondDefaults)
+        let resolver = ProviderResolverStub()
+        let connection = ServerConnection(name: "Fixture", url: "", type: .storyteller)
+        resolver.providers[connection.id] = StorytellerProvider(connection: connection)
+        let service = StorytellerPositionSyncService(ledger: firstLedger, providerResolver: resolver,
+            libraryCache: LibraryBookCache())
+        let sink = ProviderSyncSink(providerResolver: resolver, storytellerPositions: { service })
+        var book = Book(id: "readaloud-fixture", title: "Readaloud", source: .storyteller,
+            mediaType: .ebook, providerId: connection.id, libraryId: "fixture")
+        book.epub3Features = EPUB3Features(hasMediaOverlay: true)
+        book.lastUpdate = Date(timeIntervalSince1970: 2_000)
+        let locator = #"{"href":"chapter.xhtml","locations":{"totalProgression":0.4}}"#
+        let update = ProgressUpdate(book: book, domain: .ebook, positionSeconds: 0, progress: 0.4,
+            locator: locator, sourceEngine: nil, sessionId: nil, isFinished: false,
+            timeListened: 0, playbackRate: 1)
+        await #expect(throws: (any Error).self) { try await sink.push(update) }
+        let key = StorytellerPositionKey(book: book)
+        #expect(firstLedger.pending(for: key)?.locatorJSON == locator)
+        #expect(secondLedger.pending(for: key) == nil)
+        #expect(StorytellerPositionLedger(defaults: firstDefaults).pending(for: key)?.locatorJSON == locator)
     }
 
     private func makeBook(providerId: UUID) -> Book {

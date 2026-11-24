@@ -13,6 +13,7 @@ import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
+import androidx.compose.foundation.layout.sizeIn
 import androidx.compose.foundation.layout.statusBarsPadding
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.lazy.LazyColumn
@@ -35,6 +36,7 @@ import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.semantics.Role
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
@@ -59,7 +61,7 @@ import com.enve.hearth.design.ShelfHeader
 import com.enve.hearth.design.hearthDisplay
 import com.enve.hearth.design.hearthUI
 
-private enum class PodcastsPage { HOME, BROWSE, STATS }
+private enum class PodcastsPage { HOME, BROWSE, ROUTINES, STATS }
 
 private val genres = listOf(
     "All" to null, "Comedy" to 1303, "True Crime" to 1488, "News" to 1489,
@@ -74,18 +76,32 @@ fun PodcastsScreen(
     onOpenEpisode: (Book) -> Unit,
     onPlay: (Book) -> Unit,
     vm: PodcastsViewModel = profileViewModel(),
+    routinesVm: PodcastRoutinesViewModel = profileViewModel(),
+    transferVm: PodcastTransferViewModel = profileViewModel(),
 ) {
     val state by vm.state.collectAsStateWithLifecycle()
     val stats by vm.stats.collectAsStateWithLifecycle()
+    val routines by routinesVm.state.collectAsStateWithLifecycle()
     var page by rememberSaveable { mutableStateOf(PodcastsPage.HOME) }
+    var showingTransfer by rememberSaveable { mutableStateOf(false) }
     val palette = Hearth.palette
+    if (showingTransfer) PodcastTransferSheet(transferVm, onClose = { showingTransfer = false })
     LazyColumn(
         Modifier.fillMaxSize().background(palette.bg).statusBarsPadding(),
         contentPadding = PaddingValues(bottom = LocalMantelInset.current + Hearth.Spacing.L),
     ) {
         item {
             Column(Modifier.padding(bottom = Hearth.Spacing.L)) {
-                ScreenHeader("Podcasts", overline = "The listening room")
+                ScreenHeader("Podcasts", overline = "The listening room", trailing = {
+                    Text(
+                        "Import & export",
+                        style = HearthText.Caption,
+                        color = palette.ember,
+                        modifier = Modifier.sizeIn(minWidth = 48.dp, minHeight = 48.dp)
+                            .clickable(role = Role.Button) { showingTransfer = true }
+                            .padding(Hearth.Spacing.S),
+                    )
+                })
                 Spacer(Modifier.height(Hearth.Spacing.M))
                 Row(
                     Modifier.padding(horizontal = Hearth.Spacing.XL),
@@ -231,6 +247,7 @@ fun PodcastsScreen(
                 }
                 state.error?.let { error -> item { EmptyMessage("Couldn't load podcasts", error) } }
             }
+            PodcastsPage.ROUTINES -> podcastRoutineItems(routines, routinesVm)
             PodcastsPage.STATS -> {
                 item {
                     Column(Modifier.padding(Hearth.Spacing.XXL), verticalArrangement = Arrangement.spacedBy(Hearth.Spacing.XXL)) {

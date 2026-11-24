@@ -22,6 +22,9 @@ class BookOrbitProviderAdapter @Inject constructor(
     override val source: BookSource = BookSource.BOOKORBIT
     override val syncCapability: SyncCapability = SyncCapability.FULL
     override val supportsPersonalRating: Boolean = true
+    override val readStatusOptions: List<String> = listOf(
+        "UNREAD", "WANT_TO_READ", "READING", "ON_HOLD", "REREADING", "READ", "SKIMMED", "ABANDONED",
+    )
     override val annotationsAreAuthoritative: Boolean = true
 
     override suspend fun getLibraries(): Result<List<Library>> = repository.getLibraries()

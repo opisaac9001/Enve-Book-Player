@@ -29,6 +29,7 @@ Start with the root [architecture guide](../ARCHITECTURE.md) for targets, source
 
 - [Audiobookshelf](reference/audiobookshelf/api_reference_audiobookshelf.md)
 - [Grimmory](reference/grimmory/master_doc.md)
+- [Grimmory app API retirement](reference/grimmory/app-api-retirement.md)
 - [Hardcover](reference/hardcover-api.md)
 - [OneDrive](reference/onedrive.md)
 - [Readium LCP integration](reference/readium-lcp-integration.md)

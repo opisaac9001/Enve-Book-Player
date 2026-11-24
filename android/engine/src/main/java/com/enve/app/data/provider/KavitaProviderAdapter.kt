@@ -13,6 +13,7 @@ import javax.inject.Singleton
 @Singleton
 class KavitaProviderAdapter @Inject constructor(
     private val repository: GrimmoryRepository,
+    private val covers: com.enve.app.data.kavita.KavitaCoverRevisionStore,
 ) : ProviderAdapter {
     override val source: BookSource = BookSource.KAVITA
     override val syncCapability: SyncCapability = SyncCapability.READ_WRITE
@@ -52,6 +53,7 @@ class KavitaProviderAdapter @Inject constructor(
         repository.fetchKavitaEbookProgress(book.id)
 
     override fun invalidateCaches() {
+        covers.invalidate()
         repository.invalidateListCaches()
     }
 }

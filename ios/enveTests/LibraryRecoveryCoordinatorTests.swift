@@ -16,6 +16,7 @@ private final class RecoveryStartupStub: LibraryStartupGating {
 
 @MainActor
 private final class RecoveryConnectionStub: ProviderConnectionEditing, ProviderConnectionResolving, ProviderConnectionAccessing {
+    var isConfigurationAuthoritative = true
     var connections: [ServerConnection] = []
     var connectionsNeedingReauth: [ServerConnection] = []
     var allProviders: [UUID: LibraryProvider] = [:]
@@ -278,6 +279,22 @@ struct LibraryRecoveryCoordinatorTests {
 
         #expect(fixture.library.books.map(\.id) == ["kept"])
         fixture.cleanUp()
+    }
+
+    @Test func bothPrunePathsPreserveBooksWhenConnectionsAreUnreadable() throws {
+        let fixture = try RecoveryFixture()
+        defer { fixture.cleanUp() }
+        let recovery = fixture.makeCoordinator()
+        fixture.connections.isConfigurationAuthoritative = false
+        fixture.connections.connections = [ServerConnection(name: "New", url: "https://fixture.invalid", type: .opds)]
+        let orphaned = makeBook(id: "retained", providerId: UUID())
+        fixture.library.load([orphaned])
+
+        recovery.pruneStaleBooksCacheEarly()
+        recovery.pruneDisconnectedProviderData()
+
+        #expect(fixture.library.books.map(\.id) == ["retained"])
+        #expect(recovery.pendingBookStoreDeletions.isEmpty)
     }
 
     @Test func pruneIsSkippedUntilTheStartupCacheHasLoaded() throws {

@@ -15,8 +15,8 @@ extension BookloreProvider {
             throw ProviderError.notImplemented
         }
 
-        let firstPageData = try await fetchAppBooksPageData(libraryId: libraryId, page: 0)
-        let firstPage = try JSONDecoder().decode(BooklorePage<BookloreBookSummary>.self, from: firstPageData)
+        let firstPageData = try await fetchLibraryPageData(libraryId: libraryId, page: 0)
+        let firstPage = try decodeLibraryPage(firstPageData, libraryId: libraryId)
         guard firstPage.rawItemCount > 0 else { throw ProviderError.invalidResponse }
         rejectedContent.update(
             connection: connection,
@@ -81,7 +81,7 @@ extension BookloreProvider {
             let fetched = try await withThrowingTaskGroup(of: (Int, Data).self) { group in
                 for page in pagesToFetch {
                     group.addTask {
-                        (page, try await self.fetchAppBooksPageData(libraryId: session.libraryId, page: page))
+                        (page, try await self.fetchLibraryPageData(libraryId: session.libraryId, page: page))
                     }
                 }
                 var result: [(Int, Data)] = []
@@ -98,7 +98,7 @@ extension BookloreProvider {
         let context = catalogMapperContext(libraryId: session.libraryId)
         for pageNumber in requestedPages {
             guard let data = dataByPage[pageNumber] else { throw ProviderError.invalidResponse }
-            let page = try JSONDecoder().decode(BooklorePage<BookloreBookSummary>.self, from: data)
+            let page = try decodeLibraryPage(data, libraryId: session.libraryId)
             guard page.page == pageNumber,
                 page.totalPages == session.totalPages,
                 page.totalElements == session.totalElements
@@ -114,18 +114,6 @@ extension BookloreProvider {
             books.append(contentsOf: page.content.map { BookloreCatalogMapper.book(from: $0, context: context) })
         }
 
-        switch try await resolveCatalogFormats(books) {
-        case .resolved(let resolvedBooks, let complete):
-            books = resolvedBooks
-            if !complete { session.isComplete = false }
-        case .batchEndpointUnsupported:
-            _ = try await switchToLegacyBooksAPI(
-                reason: "Mobile app books lack the batch format endpoint",
-                libraryId: session.libraryId,
-                expectedBookIds: Set(books.map(\.id))
-            )
-            throw ProviderError.serverError("Grimmory batch format endpoint is unavailable")
-        }
         let companions = makeCompanionAudiobooks(forEbooks: &books)
         books.append(contentsOf: companions)
         books = try validateCatalogIdentities(books, session: session)

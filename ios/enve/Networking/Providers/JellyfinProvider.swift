@@ -59,76 +59,22 @@ class JellyfinProvider: IncrementalCatalogProvider, PlaybackSessionProvider, Aud
 
     func validateConnection() async throws -> Bool {
         try EnveProvenance.checkServerAddress(connection.url)
-        AppLogger.network.info("[JellyfinProvider] URL: \(URL(string: connection.url)?.redacted.absoluteString ?? "<invalid>")")
-        AppLogger.network.info("[JellyfinProvider] Has username: \(connection.username != nil ? "YES" : "NO")")
-        AppLogger.network.info("[JellyfinProvider] Has userId: \(connection.userId != nil ? "YES" : "NO")")
-
-        let base = normalizeServerURL(connection.url)
-
-        if let token = connection.token, connection.userId == nil {
-            AppLogger.network.info("[JellyfinProvider] Token exists but no userId, trying to discover...")
-            if let discovered = try? await fetchUserId(base: base, token: token, preferredUsername: connection.username) {
-                connection.userId = discovered
-                AppLogger.network.info("[JellyfinProvider] Discovered userId: \(discovered)")
-            }
-        }
-
-        if let _ = connection.token, let userId = connection.userId {
-            AppLogger.network.info("[JellyfinProvider] Validating existing token with userId: \(userId)")
-            guard let url = URL(string: "\(base)/Users/\(userId)") else {
-                AppLogger.network.error("[JellyfinProvider] Invalid URL while validating user")
-                return false
-            }
-
-            var request = URLRequest(url: url)
-            addAuthHeaders(&request)
-
+        if let token = connection.token, !token.isEmpty {
             do {
-                let (_, response) = try await performDataTask(for: request)
-                guard let httpResponse = response as? HTTPURLResponse else { return false }
-                AppLogger.network.info("[JellyfinProvider] validateConnection status: \(httpResponse.statusCode)")
-                return httpResponse.statusCode == 200
-            } catch {
-                AppLogger.network.error("[JellyfinProvider] validateConnection failed: \(error.localizedDescription)")
-                return false
+                guard let userID = try await MediaBrowserClient.validateUser(connection: connection, send: {
+                    try await performDataTask(for: $0)
+                }) else { return false }
+                connection.userId = userID
+                return true
+            } catch ProviderError.unauthorized {
+                // Renew a rejected session once with this account's saved password.
             }
         }
 
-        AppLogger.network.info("[JellyfinProvider] No valid token, checking for username/password...")
-        guard let username = connection.username, let password = connection.password ?? connection.token else {
-            AppLogger.network.warning("[JellyfinProvider] Missing username or password")
-            return false
-        }
-
-        AppLogger.network.info("[JellyfinProvider] Attempting authentication with username/password...")
+        guard connection.authMode != .token, let username = connection.username, !username.isEmpty,
+            let password = connection.password else { return false }
         try await authenticate(username: username, password: password)
-        return try await validateConnection()
-    }
-
-    private struct JellyfinUser: Decodable {
-        let Id: String
-        let Name: String?
-    }
-
-    private func fetchUserId(base: String, token: String, preferredUsername: String?) async throws -> String? {
-        guard let url = URL(string: "\(base)/Users") else {
-            return nil
-        }
-        var request = URLRequest(url: url)
-        let savedToken = connection.token
-        connection.token = token
-        addAuthHeaders(&request)
-        connection.token = savedToken
-
-        let (data, response) = try await performDataTask(for: request)
-        guard let http = response as? HTTPURLResponse, http.statusCode == 200 else { return nil }
-        let users = try JSONDecoder().decode([JellyfinUser].self, from: data)
-        if let preferredUsername {
-            if let match = users.first(where: { ($0.Name ?? "").caseInsensitiveCompare(preferredUsername) == .orderedSame }) {
-                return match.Id
-            }
-        }
-        return users.first?.Id
+        return true
     }
 
     private struct AuthResponse: Decodable {
@@ -140,53 +86,30 @@ class JellyfinProvider: IncrementalCatalogProvider, PlaybackSessionProvider, Aud
     }
 
     private func authenticate(username: String, password: String) async throws {
-
         let base = normalizeServerURL(connection.url)
-        AppLogger.network.info("[JellyfinProvider] Server URL: \(URL(string: base)?.redacted.absoluteString ?? "<invalid>")")
-
-        guard let url = URL(string: "\(base)/Users/AuthenticateByName") else {
-            AppLogger.network.error("[JellyfinProvider] Invalid URL for auth")
-            throw ProviderError.invalidURL
-        }
-
+        guard let url = URL(string: "\(base)/Users/AuthenticateByName") else { throw ProviderError.invalidURL }
         var request = URLRequest(url: url)
         request.httpMethod = "POST"
         request.timeoutInterval = 30
+        for (name, value) in connection.customHeaders ?? [:] {
+            request.setValue(value, forHTTPHeaderField: name)
+        }
         request.setValue("application/json", forHTTPHeaderField: "Content-Type")
         request.setValue("application/json", forHTTPHeaderField: "Accept")
-
-        let authHeader = MediaBrowserClient.authorizationHeader(token: nil)
-        request.setValue(authHeader, forHTTPHeaderField: "Authorization")
-        request.setValue(authHeader, forHTTPHeaderField: "X-Emby-Authorization")
-
-        let body: [String: String] = ["Username": username, "Pw": password]
-        request.httpBody = try JSONSerialization.data(withJSONObject: body)
-
-        AppLogger.network.info("[JellyfinProvider] Sending auth request to: \(url.redacted)")
+        request.setValue(nil, forHTTPHeaderField: "X-Emby-Token")
+        let auth = MediaBrowserClient.authorizationHeader(token: nil)
+        request.setValue(auth, forHTTPHeaderField: "Authorization")
+        request.setValue(auth, forHTTPHeaderField: "X-Emby-Authorization")
+        request.httpBody = try JSONEncoder().encode(["Username": username, "Pw": password])
 
         let (data, response) = try await performDataTask(for: request)
-
-        guard let httpResponse = response as? HTTPURLResponse else {
-            AppLogger.network.error("[JellyfinProvider] Invalid response type")
-            throw ProviderError.invalidResponse
-        }
-
-        AppLogger.network.info("[JellyfinProvider] Response status: \(httpResponse.statusCode)")
-
-        guard httpResponse.statusCode == 200 else {
-            AppLogger.network.error("[JellyfinProvider] Auth failed with status \(httpResponse.statusCode)")
-            if httpResponse.statusCode == 401 {
-                throw ProviderError.unauthorized
-            }
-            throw ProviderError.serverError("HTTP \(httpResponse.statusCode)")
-        }
-
+        try JellyfinResponseError.requireOK(response)
         let result = try JSONDecoder().decode(AuthResponse.self, from: data)
+        guard !result.AccessToken.isEmpty, !result.User.Id.isEmpty,
+            connection.userId.map({ $0.caseInsensitiveCompare(result.User.Id) == .orderedSame }) ?? true
+        else { throw ProviderError.unauthorized }
         connection.token = result.AccessToken
         connection.userId = result.User.Id
-
-        AppLogger.network.info("[JellyfinProvider] Authentication successful!")
-        AppLogger.network.info("[JellyfinProvider] User ID: \(result.User.Id)")
     }
 
     func fetchLibraries() async throws -> [Library] {
@@ -321,6 +244,10 @@ class JellyfinProvider: IncrementalCatalogProvider, PlaybackSessionProvider, Aud
 
         let item = try JSONDecoder().decode(JellyfinItem.self, from: data)
         AppLogger.network.info("Processing: \(item.Name), Type: \(item.itemType), Chapters: \(item.Chapters?.count ?? 0)")
+
+        if item.itemType == "Book" {
+            return mapJellyfinItemToBook(item, libraryId: libraryId, base: base)
+        }
 
         var duration = Double(item.RunTimeTicks ?? 0) / 10_000_000.0
 
@@ -644,7 +571,15 @@ class JellyfinProvider: IncrementalCatalogProvider, PlaybackSessionProvider, Aud
             coverURL = URL(string: "\(base)/Items/\(item.Id)/Images/Primary")
         }
 
-        let author = item.AlbumArtist ?? item.AlbumArtists?.first?.Name ?? item.ArtistItems?.first?.Name ?? "Unknown Author"
+        var authorNames: [String] = []
+        for person in item.People ?? [] where person.personType == "Author" {
+            let name = person.Name.trimmingCharacters(in: .whitespacesAndNewlines)
+            if !name.isEmpty && !authorNames.contains(name) { authorNames.append(name) }
+        }
+        let author = [item.AlbumArtist, item.AlbumArtists?.first?.Name, item.ArtistItems?.first?.Name]
+            .compactMap { $0?.trimmingCharacters(in: .whitespacesAndNewlines) }
+            .first { !$0.isEmpty }
+            ?? (authorNames.isEmpty ? "Unknown Author" : authorNames.joined(separator: ", "))
         // Jellyfin maps the audiobook narrator (composer tag) to a Composer person; it has no Narrator type.
         let narrator = isEbook ? nil : item.People?.first(where: { $0.personType == "Composer" && !$0.Name.isEmpty })?.Name
 
@@ -690,7 +625,7 @@ class JellyfinProvider: IncrementalCatalogProvider, PlaybackSessionProvider, Aud
     }
 
     func downloadEbook(for book: Book, onProgress: (@Sendable (Double) -> Void)? = nil) async throws -> URL {
-        if let cached = ebooks.cachedEbook(forBookId: book.id) {
+        if let cached = ebooks.cachedEbook(for: book) {
             onProgress?(1)
             return cached
         }
@@ -738,7 +673,7 @@ class JellyfinProvider: IncrementalCatalogProvider, PlaybackSessionProvider, Aud
         return try ebooks.cacheRemoteEbook(
             tempURL: tempURL,
             preferredFilename: filename,
-            bookIdentifier: book.id
+            bookIdentifier: book.ebookStorageID
         )
     }
 

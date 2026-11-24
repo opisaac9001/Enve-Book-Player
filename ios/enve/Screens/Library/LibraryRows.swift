@@ -5,8 +5,9 @@ struct LibraryBookContextMenu: View {
     var onHide: ((Book) -> Void)?
     var onDelete: ((Book) -> Void)?
 
+    @Environment(\.profileSession) private var capturedSession
     @Environment(EnveEngine.self) private var engine
-    private let savedBooks = SavedBooksStore.shared
+    private var savedBooks: SavedBooksStore { (capturedSession ?? .owner).savedBooks }
 
     var body: some View {
         Button {
@@ -169,6 +170,7 @@ struct LibraryBookRow: View {
     var isSelected = false
     var onToggleSelect: ((Book) -> Void)? = nil
     var onHide: ((Book) -> Void)? = nil
+    var onOpen: ((Book, LibraryWorkRef?) -> Void)? = nil
 
     @Environment(\.hearth) private var hearth
     @Environment(\.dynamicTypeSize) private var dynamicTypeSize
@@ -189,6 +191,38 @@ struct LibraryBookRow: View {
             .accessibilityValue(isSelected ? "Selected" : "Not selected")
             .accessibilityHint("Double tap to change selection")
         } else {
+            opener
+                .buttonStyle(PressableStyle())
+                .accessibilityElement(children: .ignore)
+                .accessibilityLabel(accessibilityLabel)
+                .accessibilityHint("Double tap to view details")
+                .contextMenu {
+                    LibraryBookContextMenu(
+                        book: book,
+                        onHide: onHide,
+                        onDelete: { _ in confirmDelete = true }
+                    )
+                }
+                .alert("Delete local book?", isPresented: $confirmDelete) {
+                    Button("Delete", role: .destructive) {
+                        engine.library.permanentlyDelete(book)
+                    }
+                    Button("Cancel", role: .cancel) {}
+                } message: {
+                    Text("Removes \"\(book.title)\" from Enve and deletes its imported files from this device.")
+                }
+        }
+    }
+
+    @ViewBuilder
+    private var opener: some View {
+        if let onOpen {
+            Button {
+                onOpen(book, workRef)
+            } label: {
+                rowContent
+            }
+        } else {
             NavigationLink {
                 if let workRef {
                     WorkHubScreen(workKey: workRef.key, seed: book)
@@ -197,25 +231,6 @@ struct LibraryBookRow: View {
                 }
             } label: {
                 rowContent
-            }
-            .buttonStyle(PressableStyle())
-            .accessibilityElement(children: .ignore)
-            .accessibilityLabel(accessibilityLabel)
-            .accessibilityHint("Double tap to view details")
-            .contextMenu {
-                LibraryBookContextMenu(
-                    book: book,
-                    onHide: onHide,
-                    onDelete: { _ in confirmDelete = true }
-                )
-            }
-            .alert("Delete local book?", isPresented: $confirmDelete) {
-                Button("Delete", role: .destructive) {
-                    engine.library.permanentlyDelete(book)
-                }
-                Button("Cancel", role: .cancel) {}
-            } message: {
-                Text("Removes \"\(book.title)\" from Enve and deletes its imported files from this device.")
             }
         }
     }

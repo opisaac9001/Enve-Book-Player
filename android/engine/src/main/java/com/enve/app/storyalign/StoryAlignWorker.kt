@@ -8,6 +8,7 @@ import androidx.hilt.work.HiltWorker
 import androidx.work.CoroutineWorker
 import androidx.work.ForegroundInfo
 import androidx.work.WorkerParameters
+import com.enve.app.work.enterForeground
 import com.enve.engine.impl.R
 import com.enve.engine.storyalign.StoryAlignSettings
 import com.enve.engine.storyalign.StoryAlignStage
@@ -45,7 +46,7 @@ class StoryAlignWorker @AssistedInject constructor(
         val status = runCatching { StoryAlignStatus.valueOf(job.status) }.getOrNull()
         if (status == StoryAlignStatus.DONE || status == StoryAlignStatus.CANCELLED) return Result.success()
 
-        setForeground(foregroundInfo(job.ebookTitle, 0f))
+        if (!enterForeground(foregroundInfo(job.ebookTitle, 0f))) return Result.retry()
 
         return try {
             val settings = runCatching {

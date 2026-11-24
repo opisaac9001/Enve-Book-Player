@@ -42,7 +42,58 @@ class BookOrbitReaderArtifactSyncTest {
 
         assertEquals(1, result.pulled)
         assertEquals(0, result.pushed)
-        assertEquals("bookorbit:31", dao.getByServerId("31", BOOKORBIT_PROVIDER_SOURCE)?.id)
+        assertEquals("bookorbit:31", dao.owned("31", null)?.id)
+    }
+
+    @Test
+    fun sameBookOnTwoConnectionsKeepsSeparateArtifacts() = runBlocking {
+        val first = book.copy(connectionId = "orbit-a")
+        val second = book.copy(connectionId = "orbit-b")
+        val dao = FakeReaderAnnotationDao(
+            localHighlight(id = "bookorbit:31", serverId = "31", note = "from a").copy(connectionId = "orbit-a"),
+            localHighlight(id = "a-dirty", dirty = true).copy(connectionId = "orbit-a"),
+        )
+        val pushedFromB = mutableListOf<String>()
+        val adapter = FakeProviderAdapter(
+            push = { annotations -> pushedFromB += annotations.map { it.id }; AnnotationsPushResult() },
+            remote = listOf(serverHighlight(serverId = "31", note = "from b")),
+        )
+
+        syncBookOrbitReaderArtifacts(second, adapter, dao)
+
+        assertTrue(pushedFromB.isEmpty())
+        assertEquals("from a", dao.getById("bookorbit:31")?.note)
+        assertEquals("from b", dao.owned("31", "orbit-b")?.note)
+        assertTrue(dao.owned("31", "orbit-b")?.id != "bookorbit:31")
+
+        val purgeOnA = FakeProviderAdapter(push = { AnnotationsPushResult() }, remote = listOf(serverHighlight(serverId = "99")))
+        syncBookOrbitReaderArtifacts(first, purgeOnA, dao)
+
+        assertNull(dao.getById("bookorbit:31"))
+        assertEquals("from b", dao.owned("31", "orbit-b")?.note)
+    }
+
+    @Test
+    fun unresolvedLegacyRowsAreNeitherPushedNorPurged() = runBlocking {
+        val scoped = book.copy(connectionId = "orbit-a")
+        val dao = FakeReaderAnnotationDao(
+            localHighlight(id = "legacy-dirty", dirty = true).copy(connectionUnresolved = true),
+            localHighlight(id = "legacy-clean", serverId = "40").copy(connectionUnresolved = true),
+            localHighlight(id = "legacy-other", serverId = "41").copy(connectionUnresolved = true),
+        )
+        val pushed = mutableListOf<String>()
+        val adapter = FakeProviderAdapter(
+            push = { annotations -> pushed += annotations.map { it.id }; AnnotationsPushResult() },
+            remote = listOf(serverHighlight(serverId = "40", note = "server copy")),
+        )
+
+        syncBookOrbitReaderArtifacts(scoped, adapter, dao)
+
+        assertTrue(pushed.isEmpty())
+        assertTrue(dao.getById("legacy-dirty")?.connectionUnresolved == true)
+        assertTrue(dao.getById("legacy-clean")?.connectionUnresolved == true)
+        assertEquals("server copy", dao.owned("40", "orbit-a")?.note)
+        assertTrue(dao.getById("legacy-other")?.connectionUnresolved == true)
     }
 
     @Test
@@ -226,36 +277,43 @@ private class FakeReaderAnnotationDao(vararg seed: ReaderAnnotation) : ReaderAnn
 
     fun ids(): List<String> = rows.keys.toList()
 
-    override fun flowByBook(bookId: String): Flow<List<ReaderAnnotation>> = flowOf(rows.values.toList())
+    fun owned(serverId: String, connectionId: String?): ReaderAnnotation? =
+        rows.values.firstOrNull { it.serverId == serverId && it.connectionId == connectionId && !it.connectionUnresolved }
 
-    override fun flowByBookAndKind(bookId: String, kind: String): Flow<List<ReaderAnnotation>> =
-        flowOf(rows.values.filter { it.bookId == bookId && it.kind == kind })
+    override fun flowByBook(bookId: String, connectionId: String?): Flow<List<ReaderAnnotation>> =
+        flowOf(rows.values.filter { it.visible(bookId, connectionId) })
+
+    override fun flowByBookAndKind(bookId: String, connectionId: String?, kind: String): Flow<List<ReaderAnnotation>> =
+        flowOf(rows.values.filter { it.visible(bookId, connectionId) && it.kind == kind })
 
     override fun flowAll(): Flow<List<ReaderAnnotation>> = flowOf(rows.values.toList())
 
     override fun search(pattern: String): Flow<List<ReaderAnnotation>> = flowOf(rows.values.toList())
 
-    override suspend fun getByBook(bookId: String): List<ReaderAnnotation> =
-        rows.values.filter { it.bookId == bookId && it.deletedAt == null }
+    override suspend fun getByBook(bookId: String, connectionId: String?): List<ReaderAnnotation> =
+        rows.values.filter { it.visible(bookId, connectionId) && it.deletedAt == null }
 
     override suspend fun getById(id: String): ReaderAnnotation? = rows[id]
 
-    override suspend fun getByServerId(serverId: String, providerSource: String): ReaderAnnotation? =
-        rows.values.firstOrNull { it.serverId == serverId && it.providerSource == providerSource }
-
-    override suspend fun getByServerIdForBook(serverId: String, providerSource: String, bookId: String): ReaderAnnotation? =
-        rows.values.firstOrNull { it.serverId == serverId && it.providerSource == providerSource && it.bookId == bookId }
+    override suspend fun getByServerIdForBook(
+        serverId: String,
+        providerSource: String,
+        bookId: String,
+        connectionId: String?,
+    ): ReaderAnnotation? =
+        rows.values.firstOrNull { it.serverId == serverId && it.providerSource == providerSource && it.owns(bookId, connectionId) }
 
     override suspend fun getDirty(): List<ReaderAnnotation> = rows.values.filter { it.syncDirty }
 
-    override suspend fun getDirtyForBook(bookId: String): List<ReaderAnnotation> =
-        rows.values.filter { it.bookId == bookId && it.syncDirty }
+    override suspend fun getDirtyForBook(bookId: String, connectionId: String?): List<ReaderAnnotation> =
+        rows.values.filter { it.owns(bookId, connectionId) && it.syncDirty }
 
     override suspend fun getDirtyForBookAndProvider(
         bookId: String,
+        connectionId: String?,
         providerSource: String,
     ): List<ReaderAnnotation> =
-        rows.values.filter { it.bookId == bookId && it.providerSource == providerSource && it.syncDirty }
+        rows.values.filter { it.owns(bookId, connectionId) && it.providerSource == providerSource && it.syncDirty }
 
     override suspend fun getDirtyBookIds(): List<String> =
         rows.values.filter { it.syncDirty }.map { it.bookId }.distinct()
@@ -298,17 +356,18 @@ private class FakeReaderAnnotationDao(vararg seed: ReaderAnnotation) : ReaderAnn
         rows.remove(id)
     }
 
-    override suspend fun purgeCleanProviderRows(bookId: String, providerSource: String) {
-        rows.values.removeAll { it.isCleanServerBacked(bookId, providerSource) }
+    override suspend fun purgeCleanProviderRows(bookId: String, connectionId: String?, providerSource: String) {
+        rows.values.removeAll { it.isCleanServerBacked(bookId, connectionId, providerSource) }
     }
 
     override suspend fun purgeCleanProviderRowsMissing(
         bookId: String,
+        connectionId: String?,
         providerSource: String,
         serverIds: List<String>,
     ) {
         rows.values.removeAll { row ->
-            row.isCleanServerBacked(bookId, providerSource) && serverIds.none { it == row.serverId }
+            row.isCleanServerBacked(bookId, connectionId, providerSource) && serverIds.none { it == row.serverId }
         }
     }
 
@@ -316,6 +375,12 @@ private class FakeReaderAnnotationDao(vararg seed: ReaderAnnotation) : ReaderAnn
         rows[a.id] = a
     }
 
-    private fun ReaderAnnotation.isCleanServerBacked(bookId: String, providerSource: String): Boolean =
-        this.bookId == bookId && this.providerSource == providerSource && !syncDirty && serverId != null
+    private fun ReaderAnnotation.owns(bookId: String, connectionId: String?): Boolean =
+        this.bookId == bookId && this.connectionId == connectionId && !connectionUnresolved
+
+    private fun ReaderAnnotation.visible(bookId: String, connectionId: String?): Boolean =
+        this.bookId == bookId && !connectionUnresolved && this.connectionId == connectionId
+
+    private fun ReaderAnnotation.isCleanServerBacked(bookId: String, connectionId: String?, providerSource: String): Boolean =
+        owns(bookId, connectionId) && this.providerSource == providerSource && !syncDirty && serverId != null
 }

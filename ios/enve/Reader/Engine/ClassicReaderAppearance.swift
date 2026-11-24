@@ -98,6 +98,17 @@ enum ReaderThemeMode: String, Codable {
     case automatic
 }
 
+enum ReaderPageTurnAnimation: String, CaseIterable, Identifiable, Codable {
+    case standard, curl
+
+    var id: String { rawValue }
+    var label: String { self == .standard ? "Standard" : "Curl" }
+
+    func usesCurl(scrolling: Bool, reduceMotion: Bool) -> Bool {
+        self == .curl && !scrolling && !reduceMotion
+    }
+}
+
 enum ReaderFontFamilyOption: String, CaseIterable, Identifiable, Codable {
     case serif, sansSerif, openDyslexic, duospace
     var id: String { rawValue }
@@ -319,8 +330,10 @@ struct ClassicReaderAppearance: Codable, Equatable {
     var paragraphIndent: Double = 0.0
     var scrollEnabled = false
     var pdfScrollEnabled = false
+    var pageTurnAnimation: ReaderPageTurnAnimation = .standard
     var publisherStyles = false
     var justifiedText = true
+    var hyphenation = true
     var wordSpacing: Double = 0.0
     var letterSpacing: Double = 0.0
     var brightness: Double = 1.0
@@ -371,8 +384,10 @@ struct ClassicReaderAppearance: Codable, Equatable {
         case paragraphIndent
         case scrollEnabled
         case pdfScrollEnabled
+        case pageTurnAnimation
         case publisherStyles
         case justifiedText
+        case hyphenation
         case wordSpacing
         case letterSpacing
         case brightness
@@ -476,8 +491,10 @@ struct ClassicReaderAppearance: Codable, Equatable {
         )
         scrollEnabled = (try? c.decode(Bool.self, forKey: .scrollEnabled)) ?? scrollEnabled
         pdfScrollEnabled = (try? c.decode(Bool.self, forKey: .pdfScrollEnabled)) ?? pdfScrollEnabled
+        pageTurnAnimation = (try? c.decode(ReaderPageTurnAnimation.self, forKey: .pageTurnAnimation)) ?? pageTurnAnimation
         publisherStyles = (try? c.decode(Bool.self, forKey: .publisherStyles)) ?? publisherStyles
         justifiedText = (try? c.decode(Bool.self, forKey: .justifiedText)) ?? justifiedText
+        hyphenation = (try? c.decode(Bool.self, forKey: .hyphenation)) ?? hyphenation
         wordSpacing = (try? c.decode(Double.self, forKey: .wordSpacing)) ?? wordSpacing
         letterSpacing = (try? c.decode(Double.self, forKey: .letterSpacing)) ?? letterSpacing
         brightness = (try? c.decode(Double.self, forKey: .brightness)) ?? brightness
@@ -631,6 +648,7 @@ struct ClassicReaderAppearance: Codable, Equatable {
             prefs.columnCount = columnMode.readiumValue
         }
         prefs.textAlign = justifiedText ? .justify : .start
+        prefs.hyphens = hyphenation
         prefs.publisherStyles = theme == .eink ? false : publisherStyles
 
         switch writingDirection {

@@ -4,6 +4,7 @@ import android.util.Log
 import com.enve.app.data.NetworkStateProvider
 import com.enve.app.data.offline.OfflineDownloadManager
 import com.enve.app.data.offline.OfflineTrackInfo
+import com.enve.app.data.offline.offlineDownloadKey
 import com.enve.app.data.repository.AggregatorRepository
 import com.enve.app.data.repository.GrimmoryRepository
 import com.enve.app.readium.ReadAloudCheckpointRepository
@@ -91,11 +92,12 @@ class PlaybackStarter @Inject constructor(
                 (cached ?: book).copy(hasEbook = book.hasEbook || cached?.hasEbook == true).forAudioPlayback(),
             )
 
-            val localTracks = offline.localTracks(base.id)
+            val downloadKey = base.offlineDownloadKey
+            val localTracks = offline.localTracks(downloadKey)
             val offlineOnly = !localTracks.isNullOrEmpty() && !network.hasActiveNetwork()
 
             if (!offlineOnly) offline.ensureCoverCached(base)
-            val offlineCover = offline.localCoverUri(base.id) ?: offline.getManifest(base.id)?.coverUrl
+            val offlineCover = offline.localCoverUri(downloadKey) ?: offline.getManifest(downloadKey)?.coverUrl
             val resolved = if (offlineCover != null) base.copy(coverUrl = offlineCover) else base
 
             val mediaId = AutoMediaBrowserHelper.mediaIdForCacheKey(resolved.uniqueKey)
@@ -146,8 +148,7 @@ class PlaybackStarter @Inject constructor(
 
     private suspend fun startOffline(book: Book, tracks: List<OfflineTrackInfo>, startSec: Long, mediaId: String) {
         withContext(Dispatchers.IO) {
-            val rows = bookCache.updateDownloadedStatus(book.id, book.connectionId, true, System.currentTimeMillis())
-            if (rows == 0) bookCache.updateDownloadedStatusById(book.id, true, System.currentTimeMillis())
+            bookCache.updateDownloadedStatus(book.id, book.connectionId, true, System.currentTimeMillis())
         }
         val durationSec = when {
             book.source == BookSource.TORBOX && tracks.all { it.durationMs > 0L } -> tracks.sumOf { it.durationMs } / 1000L

@@ -48,9 +48,6 @@ class BookloreProvider: IncrementalCatalogProvider, RecentCatalogPagingProvider,
         },
         performAuthorizedRequest: { [unowned self] request in
             try await self.performAuthorizedRequest(request)
-        },
-        validateResponse: { [unowned self] data, response, endpoint in
-            try self.guardJSON(data, response: response, endpoint: endpoint)
         }
     )
     struct PendingListening: Codable {
@@ -90,6 +87,8 @@ class BookloreProvider: IncrementalCatalogProvider, RecentCatalogPagingProvider,
         }
     )
     let pageSize = 500
+    // Grimmory's browse endpoints reject page sizes above 100.
+    let catalogPageSize = 100
     let remoteBrowsePageSize = 50
     let pageConcurrency = 8
     let tierPreference: BookloreTierPreference
@@ -232,16 +231,6 @@ class BookloreProvider: IncrementalCatalogProvider, RecentCatalogPagingProvider,
         return value?.date
     }
 
-    func resolvedFileType(file: BookloreBookFile?) -> String? {
-        BookloreBookMapper.resolvedFileType([
-            file?.fileType,
-            file?.fileExtension,
-            file?.bookType,
-            BookloreBookMapper.fileExtension(from: file?.fileName),
-            BookloreBookMapper.fileExtension(from: file?.filePath),
-        ])
-    }
-
     func normalize(_ urlString: String) -> String {
         BookloreBookMapper.normalizedBaseURL(urlString)
     }
@@ -299,8 +288,8 @@ class BookloreProvider: IncrementalCatalogProvider, RecentCatalogPagingProvider,
 
         throw ProviderError.serverError(
             "Server returned an HTML page instead of JSON for \(endpoint). "
-                + "This usually means your BookLore server version does not yet support the mobile app API (requires a recent version with /api/v1/app/ endpoints). "
-                + "Please update BookLore to the latest version."
+                + "This usually means your Grimmory server version does not yet support the browse API (requires a recent version with /api/v1/books/page). "
+                + "Please update Grimmory to the latest version."
         )
     }
 

@@ -296,48 +296,49 @@ final class BookDownloadManager: NSObject, ObservableObject {
 
                 let fileSize = (try? fm.attributesOfItem(atPath: sourceURL.path)[.size] as? NSNumber)?.int64Value ?? 0
 
-                let bookDir = self.storage.bookAudioDirectory(for: bookId)
-                try fm.createDirectory(at: bookDir, withIntermediateDirectories: true, attributes: nil)
+                let directory = try AtomicDownloadDirectory(destination: self.storage.bookAudioDirectory(for: bookId))
+                do {
+                    let ext = sourceURL.pathExtension.isEmpty ? "m4b" : sourceURL.pathExtension
+                    let destination = directory.staging.appendingPathComponent("chapter_0.\(ext)")
+                    guard fm.createFile(atPath: destination.path, contents: nil, attributes: nil) else {
+                        throw CocoaError(.fileWriteUnknown)
+                    }
 
-                let ext = sourceURL.pathExtension.isEmpty ? "m4b" : sourceURL.pathExtension
-                let destination = bookDir.appendingPathComponent("chapter_0.\(ext)")
+                    let readHandle = try FileHandle(forReadingFrom: sourceURL)
+                    defer { try? readHandle.close() }
+                    let writeHandle = try FileHandle(forWritingTo: destination)
+                    defer { try? writeHandle.close() }
 
-                if fm.fileExists(atPath: destination.path) {
-                    try? fm.removeItem(at: destination)
-                }
+                    var totalWritten: Int64 = 0
+                    let chunkSize = 1_048_576
 
-                fm.createFile(atPath: destination.path, contents: nil, attributes: nil)
+                    while true {
+                        try Task.checkCancellation()
+                        let data = try readHandle.read(upToCount: chunkSize) ?? Data()
+                        if data.isEmpty { break }
+                        try writeHandle.write(contentsOf: data)
+                        totalWritten += Int64(data.count)
 
-                let readHandle = try FileHandle(forReadingFrom: sourceURL)
-                defer { try? readHandle.close() }
-
-                let writeHandle = try FileHandle(forWritingTo: destination)
-                defer { try? writeHandle.close() }
-
-                var totalWritten: Int64 = 0
-                let chunkSize = 1_048_576
-
-                while true {
-                    try Task.checkCancellation()
-                    let data = try readHandle.read(upToCount: chunkSize) ?? Data()
-                    if data.isEmpty { break }
-                    try writeHandle.write(contentsOf: data)
-                    totalWritten += Int64(data.count)
-
-                    if fileSize > 0 {
-                        let progress = Double(totalWritten) / Double(fileSize)
-                        await MainActor.run {
-                            self.progressByBookId[bookId] = max(0, min(progress, 1))
+                        if fileSize > 0 {
+                            let progress = Double(totalWritten) / Double(fileSize)
+                            await MainActor.run {
+                                self.progressByBookId[bookId] = max(0, min(progress, 1))
+                            }
                         }
                     }
-                }
+                    try writeHandle.synchronize()
+                    try Task.checkCancellation()
 
-                if !fm.fileExists(atPath: destination.path) {
-                    throw NSError(
-                        domain: NSCocoaErrorDomain,
-                        code: CocoaError.fileNoSuchFile.rawValue,
-                        userInfo: [NSLocalizedDescriptionKey: "Failed to persist copied file to \(destination.path())"]
-                    )
+                    guard totalWritten > 0, fileSize == 0 || totalWritten == fileSize else {
+                        throw NSError(domain: "BookDownloadManager", code: -4, userInfo: [
+                            NSLocalizedDescriptionKey: "Copy incomplete: wrote \(totalWritten) of \(fileSize) bytes"
+                        ])
+                    }
+                    try AtomicDownloadDirectory.makeBackgroundReadable(destination)
+                    try directory.publish()
+                } catch {
+                    directory.discard()
+                    throw error
                 }
 
                 await MainActor.run {
@@ -405,6 +406,7 @@ final class BookDownloadManager: NSObject, ObservableObject {
             completedBookIds.remove(bookId)
         }
 
+        var staged: AtomicDownloadDirectory?
         do {
             let smbService = SMBService()
             smbServices[bookId] = smbService
@@ -414,22 +416,16 @@ final class BookDownloadManager: NSObject, ObservableObject {
             try Task.checkCancellation()
 
             let fm = FileManager.default
-            let bookDir = storage.bookAudioDirectory(for: bookId)
-
-            if fm.fileExists(atPath: bookDir.path) {
-                try? fm.removeItem(at: bookDir)
-                AppLogger.network.info("[SMB Download] Removed existing directory")
-            }
-
-            try fm.createDirectory(at: bookDir, withIntermediateDirectories: true, attributes: nil)
-            AppLogger.network.info(
-                "[SMB Download] Directory pathDiagnosticID=\(DiagnosticLogSanitizer.identifier(for: bookDir.standardizedFileURL.path))"
-            )
-
             let totalFiles = smbBook.audioFiles.count
             guard totalFiles > 0 else {
                 throw NSError(domain: "BookDownloadManager", code: -1, userInfo: [NSLocalizedDescriptionKey: "No audio files to download"])
             }
+
+            let directory = try AtomicDownloadDirectory(destination: storage.bookAudioDirectory(for: bookId))
+            staged = directory
+            AppLogger.network.info(
+                "[SMB Download] Directory pathDiagnosticID=\(DiagnosticLogSanitizer.identifier(for: directory.destination.standardizedFileURL.path))"
+            )
 
             var completedFiles = 0
 
@@ -437,7 +433,7 @@ final class BookDownloadManager: NSObject, ObservableObject {
                 try Task.checkCancellation()
                 let ext = (audioFile.name as NSString).pathExtension.isEmpty ? "m4b" : (audioFile.name as NSString).pathExtension
                 let destFileName = totalFiles == 1 ? "chapter_0.\(ext)" : "chapter_\(index).\(ext)"
-                let destURL = bookDir.appendingPathComponent(destFileName)
+                let destURL = directory.staging.appendingPathComponent(destFileName)
 
                 AppLogger.network.debug(
                     "[SMB Download] Downloading \(index + 1)/\(totalFiles) type=.\(ext.lowercased())"
@@ -470,6 +466,7 @@ final class BookDownloadManager: NSObject, ObservableObject {
                     )
                 }
 
+                try AtomicDownloadDirectory.makeBackgroundReadable(destURL)
                 AppLogger.network.debug(
                     "[SMB Download] File complete \(DiagnosticLogSanitizer.fileDescriptor(for: destURL)) sizeKB=\(size / 1024)"
                 )
@@ -477,6 +474,8 @@ final class BookDownloadManager: NSObject, ObservableObject {
             }
 
             await smbService.disconnect()
+            try Task.checkCancellation()
+            try directory.publish()
 
             AppLogger.network.info("[SMB Download] Completed downloading \(totalFiles) files for book: \(bookId)")
 
@@ -494,6 +493,7 @@ final class BookDownloadManager: NSObject, ObservableObject {
             }
 
         } catch {
+            staged?.discard()
             await MainActor.run {
                 self.activeBookIds.remove(bookId)
                 self.progressByBookId.removeValue(forKey: bookId)
