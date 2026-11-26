@@ -1,0 +1,13 @@
+{
+  "name": "enve-book-clubs",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "start": "node src/homelab/server.mjs",
+    "dev": "wrangler dev --ip 127.0.0.1 --port 8794",
+    "migrate": "wrangler d1 migrations apply DB --local",
+    "test": "node --test test/*.test.mjs",
+    "test:homelab": "node --test test/homelab.test.mjs"
+  },
+  "devDependencies": {"wrangler": "^4.0.0"}
+}

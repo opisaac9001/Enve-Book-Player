@@ -35,6 +35,16 @@ class ReadwiseExportService @Inject constructor(
     private val connected = MutableStateFlow(storedToken() != null)
     override val isConnected: StateFlow<Boolean> = connected.asStateFlow()
 
+    internal fun backupToken(): String? = storedToken()
+
+    internal fun restoreBackupToken(token: String): Boolean {
+        val normalized = normalizedReadwiseToken(token) ?: return false
+        if (storedToken() != null) return false
+        vault.put(TOKEN_KEY, normalized)
+        connected.value = true
+        return true
+    }
+
     override suspend fun connect(token: String): ReadwiseFailure? {
         val normalized = normalizedReadwiseToken(token) ?: return ReadwiseFailure.INVALID_TOKEN
         checkToken(normalized)?.let { return it }

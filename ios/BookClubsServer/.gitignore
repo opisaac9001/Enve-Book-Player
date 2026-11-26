@@ -1,0 +1,8 @@
+node_modules/
+.wrangler/
+.dev.vars*
+.env
+wrangler.production.jsonc
+/config/catalogs.json
+/config/catalog.env
+/data/

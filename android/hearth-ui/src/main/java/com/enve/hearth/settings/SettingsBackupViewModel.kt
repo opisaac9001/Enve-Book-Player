@@ -2,6 +2,7 @@ package com.enve.hearth.settings
 
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
+import com.enve.engine.backup.SettingsTransferFacade
 import com.enve.engine.backup.SettingsBackupFacade
 import com.enve.engine.backup.SettingsExportResult
 import com.enve.engine.backup.SettingsImportInspection
@@ -31,6 +32,7 @@ data class SettingsBackupUiState(
 @HiltViewModel
 class SettingsBackupViewModel @Inject constructor(
     private val backup: SettingsBackupFacade,
+    internal val transfer: SettingsTransferFacade? = null,
 ) : ViewModel() {
 
     private val mutableState = MutableStateFlow(SettingsBackupUiState())

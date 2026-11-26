@@ -13,6 +13,7 @@ struct DataManagementScreen: View {
     @State private var isResetting = false
     @State private var settingsExportURL: URL?
     @State private var isImportingSettings = false
+    @State private var backupSheet: SettingsTransferSheet.Mode?
 
     private var session: ProfileSession { profileSession ?? .owner }
 
@@ -66,10 +67,34 @@ struct DataManagementScreen: View {
             if session.isOwner {
                 SourcesCard {
                     Overline("Settings backup")
+                    Button {
+                        if isAuthorized { backupSheet = .send }
+                    } label: {
+                        settingsBackupLabel(
+                            title: "Transfer to another device",
+                            subtitle: "Show a one-time code for iPhone, iPad or Android",
+                            systemImage: "qrcode"
+                        )
+                    }
+                    .buttonStyle(.plain)
+                    .accessibilityIdentifier("settings-backup-send")
+                    Divider().overlay(hearth.hairline)
+                    Button {
+                        if isAuthorized { backupSheet = .scan }
+                    } label: {
+                        settingsBackupLabel(
+                            title: "Scan to import",
+                            subtitle: "Receive a backup from another device on the same Wi-Fi",
+                            systemImage: "qrcode.viewfinder"
+                        )
+                    }
+                    .buttonStyle(.plain)
+                    .accessibilityIdentifier("settings-backup-scan")
+                    Divider().overlay(hearth.hairline)
                     if let settingsExportURL {
                         ShareLink(item: settingsExportURL) {
                             settingsBackupLabel(
-                                title: "Export settings",
+                                title: "Export settings only",
                                 subtitle: "Save speeds, skips, sleep and display preferences to a file",
                                 systemImage: "square.and.arrow.up"
                             )
@@ -77,12 +102,36 @@ struct DataManagementScreen: View {
                     }
                     Divider().overlay(hearth.hairline)
                     Button {
+                        if isAuthorized { backupSheet = .export }
+                    } label: {
+                        settingsBackupLabel(
+                            title: "Create encrypted backup",
+                            subtitle: "Choose settings and library sources to move to another device",
+                            systemImage: "lock"
+                        )
+                    }
+                    .buttonStyle(.plain)
+                    .accessibilityIdentifier("settings-backup-encrypted")
+                    Divider().overlay(hearth.hairline)
+                    Button {
                         isImportingSettings = isAuthorized
                     } label: {
                         settingsBackupLabel(
-                            title: "Import settings",
-                            subtitle: "Restore preferences from an exported file",
+                            title: "Import backup",
+                            subtitle: "Review settings and sources before restoring them",
                             systemImage: "square.and.arrow.down"
+                        )
+                    }
+                    .buttonStyle(.plain)
+                    .accessibilityIdentifier("settings-backup-import")
+                    Divider().overlay(hearth.hairline)
+                    NavigationLink {
+                        SyncScreen()
+                    } label: {
+                        settingsBackupLabel(
+                            title: "iCloud source sync",
+                            subtitle: "Share library connections across your Apple devices",
+                            systemImage: "icloud"
                         )
                     }
                     .buttonStyle(.plain)
@@ -95,10 +144,21 @@ struct DataManagementScreen: View {
         }
         .task {
             guard session.isOwner, isAuthorized else { return }
-            settingsExportURL = try? SettingsBackupService.shared.exportBackup()
+            prepareSettingsExport()
         }
         .onChange(of: profiles.isParentAuthorized) { _, _ in
-            if !isAuthorized { settingsExportURL = nil }
+            if session.isOwner, isAuthorized {
+                prepareSettingsExport()
+            } else {
+                discardSettingsExport()
+                backupSheet = nil
+            }
+        }
+        .onDisappear { discardSettingsExport() }
+        .sheet(item: $backupSheet) { mode in
+            SettingsTransferSheet(mode: mode, session: session, onRestore: didRestoreBackup)
+                .enveEnvironment(session: session)
+                .hearthPresentationBackground()
         }
         .fileImporter(
             isPresented: $isImportingSettings,
@@ -108,9 +168,7 @@ struct DataManagementScreen: View {
             case .success(let url):
                 do {
                     try profiles.authorizeChanges(in: session)
-                    try SettingsBackupService.shared.importBackup(from: url)
-                    status = "Settings restored."
-                    settingsExportURL = try? SettingsBackupService.shared.exportBackup()
+                    backupSheet = .restore(try SettingsBackupService.shared.readBackup(from: url))
                 } catch {
                     status = error.localizedDescription
                 }
@@ -144,6 +202,57 @@ struct DataManagementScreen: View {
         } message: { action in
             Text(action.message)
         }
+    }
+
+    private func didRestoreBackup(_ result: SettingsBackupService.RestoreResult) {
+        var messages: [String] = []
+        if result.settingsRestored {
+            messages.append("Settings restored.")
+            prepareSettingsExport()
+        }
+        if result.restoredSources > 0 {
+            messages.append(result.restoredSources == 1 ? "1 source imported." : "\(result.restoredSources) sources imported.")
+        }
+        if result.skippedSources > 0 {
+            messages.append("\(result.skippedSources) matching sources kept.")
+        }
+        if result.signInsNeeded > 0 {
+            messages.append("Open Sources to sign in or verify \(result.signInsNeeded) connections.")
+        }
+        if result.restoredIntegrations > 0 {
+            messages.append("\(result.restoredIntegrations) reading integrations imported.")
+        }
+        if result.keptIntegrations > 0 {
+            messages.append("\(result.keptIntegrations) existing reading integrations kept.")
+        }
+        if !result.integrationsToReconnect.isEmpty {
+            messages.append("Sign in again for \(result.integrationsToReconnect.formatted(.list(type: .and))).")
+        }
+        status = messages.joined(separator: " ")
+        if !result.sourcesToRefresh.isEmpty {
+            Task { [weak session] in
+                guard let session else { return }
+                for id in result.sourcesToRefresh where !session.isRetired {
+                    await session.catalog.refreshConnectionLibraries(providerId: id)
+                }
+            }
+        }
+    }
+
+    private func prepareSettingsExport() {
+        discardSettingsExport()
+        do {
+            settingsExportURL = try SettingsBackupService.shared.exportBackup()
+        } catch {
+            status = "Enve couldn't prepare the settings file."
+        }
+    }
+
+    private func discardSettingsExport() {
+        if let settingsExportURL {
+            try? FileManager.default.removeItem(at: settingsExportURL.deletingLastPathComponent())
+        }
+        settingsExportURL = nil
     }
 
     private func actionRow(_ action: DataAction) -> some View {

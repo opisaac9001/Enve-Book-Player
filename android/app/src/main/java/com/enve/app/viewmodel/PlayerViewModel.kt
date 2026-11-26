@@ -293,7 +293,6 @@ class PlayerViewModel @Inject constructor(
             val mediaId = mediaIdFor(requestedBook)
             hydratedPlaybackMediaId = mediaId
 
-            offlineDownloadManager.ensureCoverCached(requestedBook)
             val offlineCover = offlineDownloadManager.localCoverUri(requestedBook.offlineDownloadKey)
                 ?: offlineDownloadManager.getManifest(requestedBook.offlineDownloadKey)?.coverUrl
             val book = if (offlineCover != null) requestedBook.copy(coverUrl = offlineCover) else requestedBook
@@ -310,10 +309,10 @@ class PlayerViewModel @Inject constructor(
             }
             loadBookmarks(book)
 
-            val resolvedStartTime = resolveStartTime(book)
+            val localTracks = offlineDownloadManager.localTracks(book.offlineDownloadKey)
+            val resolvedStartTime = openProgress.resolveStartSeconds(book, hasLocalAudio = !localTracks.isNullOrEmpty())
             _state.update { it.copy(currentTime = resolvedStartTime) }
 
-            val localTracks = offlineDownloadManager.localTracks(book.offlineDownloadKey)
             if (!localTracks.isNullOrEmpty()) {
                 withContext(Dispatchers.IO) {
                     bookCacheDao.updateDownloadedStatus(
@@ -904,8 +903,6 @@ class PlayerViewModel @Inject constructor(
         if (index >= 0) updated[index] = bookmark else updated += bookmark
         return updated.sortedBy { it.timestamp }
     }
-
-    private suspend fun resolveStartTime(book: Book): Long = openProgress.resolveStartSeconds(book)
 
     fun resolveProgressConflict(choice: ProgressConflictChoice) {
         openProgress.resolveConflict(when (choice) {

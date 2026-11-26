@@ -19,7 +19,7 @@ struct LibraryRefreshFailure: Equatable {
 
     var message: String {
         let status = statusCode.map { " (HTTP \($0))" } ?? ""
-        return "Couldn't refresh this Jellyfin library\(status). Please try again."
+        return "Couldn't refresh this library\(status). Please try again."
     }
 
     func matches(_ source: LibrarySourceFilter) -> Bool {

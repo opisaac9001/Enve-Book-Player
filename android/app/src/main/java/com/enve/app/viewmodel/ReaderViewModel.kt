@@ -12,6 +12,7 @@ import com.enve.app.playback.AutoMediaBrowserHelper
 import com.enve.app.playback.PlaybackState
 import com.enve.app.readium.MediaOverlayEngine
 import com.enve.app.readium.AudioTrackNarratorOutput
+import com.enve.app.readium.EbookTTSContent
 import com.enve.app.readium.EbookTTSParagraph
 import com.enve.app.readium.EbookTTSService
 import com.enve.app.readium.LocalNarratorSpeaker
@@ -104,8 +105,6 @@ import org.readium.r2.shared.publication.Locator
 import org.readium.r2.shared.publication.Publication
 import org.readium.r2.shared.publication.epub.pageList
 import org.readium.r2.shared.publication.services.positionsByReadingOrder
-import org.readium.r2.shared.publication.services.content.Content
-import org.readium.r2.shared.publication.services.content.content
 import org.readium.r2.shared.util.getOrElse
 import android.util.Log
 import org.readium.r2.shared.util.Url
@@ -243,7 +242,11 @@ class ReaderViewModel @Inject constructor(
     private val passageAlignment: com.enve.app.storyalign.PassageAlignmentService,
     private val bookLinks: com.enve.app.data.links.BookLinkRepository,
     private val playbackFacade: com.enve.engine.playback.PlaybackFacade,
+    private val clubs: com.enve.app.clubs.ClubsStore,
 ) : ViewModel() {
+
+    val clubsFacade: com.enve.engine.clubs.ClubsFacade get() = clubs
+    val bookClubCopyKey: String get() = "${bookConnectionId ?: bookSource.name}:$bookId"
 
     private val einkBoldActive: Boolean
         get() = einkManager.einkActive && einkManager.boldText.value
@@ -2045,10 +2048,11 @@ class ReaderViewModel @Inject constructor(
         if (!canStartSpeech()) return
         if (_state.value.readAlongActive) stopReadAlongMode()
         if (audioPlaybackManager.state.value.isPlaying) audioPlaybackManager.togglePlayPause()
-        var iterator: Content.Iterator? = null
-        val start = engineNavigator?.currentLocator ?: navigator?.currentLocator?.value
+        var content: EbookTTSContent? = null
         ttsPlayback.start {
-            val content = iterator ?: run {
+            val speech = content ?: run {
+                val anchor = readBackAnchor()
+                    ?: error("No visible text anchor")
                 val pub = publication ?: ttsPublication ?: run {
                     val file = ttsBookFile ?: error("Reader is still loading")
                     val asset = readium.assetRetriever.retrieve(file).getOrElse { error("Cannot read this format") }
@@ -2056,20 +2060,22 @@ class ReaderViewModel @Inject constructor(
                         .getOrElse { error("Cannot extract this format") }
                         .also { ttsPublication = it }
                 }
-                val anchor = if (engineNavigator == null) readiumReadingAnchor() ?: start else start
-                pub.content(anchor)?.iterator()?.also { iterator = it } ?: error("No text content")
+                EbookTTSContent(pub, anchor).also { content = it }
             }
-            withContext(Dispatchers.Default) {
-                var paragraph: EbookTTSParagraph? = null
-                while (content.hasNext()) {
-                    val element = content.next() as? Content.TextElement ?: continue
-                    if (element.text.isNotBlank()) {
-                        paragraph = EbookTTSParagraph(element.text, element.locator)
-                        break
-                    }
-                }
-                paragraph
+            withContext(Dispatchers.Default) { speech.next() }
+        }
+    }
+
+    suspend fun readBackAnchor(): Locator? {
+        val engine = engineNavigator
+        val nav = navigator
+        return kotlinx.coroutines.withTimeoutOrNull(5_000) {
+            while (engineNavigator === engine && navigator === nav) {
+                val anchor = engine?.readingAnchor() ?: nav?.let { firstVisibleTextLocator(it) }
+                if (!anchor?.text?.highlight.isNullOrBlank()) return@withTimeoutOrNull anchor
+                delay(50)
             }
+            null
         }
     }
 
@@ -3936,6 +3942,10 @@ class ReaderViewModel @Inject constructor(
         return ebookProgressSync.submit(interval) {
             if (progressPushesHeld) return@submit Result.success(Unit)
             if (!sinksSubmitted) {
+                if (clubs.available) {
+                    val reading = _state.value
+                    clubs.recordReading(book, pct.toDouble(), reading.currentSection, reading.tocEntries.map { it.title })
+                }
                 runSuspendCatching { koreaderHub.pushIfConfigured(book, pct, locatorJson) }
                 hardcoverSync.submitProgress(book, pct)
                 sinksSubmitted = true

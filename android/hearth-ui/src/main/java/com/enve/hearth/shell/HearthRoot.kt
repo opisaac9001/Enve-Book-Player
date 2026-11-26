@@ -95,9 +95,14 @@ fun HearthRoot(
     onPlayerRequestConsumed: () -> Unit = {},
     positionLinkRequest: String? = null,
     onPositionLinkConsumed: () -> Unit = {},
+    clubs: com.enve.engine.clubs.ClubsFacade? = null,
+    clubBooks: kotlinx.coroutines.flow.Flow<List<Book>>? = null,
+    clubInviteRequest: String? = null,
+    onClubInviteConsumed: () -> Unit = {},
     openBookRequest: Book? = null,
     onBookRequestConsumed: () -> Unit = {},
     onOpenEbook: (Book) -> Unit = {},
+    onOpenEbookPassage: (Book, String) -> Unit = { book, _ -> onOpenEbook(book) },
     onOpenAnnotation: (Book, ReaderAnnotation) -> Unit = { book, _ -> onOpenEbook(book) },
     onAskLibrarian: (Book) -> Unit = {},
     onManageSources: () -> Unit = {},
@@ -145,6 +150,22 @@ fun HearthRoot(
             var tab by rememberSaveable { mutableStateOf(HearthTab.HEARTH) }
             var startupTabApplied by rememberSaveable { mutableStateOf(false) }
             var showPlayer by rememberSaveable { mutableStateOf(false) }
+            var showClubs by rememberSaveable { mutableStateOf(false) }
+            var clubCode by rememberSaveable { mutableStateOf<String?>(null) }
+            var clubBook by remember { mutableStateOf<Book?>(null) }
+            LaunchedEffect(clubInviteRequest, clubs?.available) {
+                if (clubInviteRequest != null && clubs?.available == true) {
+                    clubCode = clubInviteRequest
+                    clubBook = null
+                    showClubs = true
+                    onClubInviteConsumed()
+                }
+            }
+            val closeClubs = {
+                showClubs = false
+                clubCode = null
+                clubBook = null
+            }
             var showSettings by rememberSaveable { mutableStateOf(initialShowSettings) }
             var showCompletionCenter by rememberSaveable { mutableStateOf(false) }
             var showInsights by rememberSaveable { mutableStateOf(false) }
@@ -249,10 +270,11 @@ fun HearthRoot(
                 bookOrbitTool = tool
             }
             val bookOrbitOverlayVisible = bookOrbitTool != null
-            val overlayVisible = showPlayer || showSettings || showCompletionCenter || showInsights || showRecaps ||
+            val overlayVisible = showClubs || showPlayer || showSettings || showCompletionCenter || showInsights || showRecaps ||
                 showStatsHub || showSleepInsights || bookOrbitOverlayVisible || detailBook != null || episodeBook != null
             BackHandler(enabled = overlayVisible || tab != HearthTab.HEARTH) {
                 when {
+                    showClubs -> closeClubs()
                     showPlayer -> {
                         showPlayer = false
                         pendingPlayerBookId = null
@@ -357,6 +379,10 @@ fun HearthRoot(
                         onOpenBook = { detailBook = it },
                         onAskLibrarian = onAskLibrarian,
                         onOpenAnnotation = jumpToAnnotation,
+                        onStartClub = if (clubs?.available == true) ({ book ->
+                            clubBook = book
+                            showClubs = true
+                        }) else null,
                     )
                 }
             }
@@ -411,6 +437,7 @@ fun HearthRoot(
                             onAddSource = onManageSources,
                             onOpenSettings = { showSettings = true },
                             onOpenBookOrbitTool = { tool -> openBookOrbitTool(tool, null) },
+                            onOpenClubs = if (clubs?.available == true) ({ showClubs = true }) else null,
                         )
                     }
                     HearthTab.PODCASTS -> PodcastsScreen(
@@ -608,6 +635,26 @@ fun HearthRoot(
                             pendingPlayerBookId = null
                         },
                         topAction = playerTopAction,
+                    )
+                }
+
+                if (showClubs && clubs?.available == true && clubBooks != null) {
+                    com.enve.hearth.clubs.BookClubsScreen(
+                        clubs = clubs, inventory = clubBooks, invitation = clubCode, firstBook = clubBook,
+                        onClose = closeClubs,
+                        onFindPassage = { book, query ->
+                            closeClubs()
+                            onOpenEbookPassage(book, query)
+                        },
+                        onOpenBook = { book, position ->
+                            closeClubs()
+                            if (book.mediaType == AppMediaType.EBOOK) onOpenEbook(book)
+                            else {
+                                pendingPlayerBookId = book.id
+                                if (position == null) vm.openAudio(book) else vm.openAudioAt(book, position)
+                                showPlayer = true
+                            }
+                        },
                     )
                 }
 

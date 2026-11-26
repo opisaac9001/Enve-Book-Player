@@ -21,6 +21,7 @@ import kotlinx.coroutines.CoroutineStart
 import kotlinx.coroutines.Deferred
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.async
+import kotlinx.coroutines.awaitCancellation
 import kotlinx.coroutines.cancelAndJoin
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
@@ -94,6 +95,25 @@ class PlaybackOpenProgressResolverTest {
     private fun remote() = SyncCoordinator.OpenSyncResult.Apply(
         SyncSnapshot(percentage = 0.25f, updatedAt = 3000L, positionMs = 250_000L, source = "test"), true,
     )
+
+    @Test
+    fun downloadedBookOpensAtLatestLocalPositionWhenServerStalls() = runBlocking {
+        pull = {
+            stored = stored.copy(currentTime = 130L)
+            awaitCancellation()
+        }
+        assertEquals(130L, withTimeout(3_000) {
+            resolver.resolveStartSeconds(book, hasLocalAudio = true)
+        })
+        assertEquals(0, remoteWrites)
+    }
+
+    @Test
+    fun downloadedBookUsesNewerServerPositionWhenItResponds() = runBlocking {
+        pull = { remote() }
+        assertEquals(250L, resolver.resolveStartSeconds(book, hasLocalAudio = true))
+        assertEquals(250L, stored.currentTime)
+    }
 
     @Test
     fun pausedSessionPullsNewServerPositionWithItsConnectionScope() = runBlocking {

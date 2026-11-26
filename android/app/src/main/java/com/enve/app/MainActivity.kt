@@ -68,6 +68,7 @@ class MainActivity : ComponentActivity() {
     }
     private val openPlayerFromWidget = kotlinx.coroutines.flow.MutableStateFlow(false)
     private val positionLinkMessage = kotlinx.coroutines.flow.MutableStateFlow<String?>(null)
+    private val clubInvite = kotlinx.coroutines.flow.MutableStateFlow<String?>(null)
     private val readerShortcut = kotlinx.coroutines.flow.MutableStateFlow<String?>(null)
     private val incomingFiles = kotlinx.coroutines.flow.MutableStateFlow<List<android.net.Uri>>(emptyList())
 
@@ -93,6 +94,8 @@ class MainActivity : ComponentActivity() {
             savedInstanceState.getString("reader_shortcut")
         }
         if (savedInstanceState == null) readPositionLinkIntent(intent)
+        if (savedInstanceState == null) readClubInvite(intent)
+        else clubInvite.value = savedInstanceState.getString("clubs_invite")
         incomingFiles.value = if (savedInstanceState == null) {
             if (intent.flags and Intent.FLAG_ACTIVITY_LAUNCHED_FROM_HISTORY == 0) {
                 com.enve.app.cloud.IncomingBookIntent.files(intent, "$packageName.fileprovider")
@@ -239,6 +242,11 @@ class MainActivity : ComponentActivity() {
             if (classicInitialRoute == null) {
                 val widgetPlayerRequest by openPlayerFromWidget.collectAsState()
                 val positionLinkRequest by positionLinkMessage.collectAsState()
+                val clubInviteRequest by clubInvite.collectAsState()
+                val profileRole = profileState.profiles.firstOrNull { it.id == runtime.profileId }?.role
+                val clubs = remember(runtime.generation, profileRole) {
+                    if (profileRole == com.enve.core.data.local.FamilyProfileRole.CHILD) null else runtime.component.clubs()
+                }
                 hearthState.SaveableStateProvider("hearth") {
                     HearthRoot(
                         imageLoader = runtime.component.imageLoader(),
@@ -251,6 +259,11 @@ class MainActivity : ComponentActivity() {
                         onPlayerRequestConsumed = { openPlayerFromWidget.value = false },
                         positionLinkRequest = positionLinkRequest,
                         onPositionLinkConsumed = { positionLinkMessage.value = null },
+                        clubs = clubs,
+                        clubBooks = if (clubs?.available == true) runtime.component.library().allBooks else null,
+                        clubInviteRequest = clubInviteRequest,
+                        onClubInviteConsumed = { clubInvite.value = null },
+                        onOpenEbookPassage = { book, query -> openReader(book, searchQuery = query) },
                         openBookRequest = downloadedBookRequest,
                         onBookRequestConsumed = { downloadedBookRequest = null },
                         playerTopAction = { CastButton(Modifier.size(48.dp)) },
@@ -378,7 +391,7 @@ class MainActivity : ComponentActivity() {
         HearthSettingsDestination.AudioEffects -> Routes.AUDIO_EFFECTS
     }
 
-    private fun openReader(book: Book, annotation: ReaderAnnotation? = null) {
+    private fun openReader(book: Book, annotation: ReaderAnnotation? = null, searchQuery: String? = null) {
         val host = runtimeHost ?: return
         if (!host.acceptsReaderRequest(profiles.activeRuntime.value, profiles.state.value)) return
         host.takeReaderOpenJob()
@@ -432,6 +445,7 @@ class MainActivity : ComponentActivity() {
                             ?: resolved.epubProgress
                             ?: resolved.readProgress,
                         lastReadTime = resolved.lastReadTime,
+                        searchQuery = searchQuery,
                     )
                 },
             )
@@ -471,6 +485,7 @@ class MainActivity : ComponentActivity() {
         handleAuthCallbackIntent(intent)
         readWidgetIntent(intent)
         readPositionLinkIntent(intent)
+        readClubInvite(intent)
         com.enve.app.cloud.IncomingBookIntent.files(intent, "$packageName.fileprovider")
             .takeIf { it.isNotEmpty() }?.let { incomingFiles.value = it }
         com.enve.app.automation.ReaderShortcuts.request(this, intent)
@@ -479,12 +494,21 @@ class MainActivity : ComponentActivity() {
 
     override fun onSaveInstanceState(outState: Bundle) {
         outState.putString("reader_shortcut", readerShortcut.value)
+        outState.putString("clubs_invite", clubInvite.value)
         outState.putStringArrayList("incoming_books", ArrayList(incomingFiles.value.map(android.net.Uri::toString)))
         super.onSaveInstanceState(outState)
     }
 
     private fun readWidgetIntent(intent: Intent?) {
         if (intent?.getBooleanExtra(EXTRA_OPEN_PLAYER, false) == true) openPlayerFromWidget.value = true
+    }
+
+    private fun readClubInvite(intent: Intent?) {
+        val uri = intent?.data ?: return
+        if (uri.scheme != "enve-book" || uri.host != "club" || uri.path != "/join" ||
+            uri.userInfo != null || uri.port != -1 || uri.fragment != null || uri.queryParameterNames != setOf("code")) return
+        val code = uri.getQueryParameters("code").singleOrNull() ?: return
+        if (code.matches(Regex("[A-HJ-NP-Z2-9]{10}"))) clubInvite.value = code
     }
 
     private fun readPositionLinkIntent(intent: Intent?) {

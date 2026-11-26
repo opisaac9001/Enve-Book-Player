@@ -32,16 +32,36 @@ final class ProviderConnectionStore: ProviderConnectionAccessing, ProviderConnec
     private static let unreadableBackupKey = "enve_server_connections.unreadable"
     private static let secretsMigratedKey = "enve.connectionSecretsMigratedV1"
 
-    var connections: [ServerConnection] = [] {
-        didSet {
-            persist(previous: oldValue)
-            syncProviders()
-            refreshAuthenticationFailures()
-            if activeSignature(oldValue) != activeSignature(connections) {
-                configurationDidChange?()
-            }
-            changes.send(connections)
+    private var configuredConnections: [ServerConnection] = []
+    var connections: [ServerConnection] {
+        get { configuredConnections }
+        set { applyConnections(newValue) }
+    }
+
+    func addRestoredSources(_ sources: [ServerConnection], needsSignIn: Set<UUID>) throws {
+        guard !isRetired, isConfigurationAuthoritative else { throw SettingsBackupError.sourcesUnavailable }
+        let updated = connections + sources
+        let encoded: Data?
+        do {
+            encoded = persistsConnections ? try encode(updated) : nil
+        } catch {
+            for source in sources { keychain.deleteAll(forConnectionId: source.id.uuidString) }
+            throw SettingsBackupError.sourcesUnavailable
         }
+        for id in needsSignIn { authenticationFailures.block(connectionId: id) }
+        applyConnections(updated, encoded: encoded)
+    }
+
+    private func applyConnections(_ updated: [ServerConnection], encoded: Data? = nil) {
+        let previous = configuredConnections
+        configuredConnections = updated
+        persist(previous: previous, encoded: encoded)
+        syncProviders()
+        refreshAuthenticationFailures()
+        if activeSignature(previous) != activeSignature(configuredConnections) {
+            configurationDidChange?()
+        }
+        changes.send(configuredConnections)
     }
 
     private(set) var connectionsNeedingReauth: [ServerConnection] = []
@@ -99,7 +119,7 @@ final class ProviderConnectionStore: ProviderConnectionAccessing, ProviderConnec
         persistsConnections = initialConnections == nil
         let loaded = initialConnections ?? load()
         isConfigurationAuthoritative = loaded != nil && defaults.data(forKey: Self.unreadableBackupKey) == nil
-        _connections = loaded ?? []
+        _configuredConnections = loaded ?? []
         syncProviders()
         refreshAuthenticationFailures()
     }
@@ -418,11 +438,11 @@ final class ProviderConnectionStore: ProviderConnectionAccessing, ProviderConnec
         )
     }
 
-    private func persist(previous: [ServerConnection]) {
+    private func persist(previous: [ServerConnection], encoded: Data?) {
         guard persistsConnections else { return }
         let snapshot = connections
         do {
-            defaults.set(try encode(snapshot), forKey: Self.storageKey)
+            defaults.set(try encoded ?? encode(snapshot), forKey: Self.storageKey)
         } catch {
             AppLogger.general.error("Server connections save skipped: \(error.localizedDescription)")
             return

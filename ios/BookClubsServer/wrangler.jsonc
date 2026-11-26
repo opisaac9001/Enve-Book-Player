@@ -1,0 +1,12 @@
+{
+  "name": "enve-book-clubs",
+  "main": "src/worker.mjs",
+  "compatibility_date": "2026-05-01",
+  "workers_dev": false,
+  "d1_databases": [{
+    "binding": "DB",
+    "database_name": "enve-book-clubs-local",
+    "database_id": "00000000-0000-4000-8000-000000000001"
+  }],
+  "triggers": { "crons": ["17 3 * * *"] }
+}

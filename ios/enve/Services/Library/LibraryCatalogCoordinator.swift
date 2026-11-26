@@ -77,7 +77,9 @@ final class LibraryCatalogCoordinator {
     }
 
     private func recordRefreshFailure(_ error: any Error, provider: any LibraryProvider, libraryId: String? = nil) {
-        guard provider.connection.type == .jellyfin, !(error is CancellationError) else { return }
+        guard provider.connection.type == .jellyfin || provider is any RemoteCatalogBrowsingProvider,
+            !Task.isCancelled, !(error is CancellationError), (error as? URLError)?.code != .cancelled
+        else { return }
         let failure = LibraryRefreshFailure(providerId: provider.connection.id, libraryId: libraryId, error: error)
         refreshFailures.removeAll { $0.providerId == failure.providerId && $0.libraryId == libraryId }
         refreshFailures.append(failure)
@@ -771,6 +773,9 @@ final class LibraryCatalogCoordinator {
         }
         defer { (profileSession?.catalogRefreshGate ?? CatalogRefreshGate.shared).end(providerId: providerId) }
 
+        refreshFailures.removeAll {
+            $0.providerId == providerId && ($0.libraryId == nil || $0.libraryId == libraryId)
+        }
         let backgroundTask = BackgroundTaskAssertion.begin(name: "Library Refresh")
         defer { backgroundTask.end() }
 
@@ -817,6 +822,7 @@ final class LibraryCatalogCoordinator {
             await saveMetadataAsync()
             await MainActor.run { _ = flushLocalBooksToCache() }
         } catch {
+            recordRefreshFailure(error, provider: provider, libraryId: libraryId)
             AppLogger.general.error("[Sync] Failed to refresh library \(libraryId): \(error.localizedDescription)")
             await MainActor.run {
                 self.isRefreshing = false; presentation.libraryImportProgress = nil; library.changes.send(())
@@ -1478,10 +1484,15 @@ final class LibraryCatalogCoordinator {
         limit: Int = 100
     ) async {
         let recents: [Book]
-        if provider is any RemoteCatalogBrowsingProvider {
-            recents = (try? await recentCatalogBooks(provider: provider, libraryId: lib.id)) ?? []
-        } else {
-            recents = (try? await provider.fetchRecentBooks(libraryId: lib.id, limit: limit)) ?? []
+        do {
+            if provider is any RemoteCatalogBrowsingProvider {
+                recents = try await recentCatalogBooks(provider: provider, libraryId: lib.id)
+            } else {
+                recents = try await provider.fetchRecentBooks(libraryId: lib.id, limit: limit)
+            }
+        } catch {
+            recordRefreshFailure(error, provider: provider, libraryId: lib.id)
+            return
         }
         let deletedIds = (profileSession?.deletedBooks ?? DeletedBooksTombstoneStore.shared).allDeleted
         let visible = recents.filter { !deletedIds.contains($0.stableId) }

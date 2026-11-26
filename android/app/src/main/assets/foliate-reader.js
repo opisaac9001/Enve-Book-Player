@@ -1183,6 +1183,26 @@ const annotationCfi = async annotation => {
 }
 
 window.enveReader = {
+    readingAnchor() {
+        const visible = view.lastLocation?.range
+        const doc = visible?.startContainer?.ownerDocument
+        if (!doc?.body) return null
+        const index = currentIndex(view.lastLocation)
+        const walker = doc.createTreeWalker(doc.body, NodeFilter.SHOW_TEXT)
+        for (let node = walker.nextNode(); node; node = walker.nextNode()) {
+            if (!visible.intersectsNode(node)) continue
+            const text = node.textContent
+            let start = node === visible.startContainer ? visible.startOffset : 0
+            const end = node === visible.endContainer ? visible.endOffset : text.length
+            while (start < end && !text[start].trim()) start++
+            if (start >= end) continue
+            const range = doc.createRange()
+            range.setStart(node, start)
+            range.setEnd(node, Math.min(text.length, start + 64))
+            return locatorFromCheckpoint(checkpointFromRange(range, index, null, null))
+        }
+        return null
+    },
     async setSpeechHighlight(locator, color) {
         const revision = ++speechHighlightRevision
         const value = locator ? await speechCfi(locator).catch(() => null) : null

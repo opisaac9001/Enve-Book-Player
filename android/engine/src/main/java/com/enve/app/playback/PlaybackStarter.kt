@@ -96,7 +96,6 @@ class PlaybackStarter @Inject constructor(
             val localTracks = offline.localTracks(downloadKey)
             val offlineOnly = !localTracks.isNullOrEmpty() && !network.hasActiveNetwork()
 
-            if (!offlineOnly) offline.ensureCoverCached(base)
             val offlineCover = offline.localCoverUri(downloadKey) ?: offline.getManifest(downloadKey)?.coverUrl
             val resolved = if (offlineCover != null) base.copy(coverUrl = offlineCover) else base
 
@@ -105,7 +104,7 @@ class PlaybackStarter @Inject constructor(
             val startSec = when {
                 startPositionMs != null -> startPositionMs / 1000L
                 offlineOnly -> audioLocalStartSeconds(resolved)
-                feedEnclosureUrl == null -> openProgress.resolveStartSeconds(resolved)
+                feedEnclosureUrl == null -> openProgress.resolveStartSeconds(resolved, hasLocalAudio = !localTracks.isNullOrEmpty())
                 else -> localStartSeconds(resolved)
             }
 

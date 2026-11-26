@@ -32,6 +32,8 @@ import java.util.UUID
 import java.util.concurrent.ConcurrentHashMap
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CompletableDeferred
+import kotlin.coroutines.resume
+import kotlinx.coroutines.suspendCancellableCoroutine
 import kotlinx.coroutines.withTimeout
 import org.json.JSONArray
 import org.json.JSONObject
@@ -241,6 +243,21 @@ class FoliateReaderEngine(
 
     override fun autoScrollStep(distance: Float) =
         evaluate("window.enveReader.autoScrollStep(${distance.coerceIn(1f, 100f)})")
+
+    override suspend fun readingAnchor(): Locator? = suspendCancellableCoroutine { continuation ->
+        webView.post {
+            if (!continuation.isActive) return@post
+            if (closed || !ready) {
+                continuation.resume(null)
+                return@post
+            }
+            webView.evaluateJavascript("window.enveReader.readingAnchor()") { result ->
+                if (continuation.isActive) {
+                    continuation.resume(runCatching { Locator.fromJSON(JSONObject(result)) }.getOrNull())
+                }
+            }
+        }
+    }
 
     override suspend fun search(query: String, limit: Int): List<Locator> {
         val requestId = UUID.randomUUID().toString()

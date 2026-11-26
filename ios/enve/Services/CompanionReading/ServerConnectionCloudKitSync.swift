@@ -30,7 +30,9 @@ final class ServerConnectionCloudKitSync {
         set {
             UserDefaults.standard.set(newValue, forKey: enabledKey)
             if newValue {
-                Task { await pushAll() }
+                Task { await syncNow() }
+            } else {
+                status = .idle
             }
         }
     }
@@ -46,6 +48,7 @@ final class ServerConnectionCloudKitSync {
     private let deletedKey = "ServerConnectionCloudKitSync.deletedConnectionIDs"
 
     private var zoneEnsured = false
+    private var isSyncingNow = false
 
     private init() {}
 
@@ -54,6 +57,15 @@ final class ServerConnectionCloudKitSync {
         await ensureZone()
         await subscribeIfNeeded()
         await pullAll()
+    }
+
+    func syncNow() async {
+        guard isEnabled, !isSyncingNow else { return }
+        isSyncingNow = true
+        defer { isSyncingNow = false }
+        await bootstrap()
+        guard case .lastSyncedAt = status else { return }
+        await pushAll()
     }
 
     func pushChange(_ connection: ServerConnection) async {
@@ -109,8 +121,9 @@ final class ServerConnectionCloudKitSync {
         let connections = AppState.shared.providerConnections.connections
         for connection in connections {
             await pushChange(connection)
+            if case .error = status { return }
         }
-        status = .lastSyncedAt(Date())
+        if isEnabled { status = .lastSyncedAt(Date()) }
     }
 
     func pullAll() async {
@@ -140,6 +153,7 @@ final class ServerConnectionCloudKitSync {
                 if !page.moreComing { break }
             }
             let deleted = deletedConnectionIDs
+            guard isEnabled else { return }
             let resurrected = fetched.values.map(\.id).filter(deleted.contains)
             if !resurrected.isEmpty {
                 await deleteRecords(for: resurrected)

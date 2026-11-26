@@ -194,6 +194,25 @@ class SettingsBackupFacadeImpl internal constructor(
         }
     }
 
+    internal suspend fun portableSnapshot(): JsonObject {
+        val settings = currentSettings() ?: throw IOException("Couldn't read settings")
+        return JsonObject(settings.entries().entries.associate { (setting, value) -> setting.key to encode(value) })
+    }
+
+    internal suspend fun inspectPortable(settings: JsonObject): SettingsImportPreview {
+        val reader = SettingsReader(settings)
+        val backup = reader.read()
+        if (reader.invalid.isNotEmpty() || backup.invalidFields().isNotEmpty()) throw IOException("Invalid settings")
+        val currentValues = currentSettings()?.entries() ?: throw IOException("Couldn't read settings")
+        val incoming = backup.entries()
+        val changes = incoming.mapNotNull { (setting, value) ->
+            val before = currentValues[setting]?.let { setting.describe(it) } ?: "Not set"
+            val after = setting.describe(value)
+            if (before == after) null else SettingsBackupChange(setting.label, before, after)
+        }
+        return SettingsImportPreview(backup, null, changes, incoming.size - changes.size, emptyList())
+    }
+
     private suspend fun currentSettings(): SettingsBackup? = try {
         current()
     } catch (_: IOException) {

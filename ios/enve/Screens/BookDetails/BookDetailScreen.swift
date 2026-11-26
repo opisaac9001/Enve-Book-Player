@@ -43,6 +43,9 @@ struct BookDetailScreen: View {
     @State private var pendingSeparation: PendingChapterSeparation?
     @State private var separationError: String?
     @State private var sharePositionShown = false
+    #if os(iOS)
+    @State private var showBookClubs = false
+    #endif
 
     private enum DetailMetadataTool: Identifiable {
         case editMetadata, findMatch, linkFormats
@@ -228,6 +231,17 @@ struct BookDetailScreen: View {
                 .presentationDragIndicator(.visible)
                 .enveEnvironment()
         }
+        #if os(iOS)
+        .sheet(isPresented: $showBookClubs, onDismiss: {
+            profileSession.clubs?.openQueuedBook(using: engine.playback)
+        }) {
+            if let clubs = profileSession.clubs {
+                ClubsHomeScreen(store: clubs, session: profileSession, initialBook: clubBook)
+                    .enveEnvironment(session: profileSession)
+                    .hearthPresentationBackground()
+            }
+        }
+        #endif
         .sheet(isPresented: $bookOrbitCollectionsShown) {
             BookOrbitMembershipSheet(book: shown)
                 .enveEnvironment()
@@ -750,6 +764,14 @@ struct BookDetailScreen: View {
         engine.library.canDownload(shown)
     }
 
+    #if os(iOS)
+    private var clubBook: Book {
+        var value = shown
+        if !cachedChapters.isEmpty { value.chapters = cachedChapters }
+        return value
+    }
+    #endif
+
     private var moreMenu: some View {
         Menu {
             Button {
@@ -775,6 +797,12 @@ struct BookDetailScreen: View {
                 }
                 Divider()
             }
+
+            #if os(iOS)
+            if profileSession.clubs != nil, shown.mediaType == .ebook || shown.mediaType == .audiobook {
+                Button { showBookClubs = true } label: { Label("Start a Club", systemImage: "person.2") }
+            }
+            #endif
 
             if shown.mediaType == .ebook || (shown.duration ?? 0) > 0 {
                 Button {

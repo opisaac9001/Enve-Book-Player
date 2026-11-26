@@ -703,7 +703,7 @@ struct SettingsScreen: View {
                 settingsNav(SettingsParentGate { DataManagementScreen() }) {
                     SettingsLinkRow(
                         title: "Data management",
-                        subtitle: session.isOwner ? "Clear caches, metadata, or reset Enve" : "Clear caches, metadata, or downloads",
+                        subtitle: session.isOwner ? "Back up settings and sources, or clear app data" : "Clear caches, metadata, or downloads",
                         systemImage: "trash.circle.fill"
                     )
                 }
@@ -711,7 +711,7 @@ struct SettingsScreen: View {
                     settingsNav(SyncScreen()) {
                         SettingsLinkRow(
                             title: "Sync",
-                            subtitle: "iCloud progress and Apple TV servers",
+                            subtitle: "iCloud progress and library sources",
                             detail: syncDetail,
                             systemImage: "icloud.and.arrow.up.fill"
                         )
@@ -959,7 +959,7 @@ private struct SettingsSearchItem: Identifiable {
         item(.downloads, "Downloads", "Active, failed, and finished", "arrow.down.circle.fill", "offline queue"),
         item(.narratorModels, "Narrator models", "Offline voices, downloads, and storage", "waveform", "tts kokoro supertonic pocket speech narration"),
         item(.storage, "Storage", "Files on this phone and cleanup rules", "internaldrive.fill", "disk cache space"),
-        item(.dataManagement, "Data management", "Clear caches, metadata, or reset Enve", "trash.circle.fill", "erase reset cleanup"),
+        item(.dataManagement, "Data management", "Back up settings and sources, or clear app data", "trash.circle.fill", "backup transfer export import erase reset cleanup"),
         item(.sync, "Sync", "iCloud across your devices", "icloud.and.arrow.up.fill", "cloud backup progress apple tv servers connections"),
         item(.achievements, "Achievements", "Levels and milestones", "trophy.fill", "goals awards journal"),
         item(.statsImport, "Import listening history", "Bring stats in from another app", "square.and.arrow.down", "statistics data"),

@@ -721,6 +721,7 @@ class EbookReaderActivity : FragmentActivity() {
         private const val EXTRA_TITLE         = "title"
         private const val EXTRA_AUTHOR        = "author"
         private const val EXTRA_BOOK_FORMAT   = "bookFormat"
+        private const val EXTRA_CLUB_PASSAGE = "clubPassage"
         private const val EXTRA_EPUB_LOCATOR  = "epubLocator"
         private const val EXTRA_EPUB_PROGRESS = "epubProgress"
         private const val EXTRA_LAST_READ_TIME = "lastReadTime"
@@ -729,7 +730,7 @@ class EbookReaderActivity : FragmentActivity() {
         private const val FOLIATE_RETRY_DELAY_MS = 500L
         private const val OPEN_WATCHDOG_MS = 300_000L
         private const val REMOTE_PROGRESS_TIMEOUT_MS = 15_000L
-        private const val OFFLINE_REMOTE_PROGRESS_TIMEOUT_MS = 4_000L
+        private const val OFFLINE_REMOTE_PROGRESS_TIMEOUT_MS = 1_000L
         private const val LATE_RESTORE_SETTLE_MS = 10_000L
         private const val READIUM_RESTORE_REVEAL_MS = 4_000L
         private const val READIUM_POSITION_STEADY_MS = 350L
@@ -755,6 +756,7 @@ class EbookReaderActivity : FragmentActivity() {
             epubProgress: Float,
             lastReadTime: Long = 0L,
             readerEngine: ReaderEngineKind? = null,
+            searchQuery: String? = null,
         ): Intent = Intent(context, EbookReaderActivity::class.java).apply {
             com.enve.app.profiles.ProfileActivityBinding.capture(context, this)
             putExtra(EXTRA_BOOK_ID, bookId)
@@ -763,6 +765,7 @@ class EbookReaderActivity : FragmentActivity() {
             putExtra(EXTRA_TITLE, title)
             putExtra(EXTRA_AUTHOR, author)
             if (bookFormat != null) putExtra(EXTRA_BOOK_FORMAT, bookFormat)
+            if (!searchQuery.isNullOrBlank()) putExtra(EXTRA_CLUB_PASSAGE, searchQuery.take(200))
             if (epubLocator != null) putExtra(EXTRA_EPUB_LOCATOR, epubLocator)
             putExtra(EXTRA_EPUB_PROGRESS, epubProgress)
             if (lastReadTime > 0L) putExtra(EXTRA_LAST_READ_TIME, lastReadTime)
@@ -1605,6 +1608,11 @@ class EbookReaderActivity : FragmentActivity() {
             loadingRoot.alpha = 1f
             findViewById<android.widget.ImageView>(R.id.loading_cover).apply { scaleX = 1f; scaleY = 1f }
             vm.revealChrome()
+            intent.getStringExtra(EXTRA_CLUB_PASSAGE)?.let { query ->
+                intent.removeExtra(EXTRA_CLUB_PASSAGE)
+                vm.showSearch(true)
+                vm.updateSearchQuery(query)
+            }
         }.start()
         composeOverlay.visibility = View.VISIBLE
         composeOverlay.elevation = 16f

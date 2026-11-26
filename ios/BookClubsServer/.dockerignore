@@ -1,0 +1,9 @@
+**
+!src
+!src/**
+!migrations
+!migrations/**
+!public
+!public/**
+!protocol
+!protocol/**

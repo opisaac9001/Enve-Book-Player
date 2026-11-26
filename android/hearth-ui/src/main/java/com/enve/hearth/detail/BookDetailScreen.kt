@@ -51,6 +51,7 @@ fun BookDetailScreen(
     onOpenBook: (Book) -> Unit,
     onAskLibrarian: (Book) -> Unit = {},
     onOpenAnnotation: (Book, ReaderAnnotation) -> Unit = { _, _ -> },
+    onStartClub: ((Book) -> Unit)? = null,
 ) {
     val vm: HearthDetailViewModel = profileViewModel()
     LaunchedEffect(initial.uniqueKey) { vm.load(initial) }
@@ -118,6 +119,9 @@ fun BookDetailScreen(
         ) {
             item { DetailHeader(b, ambientColor, onBack) }
             item { DetailActions(b, chapters, linkedAudiobook, linkedEbook, readingEnabled, onListen, onRead) }
+            if (onStartClub != null && b.mediaType in setOf(AppMediaType.AUDIOBOOK, AppMediaType.EBOOK)) {
+                item { androidx.compose.material3.TextButton(onClick = { onStartClub(b.copy(chapters = chapters)) }) { Text("Start a Club") } }
+            }
             item {
                 DetailSecondaryActions(
                     b = b,

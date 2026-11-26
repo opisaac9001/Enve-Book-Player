@@ -956,6 +956,15 @@ private fun ContentsSheet(vm: ReaderViewModel, state: ReaderUiState) {
     var tab by remember { mutableIntStateOf(0) }
     var query by remember { mutableStateOf("") }
     val normalizedQuery = query.trim().lowercase()
+    val clubsAccount by vm.clubsFacade.account.collectAsStateWithLifecycle()
+    val clubCopies by vm.clubsFacade.copies.collectAsStateWithLifecycle()
+    var sharedAnnotation by remember { mutableStateOf<ReaderAnnotation?>(null) }
+    sharedAnnotation?.let { annotation ->
+        val chapter = state.tocEntries.firstOrNull { it.id == annotation.chapterId }?.title
+        com.enve.hearth.clubs.ClubSharePassage(vm.clubsFacade, vm.bookClubCopyKey, annotation.selectedText, chapter) {
+            sharedAnnotation = null
+        }
+    }
     val filteredBookmarks = remember(state.bookmarks, normalizedQuery) {
         state.bookmarks.filter { it.matchesAnnotationQuery(normalizedQuery) }
     }
@@ -1044,6 +1053,8 @@ private fun ContentsSheet(vm: ReaderViewModel, state: ReaderUiState) {
                         AnnotationRow(
                             a = a,
                             dot = highlightColorHex(a.colorHex)?.let(::parseHexColor) ?: EmberAccent,
+                            onShare = if (clubsAccount != null && vm.bookClubCopyKey in clubCopies.values && a.selectedText.isNotBlank())
+                                ({ sharedAnnotation = a }) else null,
                             onOpen = { vm.seekToAnnotation(a); vm.showToc(false) },
                             onEdit = { vm.showDecorationPopover(a.id); vm.showToc(false) },
                             onDelete = { vm.deleteAnnotation(a) },
@@ -1073,7 +1084,7 @@ private fun SearchField(value: String, placeholder: String, onValueChange: (Stri
 }
 
 @Composable
-private fun AnnotationRow(a: ReaderAnnotation, dot: Color, onOpen: () -> Unit, onEdit: () -> Unit, onDelete: () -> Unit) {
+private fun AnnotationRow(a: ReaderAnnotation, dot: Color, onOpen: () -> Unit, onEdit: () -> Unit, onDelete: () -> Unit, onShare: (() -> Unit)? = null) {
     val palette = Hearth.palette
     Row(Modifier.fillMaxWidth().clickable(onClick = onOpen).padding(vertical = Hearth.Spacing.M), verticalAlignment = Alignment.Top) {
         Box(Modifier.size(10.dp).clip(CircleShape).background(dot).padding(top = 4.dp))
@@ -1081,6 +1092,7 @@ private fun AnnotationRow(a: ReaderAnnotation, dot: Color, onOpen: () -> Unit, o
         Column(Modifier.weight(1f)) {
             Text(a.selectedText.ifBlank { a.note.ifBlank { "Bookmark" } }, style = HearthText.Body, color = palette.text, maxLines = 3, overflow = TextOverflow.Ellipsis)
             if (a.note.isNotBlank() && a.selectedText.isNotBlank()) Text(a.note, style = HearthText.Caption, color = palette.textSecondary, maxLines = 2, overflow = TextOverflow.Ellipsis)
+            if (onShare != null) androidx.compose.material3.TextButton(onShare) { Text("Share with a Club") }
         }
         Text("Edit", style = HearthText.Caption, color = palette.ember, modifier = Modifier.sizeIn(minHeight = 48.dp).clip(RoundedCornerShape(50)).clickable(role = Role.Button, onClick = onEdit).wrapContentHeight().padding(horizontal = Hearth.Spacing.S, vertical = Hearth.Spacing.XS))
         Icon(Icons.Outlined.Delete, "Delete", tint = palette.textTertiary, modifier = Modifier.sizeIn(minWidth = 48.dp, minHeight = 48.dp).clip(CircleShape).clickable(role = Role.Button, onClick = onDelete).wrapContentSize().size(18.dp))

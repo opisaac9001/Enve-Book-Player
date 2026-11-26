@@ -5,6 +5,9 @@ import android.content.ContextWrapper
 import android.net.Uri
 import androidx.test.core.app.ApplicationProvider
 import androidx.test.ext.junit.runners.AndroidJUnit4
+import androidx.test.platform.app.InstrumentationRegistry
+import com.enve.core.data.local.DEFAULT_ADULT_PROFILE_ID
+import org.junit.Assume.assumeTrue
 import com.enve.app.profiles.ProfileRuntimeRegistry
 import com.enve.engine.backup.SettingsExportResult
 import com.enve.engine.backup.SettingsImportInspection
@@ -61,6 +64,30 @@ class SettingsBackupIntegrationTest {
         } finally {
             runtimes.close(sourceId)
             runtimes.close(targetId)
+            context.clear()
+        }
+    }
+
+    @Test
+    fun sendsIsolatedAndroidSettingsToCrossPlatformPeer() = runBlocking {
+        assumeTrue(InstrumentationRegistry.getArguments().getString("enveTransferPeer") == "true")
+        val target = ApplicationProvider.getApplicationContext<Context>()
+        val context = BackupTestContext(target)
+        val runtimes = ProfileRuntimeRegistry(context)
+        val marker = File(target.cacheDir, "enve-transfer-fixture-code")
+        try {
+            val source = runtimes.open(DEFAULT_ADULT_PROFILE_ID)
+            source.preferencesFacade().setThemeMode(HearthThemeMode.PAPER)
+            source.preferencesFacade().setSkipForwardSeconds(45)
+            source.settingsTransfer().send(
+                includeSettings = true, includeSources = false, includeIntegrations = false, includeSignIns = false,
+            ).use { offer ->
+                marker.writeText(offer.code)
+                offer.awaitTransfer()
+            }
+        } finally {
+            marker.delete()
+            runtimes.close(DEFAULT_ADULT_PROFILE_ID)
             context.clear()
         }
     }

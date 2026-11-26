@@ -10,21 +10,28 @@ import androidx.media3.session.MediaController
 import androidx.media3.session.SessionToken
 import androidx.test.core.app.ApplicationProvider
 import androidx.test.ext.junit.runners.AndroidJUnit4
+import com.enve.app.data.offline.OfflineAudioManifest
+import com.enve.app.data.offline.OfflineAudioTrackManifest
+import com.enve.app.data.offline.offlineDownloadKey
 import com.enve.app.profiles.DaggerProfileRuntimeComponent
 import com.enve.app.profiles.ProfileResources
 import com.enve.app.profiles.ProfileRuntimeComponent
+import com.enve.core.data.local.toCachedBook
+import com.enve.core.data.model.AppMediaType
 import com.enve.core.data.model.Book
 import com.enve.core.data.model.BookSource
-import com.enve.core.data.model.AppMediaType
-import com.enve.core.data.local.toCachedBook
+import com.enve.core.data.model.ProviderConnection
+import com.enve.core.data.model.UrlScheme
 import java.io.File
+import java.net.InetAddress
+import java.net.ServerSocket
 import java.nio.ByteBuffer
 import java.nio.ByteOrder
 import java.util.UUID
-import java.util.concurrent.TimeUnit
 import java.util.concurrent.FutureTask
-import kotlinx.coroutines.Dispatchers
+import java.util.concurrent.TimeUnit
 import kotlinx.coroutines.CompletableDeferred
+import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.NonCancellable
 import kotlinx.coroutines.awaitCancellation
@@ -83,6 +90,35 @@ class PendingPlaybackCancellationTest {
             releaseFirst.complete(Unit)
             releaseReplacement.complete(Unit)
             queue.cancelPendingStart()
+        }
+    }
+
+    @Test
+    fun downloadedGrimmoryBookResumesWhileServerAcceptsNoResponses() = componentFixture { component, browser, audio ->
+        ServerSocket(0, 8, InetAddress.getByName("127.0.0.1")).use { server ->
+            val url = "http://127.0.0.1:${server.localPort}"
+            val connection = ProviderConnection(
+                id = "offline-grimmory", source = BookSource.GRIMMORY, name = "Offline fixture",
+                serverUrl = url, username = "", urlScheme = UrlScheme.HTTP,
+            )
+            component.connections().upsert(connection)
+            val book = Book(
+                id = "72", title = "Downloaded Grimmory book", source = connection.source,
+                connectionId = connection.id, mediaType = AppMediaType.AUDIOBOOK, duration = 30L,
+                isDownloaded = true, currentTime = 8L, coverUrl = "$url/cover",
+            )
+            val storage = component.audioStorage()
+            val file = audio.copyTo(storage.createTrackFinalFile(book.offlineDownloadKey, 0, "wav"))
+            storage.saveManifest(OfflineAudioManifest(
+                bookId = book.id, title = book.title, source = book.source.name, connectionId = connection.id,
+                downloadKey = book.offlineDownloadKey, downloadedAtEpochMs = 1L,
+                tracks = listOf(OfflineAudioTrackManifest(0, book.title, 30_000L, storage.relativePath(file), file.length())),
+            ))
+            component.bookCacheDao().upsert(listOf(book.toCachedBook()))
+            withTimeout(6_000) {
+                assertTrue(component.playbackQueue().open(book))
+                await { withContext(Dispatchers.Main) { browser.isPlaying && browser.currentPosition >= 8_000L } }
+            }
         }
     }
 

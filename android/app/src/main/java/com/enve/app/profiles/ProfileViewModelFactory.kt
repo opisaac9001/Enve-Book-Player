@@ -120,6 +120,7 @@ class ProfileViewModelFactory(private val component: com.enve.app.profiles.Profi
             component.passageAlignment(),
             component.bookLinks(),
             component.playback(),
+            component.clubs(),
         )
         com.enve.app.viewmodel.DictionariesSettingsViewModel::class.java -> com.enve.app.viewmodel.DictionariesSettingsViewModel(
             component.installedDictionariesStore(),
@@ -256,7 +257,12 @@ class ProfileViewModelFactory(private val component: com.enve.app.profiles.Profi
             component.batchMatching(),
             component.duplicateMatching(),
         )
-        com.enve.hearth.settings.SettingsBackupViewModel::class.java -> com.enve.hearth.settings.SettingsBackupViewModel(component.settingsBackup())
+        com.enve.hearth.settings.SettingsBackupViewModel::class.java -> com.enve.hearth.settings.SettingsBackupViewModel(
+            component.settingsBackup(),
+            component.settingsTransfer().takeIf {
+                component.storageLocations().profileId == com.enve.core.data.local.DEFAULT_ADULT_PROFILE_ID
+            },
+        )
         com.enve.hearth.settings.HearthSettingsViewModel::class.java -> com.enve.hearth.settings.HearthSettingsViewModel(
             component.preferencesFacade(),
             component.einkFacade(),
