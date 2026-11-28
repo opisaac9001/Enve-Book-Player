@@ -67,6 +67,22 @@ struct SourcesQuickConnectScreen: View {
                         }
                     }
                     .padding(.top, 4)
+
+                    if profileSession.isOwner {
+                        SourcesCard {
+                            NavigationLink {
+                                SettingsParentGate { SettingsBackupScreen(importOnly: true) }
+                            } label: {
+                                SettingsLinkRow(
+                                    title: "Import from backup",
+                                    subtitle: "Restore settings and sources from another device or a file",
+                                    systemImage: "square.and.arrow.down"
+                                )
+                            }
+                            .buttonStyle(PressableStyle())
+                            .accessibilityIdentifier("sources-import-backup")
+                        }
+                    }
                 }
                 .padding(.horizontal, 24)
                 .padding(.top, 8)

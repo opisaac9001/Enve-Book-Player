@@ -2,6 +2,68 @@ import XCTest
 
 final class SettingsConvenienceUITests: XCTestCase {
     @MainActor
+    func testSettingsTransferAcceptsSixDigitsWithoutCamera() {
+        continueAfterFailure = false
+        let app = XCUIApplication()
+        app.launchArguments = ["-imagineScreen", "settings"]
+        app.launch()
+
+        let settings = app.scrollViews["settings-screen"].firstMatch
+        XCTAssertTrue(settings.waitForExistence(timeout: 15))
+        let addSource = settings.buttons["Add a source"].firstMatch
+        for _ in 0..<4 where !addSource.isHittable { settings.swipeUp() }
+        XCTAssertTrue(addSource.isHittable)
+        addSource.tap()
+        let importBackup = app.buttons["sources-import-backup"]
+        XCTAssertTrue(importBackup.waitForExistence(timeout: 10))
+        importBackup.tap()
+        XCTAssertTrue(app.staticTexts["Import from backup"].waitForExistence(timeout: 5))
+        XCTAssertTrue(app.buttons["settings-backup-import"].exists)
+        XCTAssertFalse(app.buttons["settings-backup-send"].exists)
+
+        let enter = app.buttons["settings-backup-enter-code"]
+        XCTAssertTrue(enter.isHittable)
+        enter.tap()
+        let field = app.textFields["Six digits"]
+        XCTAssertTrue(field.waitForExistence(timeout: 5))
+        let connect = app.buttons["Connect"]
+        XCTAssertFalse(connect.isEnabled)
+        field.tap()
+        field.typeText("00420")
+        XCTAssertFalse(connect.isEnabled)
+        field.typeText("1")
+        XCTAssertTrue(connect.isEnabled)
+    }
+
+    @MainActor
+    func testBackupAndTransferOpensFromSync() {
+        continueAfterFailure = false
+        let app = XCUIApplication()
+        app.launchArguments = ["-imagineScreen", "settings"]
+        app.launch()
+
+        let settings = app.scrollViews["settings-screen"].firstMatch
+        XCTAssertTrue(settings.waitForExistence(timeout: 15))
+        let downloads = settings.buttons["Downloads & sync"].firstMatch
+        for _ in 0..<4 where !downloads.isHittable { settings.swipeUp() }
+        XCTAssertTrue(downloads.isHittable)
+        downloads.tap()
+        let sync = app.buttons["Sync"].firstMatch
+        XCTAssertTrue(sync.waitForExistence(timeout: 5))
+        for _ in 0..<4 where !sync.isHittable { app.scrollViews.firstMatch.swipeUp() }
+        XCTAssertTrue(sync.isHittable)
+        sync.tap()
+        let syncScreen = app.scrollViews["sync-screen"].firstMatch
+        XCTAssertTrue(syncScreen.waitForExistence(timeout: 5))
+        let backup = syncScreen.buttons["settings-backup-link"]
+        for _ in 0..<4 where !backup.isHittable { syncScreen.swipeUp() }
+        XCTAssertTrue(backup.isHittable)
+        backup.tap()
+        XCTAssertTrue(app.buttons["settings-backup-send"].waitForExistence(timeout: 5))
+        XCTAssertTrue(app.buttons["settings-backup-encrypted"].exists)
+    }
+
+    @MainActor
     func testShelfDragPreservesVisibilityAndOrderAfterRelaunch() throws {
         continueAfterFailure = false
         let app = XCUIApplication()

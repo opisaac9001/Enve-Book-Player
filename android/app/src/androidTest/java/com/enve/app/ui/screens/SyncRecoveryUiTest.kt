@@ -55,6 +55,7 @@ class SyncRecoveryUiTest {
                     onClearKoreaderCredentials = {},
                     onRetryPending = { retried += it },
                     onDiscardPending = { discarded += it },
+                    onOpenBackup = {},
                 )
             }
         }

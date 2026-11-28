@@ -371,7 +371,6 @@ class MainActivity : ComponentActivity() {
         HearthSettingsDestination.StoryAlign -> Routes.STORYALIGN_STUDIO
         HearthSettingsDestination.Downloads -> Routes.DOWNLOADS
         HearthSettingsDestination.Storage -> Routes.STORAGE
-        HearthSettingsDestination.SettingsBackup -> Routes.SETTINGS_BACKUP
         HearthSettingsDestination.SyncCloud -> Routes.SYNC_CLOUD
         HearthSettingsDestination.KOReader -> Routes.KOREADER_HUB
         HearthSettingsDestination.Obsidian -> Routes.OBSIDIAN_SYNC

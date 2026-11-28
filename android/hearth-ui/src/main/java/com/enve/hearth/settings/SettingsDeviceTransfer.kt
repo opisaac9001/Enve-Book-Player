@@ -11,6 +11,7 @@ import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.foundation.selection.toggleable
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material3.AlertDialog
@@ -19,6 +20,7 @@ import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
@@ -30,6 +32,7 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.asImageBitmap
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.text.input.KeyboardType
 import androidx.compose.ui.text.input.PasswordVisualTransformation
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.window.DialogProperties
@@ -37,6 +40,7 @@ import androidx.compose.ui.window.SecureFlagPolicy
 import androidx.lifecycle.Lifecycle
 import androidx.lifecycle.LifecycleEventObserver
 import androidx.lifecycle.compose.LocalLifecycleOwner
+import com.enve.engine.backup.SettingsCodeOffer
 import com.enve.engine.backup.SettingsTransferFacade
 import com.enve.engine.backup.SettingsTransferOffer
 import com.enve.engine.backup.SettingsTransferReview
@@ -48,12 +52,13 @@ import com.enve.hearth.design.QuietButton
 import com.enve.hearth.listeningposition.ListeningPositionCameraScanner
 import com.enve.hearth.listeningposition.ListeningPositionQRCode
 import kotlinx.coroutines.CancellationException
+import kotlinx.coroutines.Job
 import kotlinx.coroutines.launch
 
-private enum class TransferDialog { SEND, WARNING, SCAN, EXPORT, UNLOCK }
+private enum class TransferDialog { SEND, WARNING, SCAN, CODE, EXPORT, UNLOCK }
 
 @Composable
-internal fun SettingsDeviceTransfer(transfer: SettingsTransferFacade) {
+internal fun SettingsDeviceTransfer(transfer: SettingsTransferFacade, importOnly: Boolean) {
     val palette = Hearth.palette
     val scope = rememberCoroutineScope()
     val context = LocalContext.current
@@ -70,24 +75,40 @@ internal fun SettingsDeviceTransfer(transfer: SettingsTransferFacade) {
     var busy by remember { mutableStateOf(false) }
     var notice by remember { mutableStateOf<String?>(null) }
     var retryScan by remember { mutableStateOf(false) }
+    var useTypedCode by remember { mutableStateOf(false) }
+    var enteredCode by remember { mutableStateOf("") }
+    var receivingByCode by remember { mutableStateOf<Job?>(null) }
 
-    fun run(errorMessage: String, action: suspend () -> Unit) {
-        if (busy) return
+    fun run(errorMessage: String, action: suspend () -> Unit): Job? {
+        if (busy) return null
         busy = true
         notice = null
-        scope.launch {
+        return scope.launch {
             try { action() }
             catch (cancelled: CancellationException) { throw cancelled }
             catch (_: Exception) { notice = errorMessage }
-            finally { busy = false }
+            finally {
+                busy = false
+                receivingByCode = null
+            }
         }
     }
 
     fun send(includeCredentials: Boolean) {
         dialog = null
         run("Couldn't start the transfer. Connect both devices to the same Wi-Fi and try again.") {
-            offer = transfer.send(includeSettings, includeSources, includeIntegrations, includeCredentials)
+            offer = if (useTypedCode) {
+                transfer.sendCode(includeSettings, includeSources, includeIntegrations, includeCredentials)
+            } else {
+                transfer.send(includeSettings, includeSources, includeIntegrations, includeCredentials)
+            }
         }
+    }
+
+    fun chooseTransfer(typedCode: Boolean) {
+        useTypedCode = typedCode
+        if ((includeSources || includeIntegrations) && includeSignIns) dialog = TransferDialog.WARNING
+        else send(false)
     }
 
     fun scan(code: String) {
@@ -128,27 +149,48 @@ internal fun SettingsDeviceTransfer(transfer: SettingsTransferFacade) {
     }
 
     Column(verticalArrangement = Arrangement.spacedBy(Hearth.Spacing.M)) {
-        Overline("Transfer between devices")
-        Text("Move settings between iPhone and Android over the same Wi-Fi network.", color = palette.textSecondary, style = HearthText.Body)
-        EmberButton("Transfer to another device", onClick = {
-            if (!busy) {
-                includeSignIns = false
-                dialog = TransferDialog.SEND
-            }
-        })
+        Overline(if (importOnly) "Import settings and sources" else "Transfer between devices")
+        Text(
+            if (importOnly) "Scan a QR code, enter a six-digit code, or choose an encrypted backup file."
+            else "Move settings between iPhone and Android over the same Wi-Fi network.",
+            color = palette.textSecondary,
+            style = HearthText.Body,
+        )
+        if (!importOnly) {
+            EmberButton("Transfer to another device", onClick = {
+                if (!busy) {
+                    includeSignIns = false
+                    dialog = TransferDialog.SEND
+                }
+            })
+        }
         QuietButton("Scan to import", onClick = { if (!busy) { retryScan = false; dialog = TransferDialog.SCAN } })
-        QuietButton("Create encrypted backup", onClick = {
+        QuietButton("Enter a code", onClick = {
             if (!busy) {
-                includeSignIns = false
-                passphrase = ""
-                confirmation = ""
-                dialog = TransferDialog.EXPORT
+                enteredCode = ""
+                dialog = TransferDialog.CODE
             }
         })
+        if (!importOnly) {
+            QuietButton("Create encrypted backup", onClick = {
+                if (!busy) {
+                    includeSignIns = false
+                    passphrase = ""
+                    confirmation = ""
+                    dialog = TransferDialog.EXPORT
+                }
+            })
+        }
         QuietButton("Import encrypted backup", onClick = {
             if (!busy) chooseFile.launch(arrayOf("application/json", "application/octet-stream", "text/plain"))
         })
-        if (busy) Text("Working…", style = HearthText.Caption, color = palette.textSecondary)
+        if (busy) {
+            Text(
+                if (receivingByCode == null) "Working…" else "Approve the transfer on your other device when asked.",
+                style = HearthText.Caption, color = palette.textSecondary,
+            )
+            receivingByCode?.let { job -> QuietButton("Cancel transfer", onClick = { job.cancel() }) }
+        }
         notice?.let { Text(it, style = HearthText.Caption, color = palette.textSecondary) }
     }
 
@@ -171,17 +213,21 @@ internal fun SettingsDeviceTransfer(transfer: SettingsTransferFacade) {
                     }
                 },
                 confirmButton = {
-                    TextButton(
-                        enabled = (includeSettings || includeSources || includeIntegrations) && (!isFile || (passphrase.length >= 12 && passphrase == confirmation)),
-                        onClick = {
-                            if (isFile) {
+                    val hasSelection = includeSettings || includeSources || includeIntegrations
+                    if (isFile) {
+                        TextButton(
+                            enabled = hasSelection && passphrase.length >= 12 && passphrase == confirmation,
+                            onClick = {
                                 dialog = null
                                 saveFile.launch("Enve Backup.json")
-                            } else if ((includeSources || includeIntegrations) && includeSignIns) {
-                                dialog = TransferDialog.WARNING
-                            } else send(false)
-                        },
-                    ) { Text(if (isFile) "Save backup" else "Continue") }
+                            },
+                        ) { Text("Save backup") }
+                    } else {
+                        Column(horizontalAlignment = Alignment.End) {
+                            TextButton(enabled = hasSelection, onClick = { chooseTransfer(false) }) { Text("Show QR code") }
+                            TextButton(enabled = hasSelection, onClick = { chooseTransfer(true) }) { Text("Show six-digit code") }
+                        }
+                    }
                 },
                 dismissButton = { TextButton(onClick = { dialog = null }) { Text("Cancel") } },
             )
@@ -195,7 +241,7 @@ internal fun SettingsDeviceTransfer(transfer: SettingsTransferFacade) {
             confirmButton = {
                 Column(horizontalAlignment = Alignment.End) {
                     TextButton(onClick = { send(false) }) { Text("Transfer without sign-ins") }
-                    TextButton(onClick = { send(true) }) { Text("Show QR code with sign-ins", color = palette.statusError) }
+                    TextButton(onClick = { send(true) }) { Text(if (useTypedCode) "Show code with sign-ins" else "Show QR code with sign-ins", color = palette.statusError) }
                 }
             },
             dismissButton = { TextButton(onClick = { dialog = null }) { Text("Cancel") } },
@@ -211,6 +257,33 @@ internal fun SettingsDeviceTransfer(transfer: SettingsTransferFacade) {
                 }
             },
             confirmButton = { TextButton(onClick = { dialog = null }) { Text("Cancel") } },
+        )
+        TransferDialog.CODE -> AlertDialog(
+            onDismissRequest = { dialog = null },
+            title = { Text("Enter a code") },
+            text = {
+                Column(verticalArrangement = Arrangement.spacedBy(Hearth.Spacing.S)) {
+                    Text("Enter the six-digit code from the other device on the same Wi-Fi.")
+                    OutlinedTextField(
+                        value = enteredCode,
+                        onValueChange = { enteredCode = it.filter { digit -> digit in '0'..'9' }.take(6) },
+                        label = { Text("Transfer code") },
+                        keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number),
+                        singleLine = true,
+                    )
+                }
+            },
+            confirmButton = {
+                TextButton(enabled = enteredCode.length == 6, onClick = {
+                    val code = enteredCode
+                    enteredCode = ""
+                    dialog = null
+                    receivingByCode = run("Couldn't pair. Make sure both devices are on the same Wi-Fi and use a fresh code.") {
+                        review = transfer.receiveCode(code)
+                    }
+                }) { Text("Connect") }
+            },
+            dismissButton = { TextButton(onClick = { dialog = null }) { Text("Cancel") } },
         )
         TransferDialog.UNLOCK -> AlertDialog(
             onDismissRequest = { dialog = null },
@@ -280,18 +353,34 @@ private fun OfferDialog(
         catch (cancelled: CancellationException) { throw cancelled }
         catch (_: Exception) { onError() }
     }
-    val image = remember(offer) { ListeningPositionQRCode.image(offer.code).asImageBitmap() }
+    val codeOffer = offer as? SettingsCodeOffer
+    val awaitingApproval = codeOffer?.awaitingApproval?.collectAsState()?.value == true
     AlertDialog(
         onDismissRequest = onClose,
-        title = { Text("Scan with your other device") },
+        title = { Text(if (codeOffer == null) "Scan with your other device" else "Pair with your other device") },
         properties = DialogProperties(securePolicy = SecureFlagPolicy.SecureOn),
         text = {
             Column(horizontalAlignment = Alignment.CenterHorizontally, verticalArrangement = Arrangement.spacedBy(Hearth.Spacing.M)) {
-                Image(image, "One-time transfer QR code", Modifier.size(224.dp))
-                Text("Use Scan to import in Enve on the same Wi-Fi. This code expires in 90 seconds.")
+                when {
+                    awaitingApproval -> Text("Send this backup to your other device?")
+                    codeOffer != null -> {
+                        Text(offer.code, style = HearthText.ScreenTitle)
+                        Text("On your other device, choose Enter a code. This code expires in 90 seconds.")
+                    }
+                    else -> {
+                        val image = remember(offer) { ListeningPositionQRCode.image(offer.code).asImageBitmap() }
+                        Image(image, "One-time transfer QR code", Modifier.size(224.dp))
+                        Text("Use Scan to import in Enve on the same Wi-Fi. This code expires in 90 seconds.")
+                    }
+                }
             }
         },
-        confirmButton = { TextButton(onClick = onClose) { Text("Cancel transfer") } },
+        confirmButton = {
+            if (awaitingApproval) {
+                TextButton(onClick = codeOffer::approve) { Text("Approve transfer") }
+            }
+        },
+        dismissButton = { TextButton(onClick = onClose) { Text("Cancel transfer") } },
     )
 }
 

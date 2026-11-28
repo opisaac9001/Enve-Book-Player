@@ -12,6 +12,7 @@ import androidx.compose.foundation.text.KeyboardActions
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.ArrowBack
+import androidx.compose.material.icons.filled.FileDownload
 import androidx.compose.material.icons.filled.Search
 import androidx.compose.material.icons.filled.Tune
 import androidx.compose.material3.Icon
@@ -45,6 +46,7 @@ fun QuickConnectScreen(
     onProbe: (String) -> Unit,
     onConsumeResult: () -> Unit,
     onNavigateToManual: () -> Unit,
+    onImportBackup: () -> Unit,
     onNavigateToServiceLogin: (BookSource, String, Boolean) -> Unit,
 ) {
     val focusManager = LocalFocusManager.current
@@ -200,19 +202,30 @@ fun QuickConnectScreen(
                 modifier = Modifier.fillMaxWidth().padding(horizontal = 10.dp),
             )
             Spacer(Modifier.height(16.dp))
-            Row(
-                Modifier
-                    .align(Alignment.CenterHorizontally)
-                    .clip(RoundedCornerShape(32.dp))
-                    .background(card)
-                    .border(1.dp, border, RoundedCornerShape(32.dp))
-                    .clickable(onClick = onNavigateToManual)
-                    .padding(horizontal = 20.dp, vertical = 14.dp),
-                verticalAlignment = Alignment.CenterVertically,
+            Column(
+                modifier = Modifier.align(Alignment.CenterHorizontally),
+                horizontalAlignment = Alignment.CenterHorizontally,
+                verticalArrangement = Arrangement.spacedBy(12.dp),
             ) {
-                Icon(Icons.Default.Tune, null, tint = primary, modifier = Modifier.size(18.dp))
-                Spacer(Modifier.width(12.dp))
-                Text("Set up manually", color = primary, fontSize = 16.sp, fontWeight = FontWeight.SemiBold)
+                val choices = listOf(
+                    Triple("Set up manually", Icons.Default.Tune, onNavigateToManual),
+                    Triple("Import from backup", Icons.Default.FileDownload, onImportBackup),
+                )
+                for ((label, icon, action) in choices) {
+                    Row(
+                        Modifier
+                            .clip(RoundedCornerShape(32.dp))
+                            .background(card)
+                            .border(1.dp, border, RoundedCornerShape(32.dp))
+                            .clickable(onClick = action)
+                            .padding(horizontal = 20.dp, vertical = 14.dp),
+                        verticalAlignment = Alignment.CenterVertically,
+                    ) {
+                        Icon(icon, null, tint = primary, modifier = Modifier.size(18.dp))
+                        Spacer(Modifier.width(12.dp))
+                        Text(label, color = primary, fontSize = 16.sp, fontWeight = FontWeight.SemiBold)
+                    }
+                }
             }
         }
     }

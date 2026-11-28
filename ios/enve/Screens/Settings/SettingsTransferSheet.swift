@@ -8,6 +8,7 @@ struct SettingsTransferSheet: View {
         case export
         case send
         case scan
+        case enterCode
         case restore(SettingsBackupService.ImportFile)
 
         var id: String {
@@ -15,6 +16,7 @@ struct SettingsTransferSheet: View {
             case .export: "export"
             case .send: "send"
             case .scan: "scan"
+            case .enterCode: "enter-code"
             case .restore: "restore"
             }
         }
@@ -24,6 +26,7 @@ struct SettingsTransferSheet: View {
             case .export: "Encrypted backup"
             case .send: "Transfer to another device"
             case .scan: "Scan to import"
+            case .enterCode: "Enter a code"
             case .restore: "Restore backup"
             }
         }
@@ -49,6 +52,9 @@ struct SettingsTransferSheet: View {
     @State private var preview: PortableSettingsBackup?
     @State private var exportedURL: URL?
     @State private var offer: SettingsQRTransferOffer?
+    @State private var codeOffer: SettingsCodeTransferOffer?
+    @State private var useTypedCode = false
+    @State private var enteredCode = ""
     @State private var showingSignInWarning = false
     @State private var scanImage: PhotosPickerItem?
     @State private var operation: Task<Void, Never>?
@@ -68,6 +74,8 @@ struct SettingsTransferSheet: View {
                     sendContent
                 case .scan:
                     if let preview { restoreContent(preview) } else { scanContent }
+                case .enterCode:
+                    if let preview { restoreContent(preview) } else { enterCodeContent }
                 case .restore(let file):
                     if let preview {
                         restoreContent(preview)
@@ -82,18 +90,32 @@ struct SettingsTransferSheet: View {
                 }
             }
             .disabled(operation != nil)
+            .toolbar {
+                if case .enterCode = mode, operation != nil {
+                    ToolbarItem(placement: .cancellationAction) {
+                        Button("Cancel transfer") { operation?.cancel() }
+                    }
+                }
+            }
         }
         .alert("Share your saved sign-ins?", isPresented: $showingSignInWarning) {
             Button("Transfer without sign-ins") { beginOffer(includeCredentials: false) }
-            Button("Show QR code with sign-ins", role: .destructive) { beginOffer(includeCredentials: true) }
+            Button(useTypedCode ? "Show code with sign-ins" : "Show QR code with sign-ins", role: .destructive) { beginOffer(includeCredentials: true) }
             Button("Cancel", role: .cancel) {}
         } message: {
             Text("This can copy saved passwords and API keys. The other device may be able to access your accounts and libraries.\n\nOnly continue if you own and control both devices. Don’t show this code to anyone else, send a screenshot, or continue because someone asked you to share it.")
         }
         .onChange(of: scenePhase) { _, phase in
-            if phase == .background, case .send = mode {
+            guard phase == .background else { return }
+            switch mode {
+            case .send:
                 operation?.cancel()
                 offer?.close()
+                codeOffer?.close()
+            case .enterCode:
+                operation?.cancel()
+            default:
+                break
             }
         }
         .onChange(of: scanImage) { _, item in
@@ -114,6 +136,7 @@ struct SettingsTransferSheet: View {
         .onDisappear {
             operation?.cancel()
             offer?.close()
+            codeOffer?.close()
             if let exportedURL {
                 try? FileManager.default.removeItem(at: exportedURL.deletingLastPathComponent())
             }
@@ -164,20 +187,79 @@ struct SettingsTransferSheet: View {
                     QuietButton(title: "Start again", systemImage: nil) { self.offer = nil }
                 }
             }
+        } else if let codeOffer {
+            codeOfferContent(codeOffer)
         } else {
             backupSelection
             Text("Connect both devices to the same Wi-Fi network.")
                 .font(.hearthCaption)
                 .foregroundStyle(hearth.textSecondary)
-            EmberButton(title: "Continue", systemImage: "qrcode", tint: nil) {
-                if includeSignIns && (includeSources || includeIntegrations) {
-                    showingSignInWarning = true
-                } else {
-                    beginOffer(includeCredentials: false)
+            EmberButton(title: "Show QR code", systemImage: "qrcode", tint: nil) { chooseTransfer(typedCode: false) }
+                .disabled(!includeSettings && !includeSources && !includeIntegrations)
+                .accessibilityIdentifier("settings-transfer-qr-continue")
+            QuietButton(title: "Show six-digit code", systemImage: "number") { chooseTransfer(typedCode: true) }
+                .disabled(!includeSettings && !includeSources && !includeIntegrations)
+        }
+    }
+
+    private func codeOfferContent(_ offer: SettingsCodeTransferOffer) -> some View {
+        SourcesCard {
+            switch offer.status {
+            case .waiting:
+                Text(offer.code)
+                    .font(.system(size: 38, weight: .semibold, design: .monospaced))
+                    .monospacedDigit()
+                    .accessibilityLabel(offer.code.map(String.init).joined(separator: " "))
+                Text("On your other device, choose Enter a code. This code expires in 90 seconds.")
+                    .font(.hearthBody)
+                    .foregroundStyle(hearth.textSecondary)
+            case .approval:
+                Text("Send this backup to your other device?")
+                    .font(.hearthBody)
+                EmberButton(title: "Approve transfer", systemImage: nil, tint: nil) { offer.approve() }
+            case .sent:
+                Text("Backup sent. Review it on the other device.").font(.hearthBody)
+            case .expired:
+                Text("The transfer ended. Start a new code to try again.").font(.hearthBody)
+            }
+            if offer.status != .sent {
+                QuietButton(title: offer.status == .expired ? "Start again" : "Cancel transfer", systemImage: nil) {
+                    offer.close()
+                    codeOffer = nil
                 }
             }
-            .disabled(!includeSettings && !includeSources && !includeIntegrations)
-            .accessibilityIdentifier("settings-transfer-qr-continue")
+        }
+    }
+
+    private var enterCodeContent: some View {
+        SourcesCard {
+            Text("Enter the six-digit code from the other device. Both devices need to be on the same Wi-Fi network.")
+                .font(.hearthBody)
+                .foregroundStyle(hearth.textSecondary)
+            SourcesField(label: "Transfer code", text: $enteredCode, placeholder: "Six digits", keyboard: .numberPad)
+                .monospacedDigit()
+                .onChange(of: enteredCode) { _, value in
+                    enteredCode = String(value.filter { $0.isASCII && $0.isNumber }.prefix(6))
+                }
+            EmberButton(title: "Connect", systemImage: nil, tint: nil) {
+                let code = enteredCode
+                start {
+                    let (encrypted, passphrase) = try await SettingsCodeTransfer.receive(code)
+                    let backup = try await SettingsBackupService.shared.unlock(encrypted, passphrase: passphrase)
+                    try authorize()
+                    showPreview(backup)
+                }
+            }
+            .disabled(enteredCode.count != 6)
+        }
+    }
+
+    private func chooseTransfer(typedCode: Bool) {
+        useTypedCode = typedCode
+        if includeSignIns && (includeSources || includeIntegrations) {
+            showingSignInWarning = true
+        } else {
+            beginOffer(includeCredentials: false)
         }
     }
 
@@ -337,6 +419,27 @@ struct SettingsTransferSheet: View {
         let copySettings = includeSettings
         let copySources = includeSources
         let copyIntegrations = includeIntegrations
+        if useTypedCode {
+            start {
+                let outgoing = try await SettingsCodeTransferOffer.start { passphrase in
+                    try authorize()
+                    let data = try await SettingsBackupService.shared.encryptedBackup(
+                        session: session, includeSettings: copySettings, includeSources: copySources,
+                        includeIntegrations: copyIntegrations, includeSignIns: includeCredentials, passphrase: passphrase
+                    )
+                    try authorize()
+                    return data
+                }
+                do {
+                    try authorize()
+                    codeOffer = outgoing
+                } catch {
+                    outgoing.close()
+                    throw error
+                }
+            }
+            return
+        }
         start {
             let key = SymmetricKey(size: .bits256).withUnsafeBytes { Data($0) }
             let passphrase = SettingsTransferCode.passphrase(for: key)

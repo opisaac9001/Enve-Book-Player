@@ -37,6 +37,7 @@ rootProject.name = "Enve"
 include(":app")
 include(":core")
 include(":engine-api")
+include(":settings-pairing")
 include(":engine")
 include(":hearth-ui")
 include(":audiobookshelf")

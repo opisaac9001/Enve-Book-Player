@@ -17,6 +17,7 @@ import com.enve.core.data.model.UrlScheme
 import com.enve.engine.backup.PortableBackupPreview
 import com.enve.engine.backup.PortableRestoreResult
 import com.enve.engine.backup.PortableSourcePreview
+import com.enve.engine.backup.SettingsCodeOffer
 import com.enve.engine.backup.SettingsTransferFacade
 import com.enve.engine.backup.SettingsTransferOffer
 import com.enve.engine.backup.SettingsTransferReview
@@ -54,14 +55,28 @@ class SettingsTransferFacadeImpl @Inject constructor(
 
     override suspend fun send(includeSettings: Boolean, includeSources: Boolean, includeIntegrations: Boolean, includeSignIns: Boolean): SettingsTransferOffer =
         withContext(Dispatchers.IO) {
-            val network = context.getSystemService(ConnectivityManager::class.java)
-            val address = network.getLinkProperties(network.activeNetwork)?.linkAddresses.orEmpty()
-                .mapNotNull { it.address.hostAddress }.firstOrNull(SettingsTransferWire::isLocalAddress)
-                ?: throw IOException("Connect both devices to the same Wi-Fi network.")
-            SettingsTransferWire.offer(address, snapshot(includeSettings, includeSources, includeIntegrations, includeSignIns))
+            SettingsTransferWire.offer(localAddress(), snapshot(includeSettings, includeSources, includeIntegrations, includeSignIns))
         }
 
     override suspend fun receive(code: String): SettingsTransferReview = review(SettingsTransferWire.receive(code))
+
+    override suspend fun sendCode(includeSettings: Boolean, includeSources: Boolean, includeIntegrations: Boolean, includeSignIns: Boolean): SettingsCodeOffer =
+        withContext(Dispatchers.IO) {
+            checkOwner()
+            SettingsCodeTransfer.offer(context, localAddress()) { passphrase ->
+                val payload = snapshot(includeSettings, includeSources, includeIntegrations, includeSignIns)
+                withContext(Dispatchers.IO) { SettingsTransferWire.seal(payload, passphrase) }
+            }
+        }
+
+    override suspend fun receiveCode(code: String): SettingsTransferReview = review(SettingsCodeTransfer.receive(context, code))
+
+    private fun localAddress(): String {
+        val network = context.getSystemService(ConnectivityManager::class.java)
+        return network.getLinkProperties(network.activeNetwork)?.linkAddresses.orEmpty()
+            .mapNotNull { it.address.hostAddress }.firstOrNull(SettingsTransferWire::isLocalAddress)
+            ?: throw IOException("Connect both devices to the same Wi-Fi network.")
+    }
 
     override suspend fun exportFile(
         uri: String,

@@ -121,6 +121,7 @@ kotlin {
 }
 
 dependencies {
+    implementation(project(":settings-pairing"))
     if (woofRuntime != null) debugImplementation(woofRuntime)
     coreLibraryDesugaring("com.android.tools:desugar_jdk_libs:2.1.5")
 

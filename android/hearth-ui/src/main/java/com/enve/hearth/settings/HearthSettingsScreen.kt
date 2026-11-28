@@ -123,7 +123,6 @@ enum class HearthSettingsDestination {
     StoryAlign,
     Downloads,
     Storage,
-    SettingsBackup,
     SyncCloud,
     KOReader,
     Obsidian,
@@ -215,7 +214,10 @@ fun HearthSettingsScreen(
     }
 
     when (category) {
-        null -> SettingsOverview(connections, onBack = onBack, onSelect = { category = it }, onProfiles = { onOpenDestination(HearthSettingsDestination.Profiles) })
+        null -> SettingsOverview(
+            connections, onBack, onSelect = { category = it },
+            onProfiles = { onOpenDestination(HearthSettingsDestination.Profiles) },
+        )
         SettingsCategory.Sources -> SourcesPage(
             connections,
             onBack = { category = null },
@@ -685,9 +687,6 @@ private fun DownloadsPage(
                 }
                 ToolRow(Icons.Outlined.Storage, "Storage", "Cache, downloaded media, and local cleanup") {
                     onOpenDestination(HearthSettingsDestination.Storage)
-                }
-                ToolRow(Icons.Outlined.Save, "Settings backup", "Export or import this profile's preferences") {
-                    onOpenDestination(HearthSettingsDestination.SettingsBackup)
                 }
             }
         }

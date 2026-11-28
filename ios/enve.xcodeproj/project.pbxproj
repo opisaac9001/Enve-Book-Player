@@ -42,6 +42,7 @@
 		B1A2C3D4E5F60001293A0003 /* PulseLogHandler in Frameworks */ = {isa = PBXBuildFile; productRef = B1A2C3D4E5F60001293A0013 /* PulseLogHandler */; };
 		BBDD2200FFAA33CC44EE5502 /* StoryAlignCore in Frameworks */ = {isa = PBXBuildFile; productRef = BBDD2200FFAA33CC44EE5501 /* StoryAlignCore */; };
 		FA3A00010000000000000001 /* FluidAudio in Frameworks */ = {isa = PBXBuildFile; platformFilter = ios; productRef = FA3A00010000000000000003 /* FluidAudio */; };
+		E17E00010000000000000001 /* CSettingsPairing in Frameworks */ = {isa = PBXBuildFile; productRef = E17E00010000000000000002 /* CSettingsPairing */; };
 /* End PBXBuildFile section */
 
 /* Begin PBXContainerItemProxy section */
@@ -544,6 +545,7 @@
 				3533E550EE59C9AFE6A21268 /* ReadiumNavigator in Frameworks */,
 				92BF73F3EF97D98962B4CCC1 /* ReadiumAdapterGCDWebServer in Frameworks */,
 				AACC1100EEFF22BB33DD4402 /* UnrarKit in Frameworks */,
+				E17E00010000000000000001 /* CSettingsPairing in Frameworks */,
 				BBDD2200FFAA33CC44EE5502 /* StoryAlignCore in Frameworks */,
 				FA3A00010000000000000001 /* FluidAudio in Frameworks */,
 				CA5700010000000000000001 /* GoogleCastSDK in Frameworks */,
@@ -705,6 +707,7 @@
 				5363E61448711BE6804ADDCE /* ReadiumNavigator */,
 				593DA7D1FA5A837B5AA85853 /* ReadiumAdapterGCDWebServer */,
 				AACC1100EEFF22BB33DD4401 /* UnrarKit */,
+				E17E00010000000000000002 /* CSettingsPairing */,
 				BBDD2200FFAA33CC44EE5501 /* StoryAlignCore */,
 				FA3A00010000000000000003 /* FluidAudio */,
 				CA5700010000000000000002 /* GoogleCastSDK */,
@@ -872,6 +875,7 @@
 				E3544992322D09BC6BB8E392 /* XCRemoteSwiftPackageReference "swift-toolkit" */,
 				A90408000000000000000001 /* XCRemoteSwiftPackageReference "SwiftSoup" */,
 				AACC1100EEFF22BB33DD4400 /* XCLocalSwiftPackageReference "LocalPackages/UnrarKit" */,
+				E17E00010000000000000003 /* LocalPackages/SettingsPairing */,
 				BBDD2200FFAA33CC44EE5500 /* XCLocalSwiftPackageReference "LocalPackages/StoryAlign" */,
 				FA3A00010000000000000002 /* XCRemoteSwiftPackageReference "FluidAudio" */,
 				CA5700010000000000000003 /* XCLocalSwiftPackageReference "LocalPackages/GoogleCast" */,
@@ -1734,6 +1738,7 @@
 			isa = XCLocalSwiftPackageReference;
 			relativePath = LocalPackages/GoogleCast;
 		};
+		E17E00010000000000000003 /* LocalPackages/SettingsPairing */ = {isa = XCLocalSwiftPackageReference; relativePath = LocalPackages/SettingsPairing; };
 /* End XCLocalSwiftPackageReference section */
 
 /* Begin XCRemoteSwiftPackageReference section */
@@ -1881,6 +1886,7 @@
 			package = CA5700010000000000000003 /* XCLocalSwiftPackageReference "LocalPackages/GoogleCast" */;
 			productName = GoogleCastSDK;
 		};
+		E17E00010000000000000002 /* CSettingsPairing */ = {isa = XCSwiftPackageProductDependency; productName = CSettingsPairing; };
 /* End XCSwiftPackageProductDependency section */
 	};
 	rootObject = 1D03D0E52F1629100008FD58 /* Project object */;

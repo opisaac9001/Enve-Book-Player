@@ -84,6 +84,7 @@ fun SyncCenterScreen(
     onClearKoreaderCredentials: () -> Unit,
     onRetryPending: (PendingProgressPush) -> Unit,
     onDiscardPending: (PendingProgressPush) -> Unit,
+    onOpenBackup: () -> Unit,
 ) {
     val colors = EnveTheme.colors
     val metrics = rememberAdaptiveMetrics()
@@ -219,6 +220,15 @@ fun SyncCenterScreen(
                         Text(EnveTheme.eink.errorMessage(it), color = syncErrorColor(), fontSize = DS.FontSize.Caption.scaled(metrics))
                     }
                 }
+            }
+
+            SettingsCard(modifier = Modifier.padding(horizontal = DS.Spacing.LG.scaled(metrics))) {
+                SettingsNavigationRow(
+                    icon = Icons.Default.Save,
+                    title = "Backup & transfer",
+                    subtitle = "Move settings between devices or save a backup",
+                    onClick = onOpenBackup,
+                )
             }
 
             PendingRecoverySection(
