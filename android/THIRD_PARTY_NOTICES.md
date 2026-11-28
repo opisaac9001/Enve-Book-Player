@@ -80,3 +80,7 @@ An APK, app bundle, store listing, or source archive must retain this file, all 
 ## Listening-position QR codes
 
 ZXing Core 3.5.4 (`com.google.zxing:core`) is used for on-device QR encoding and decoding under Apache-2.0. Copyright ZXing authors. Upstream: https://github.com/zxing/zxing. The app bundles the Apache-2.0 license in its acknowledgements.
+
+## Mbed TLS
+
+Settings pairing uses P-256 EC J-PAKE from Mbed TLS 3.6.8 under Apache-2.0. See the [license](settings-pairing/src/main/cpp/mbedtls/LICENSE) and [upstream revision](settings-pairing/src/main/cpp/mbedtls/UPSTREAM.txt).

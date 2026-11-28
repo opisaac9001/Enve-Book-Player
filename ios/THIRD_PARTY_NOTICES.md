@@ -105,3 +105,7 @@ The public source repository is not itself a complete binary-distribution compli
 4. Present model license terms when optional model weights are downloaded.
 5. Keep provider logos limited to their authorized identification and compatibility context, with applicable attribution and no suggestion of endorsement.
 6. Preserve third-party license files in source archives and identify modifications where a license requires it.
+
+## Mbed TLS
+
+Settings pairing uses P-256 EC J-PAKE from Mbed TLS 3.6.8 under Apache-2.0. See the [license](LocalPackages/SettingsPairing/Sources/CSettingsPairing/mbedtls/LICENSE) and [upstream revision](LocalPackages/SettingsPairing/Sources/CSettingsPairing/mbedtls/UPSTREAM.txt).

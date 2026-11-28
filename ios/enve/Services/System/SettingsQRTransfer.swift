@@ -179,7 +179,7 @@ final class SettingsQRTransferOffer {
         }
     }
 
-    private static func wifiAddress() -> String? {
+    static func wifiAddress() -> String? {
         var interfaces: UnsafeMutablePointer<ifaddrs>?
         guard getifaddrs(&interfaces) == 0, let first = interfaces else { return nil }
         defer { freeifaddrs(first) }

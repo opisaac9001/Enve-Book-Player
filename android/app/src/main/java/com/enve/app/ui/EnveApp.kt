@@ -70,6 +70,7 @@ object Routes {
     const val DOWNLOADS = "settings/downloads"
     const val STORAGE = "settings/storage"
     const val SETTINGS_BACKUP = "settings/backup"
+    const val IMPORT_BACKUP = "settings/backup/import"
     const val SYNC_CLOUD = "settings/syncCloud"
     const val KOREADER_HUB = "settings/koreaderHub"
     const val READWISE = "settings/readwise"
@@ -403,6 +404,7 @@ fun EnveApp(
                     onProbe = { authViewModel.quickConnect(it) },
                     onConsumeResult = { authViewModel.consumeQuickConnectResult() },
                     onNavigateToManual = { navController.navigate(Routes.LIBRARY_CONNECTIONS) },
+                    onImportBackup = { navController.navigate(Routes.IMPORT_BACKUP) },
                     onNavigateToServiceLogin = { source, url, autoSso ->
                         navController.navigate(Routes.serviceLogin(source = source, prefillUrl = url, autoSso = autoSso))
                     },
@@ -606,6 +608,7 @@ fun EnveApp(
                     onClearKoreaderCredentials = { syncCenterViewModel.clearKoreaderCredentials() },
                     onRetryPending = { syncCenterViewModel.retryPending(it) },
                     onDiscardPending = { syncCenterViewModel.discardPending(it) },
+                    onOpenBackup = { navController.navigate(Routes.SETTINGS_BACKUP) },
                 )
             }
 
@@ -615,6 +618,9 @@ fun EnveApp(
 
             composable(Routes.SETTINGS_BACKUP) {
                 com.enve.hearth.settings.SettingsBackupScreen(onBack = goBack)
+            }
+            composable(Routes.IMPORT_BACKUP) {
+                com.enve.hearth.settings.SettingsBackupScreen(onBack = goBack, importOnly = true)
             }
             composable(Routes.READWISE) {
                 com.enve.hearth.readwise.HearthReadwiseScreen(

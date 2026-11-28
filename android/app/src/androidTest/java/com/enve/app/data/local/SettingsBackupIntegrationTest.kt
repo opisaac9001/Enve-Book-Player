@@ -9,6 +9,7 @@ import androidx.test.platform.app.InstrumentationRegistry
 import com.enve.core.data.local.DEFAULT_ADULT_PROFILE_ID
 import org.junit.Assume.assumeTrue
 import com.enve.app.profiles.ProfileRuntimeRegistry
+import com.enve.engine.backup.SettingsCodeOffer
 import com.enve.engine.backup.SettingsExportResult
 import com.enve.engine.backup.SettingsImportInspection
 import com.enve.engine.theme.HearthThemeMode
@@ -16,6 +17,7 @@ import java.io.File
 import java.util.UUID
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.runBlocking
+import kotlinx.coroutines.launch
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
 import org.junit.Assert.assertTrue
@@ -70,7 +72,8 @@ class SettingsBackupIntegrationTest {
 
     @Test
     fun sendsIsolatedAndroidSettingsToCrossPlatformPeer() = runBlocking {
-        assumeTrue(InstrumentationRegistry.getArguments().getString("enveTransferPeer") == "true")
+        val mode = InstrumentationRegistry.getArguments().getString("enveTransferPeer")
+        assumeTrue(mode == "true" || mode == "code")
         val target = ApplicationProvider.getApplicationContext<Context>()
         val context = BackupTestContext(target)
         val runtimes = ProfileRuntimeRegistry(context)
@@ -79,14 +82,54 @@ class SettingsBackupIntegrationTest {
             val source = runtimes.open(DEFAULT_ADULT_PROFILE_ID)
             source.preferencesFacade().setThemeMode(HearthThemeMode.PAPER)
             source.preferencesFacade().setSkipForwardSeconds(45)
-            source.settingsTransfer().send(
-                includeSettings = true, includeSources = false, includeIntegrations = false, includeSignIns = false,
-            ).use { offer ->
-                marker.writeText(offer.code)
-                offer.awaitTransfer()
+            val transfer = source.settingsTransfer()
+            val offered = if (mode == "code") {
+                transfer.sendCode(includeSettings = true, includeSources = false, includeIntegrations = false, includeSignIns = false)
+            } else {
+                transfer.send(includeSettings = true, includeSources = false, includeIntegrations = false, includeSignIns = false)
+            }
+            offered.use { offer ->
+                val approval = (offer as? SettingsCodeOffer)?.let { typed ->
+                    launch {
+                        typed.awaitingApproval.first { it }
+                        typed.approve()
+                    }
+                }
+                try {
+                    marker.writeText(offer.code)
+                    offer.awaitTransfer()
+                } finally {
+                    approval?.cancel()
+                }
             }
         } finally {
             marker.delete()
+            runtimes.close(DEFAULT_ADULT_PROFILE_ID)
+            context.clear()
+        }
+    }
+
+    @Test
+    fun receivesTypedCodeFromCrossPlatformPeer() = runBlocking {
+        val code = InstrumentationRegistry.getArguments().getString("enveTransferCode")
+        assumeTrue(code != null)
+        val verifiedCode = checkNotNull(code)
+        val context = BackupTestContext(ApplicationProvider.getApplicationContext())
+        val runtimes = ProfileRuntimeRegistry(context)
+        try {
+            val target = runtimes.open(DEFAULT_ADULT_PROFILE_ID)
+            target.preferencesFacade().setSkipForwardSeconds(10)
+            val transfer = target.settingsTransfer()
+            val incorrect = verifiedCode.dropLast(1) + if (verifiedCode.last() == '0') "1" else "0"
+            try {
+                transfer.receiveCode(incorrect)
+                throw AssertionError("The wrong code received a backup")
+            } catch (_: java.io.IOException) {}
+            val review = transfer.receiveCode(verifiedCode)
+            assertEquals(10, target.preferencesFacade().skipForwardSeconds.first())
+            assertTrue(review.restore(settings = true, sourceIds = emptySet(), integrationIds = emptySet()).settingsSaved)
+            assertEquals(45, target.preferencesFacade().skipForwardSeconds.first())
+        } finally {
             runtimes.close(DEFAULT_ADULT_PROFILE_ID)
             context.clear()
         }

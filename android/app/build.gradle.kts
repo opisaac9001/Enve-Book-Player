@@ -117,6 +117,7 @@ val generateLegalAssets = tasks.register<Sync>("generateLegalAssets") {
     from(rootProject.file("LICENSE.md")) { rename { "enve-LICENSE.txt" } }
     from(rootProject.file("NOTICE.md")) { rename { "enve-NOTICE.txt" } }
     from(rootProject.file("BuildSupport/Liseur/LICENSE.txt")) { rename { "liseur-MIT.txt" } }
+    from(rootProject.file("settings-pairing/src/main/cpp/mbedtls/LICENSE")) { rename { "mbedtls-Apache-2.0.txt" } }
     from(rootProject.file("THIRD_PARTY_NOTICES.md")) { rename { "THIRD_PARTY_NOTICES.txt" } }
     from(rootProject.file("BuildSupport/Licenses/Apache-2.0.txt")) { rename { "ZXing-Apache-2.0.txt" } }
     from(rootProject.file("engine/src/main/cpp/libmobi/COPYING")) { rename { "libmobi-LGPL-3.0.txt" } }

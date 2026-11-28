@@ -58,6 +58,7 @@ import java.util.Date
 @Composable
 fun SettingsBackupScreen(
     onBack: () -> Unit,
+    importOnly: Boolean = false,
     vm: SettingsBackupViewModel = profileViewModel(),
 ) {
     val palette = Hearth.palette
@@ -87,7 +88,7 @@ fun SettingsBackupScreen(
             Spacer(Modifier.size(Hearth.Spacing.S))
             Column {
                 Overline("This profile")
-                Text("Settings backup", style = HearthText.ScreenTitle, color = palette.text, modifier = Modifier.semantics { heading() })
+                Text(if (importOnly) "Import from backup" else "Backup & transfer", style = HearthText.ScreenTitle, color = palette.text, modifier = Modifier.semantics { heading() })
             }
         }
 
@@ -99,31 +100,33 @@ fun SettingsBackupScreen(
             verticalArrangement = Arrangement.spacedBy(Hearth.Spacing.XXL),
         ) {
             vm.transfer?.let { transfer ->
-                item { Card { SettingsDeviceTransfer(transfer) } }
+                item { Card { SettingsDeviceTransfer(transfer, importOnly) } }
             }
-            item {
-                Card {
-                    Overline("Export")
-                    Spacer(Modifier.size(Hearth.Spacing.M))
-                    Text(
-                        "Save this profile's appearance, playback, reading, and home screen settings to a JSON file.",
-                        style = HearthText.Body,
-                        color = palette.textSecondary,
-                    )
-                    Spacer(Modifier.size(Hearth.Spacing.L))
-                    ActionButton(
-                        if (state.exporting) "Saving…" else "Export settings",
-                        enabled = !state.busy,
-                        onClick = { exportLauncher.launch("Enve Settings.json") },
-                    )
-                    state.exportResult?.let { result ->
-                        StatusText(
-                            when (result) {
-                                is SettingsExportResult.Exported -> "Saved ${result.settingCount} settings."
-                                SettingsExportResult.Failed -> "Couldn't save the file. Choose another location and try again."
-                            },
-                            error = result == SettingsExportResult.Failed,
+            if (!importOnly) {
+                item {
+                    Card {
+                        Overline("Export")
+                        Spacer(Modifier.size(Hearth.Spacing.M))
+                        Text(
+                            "Save this profile's appearance, playback, reading, and home screen settings to a JSON file.",
+                            style = HearthText.Body,
+                            color = palette.textSecondary,
                         )
+                        Spacer(Modifier.size(Hearth.Spacing.L))
+                        ActionButton(
+                            if (state.exporting) "Saving…" else "Export settings",
+                            enabled = !state.busy,
+                            onClick = { exportLauncher.launch("Enve Settings.json") },
+                        )
+                        state.exportResult?.let { result ->
+                            StatusText(
+                                when (result) {
+                                    is SettingsExportResult.Exported -> "Saved ${result.settingCount} settings."
+                                    SettingsExportResult.Failed -> "Couldn't save the file. Choose another location and try again."
+                                },
+                                error = result == SettingsExportResult.Failed,
+                            )
+                        }
                     }
                 }
             }

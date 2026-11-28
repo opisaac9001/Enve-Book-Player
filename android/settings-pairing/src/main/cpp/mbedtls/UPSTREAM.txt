@@ -1,0 +1,4 @@
+Mbed TLS 3.6.8, commit 80f401715ae67e45961973e01cc087ea3765f38b
+https://github.com/Mbed-TLS/mbedtls/tree/80f401715ae67e45961973e01cc087ea3765f38b
+Source archive SHA-256: 8079dbc7f4260e13c839cf6c531291e1057fa052ef4d496febcdb9fd39dbc582
+Unmodified library files. pairing_config.h enables only P-256 EC J-PAKE and supporting primitives.

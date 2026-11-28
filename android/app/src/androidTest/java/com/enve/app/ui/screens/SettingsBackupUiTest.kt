@@ -4,10 +4,12 @@ import androidx.compose.ui.test.assertIsDisplayed
 import androidx.compose.ui.test.junit4.createComposeRule
 import androidx.compose.ui.test.onNodeWithText
 import androidx.compose.ui.test.onNodeWithContentDescription
+import com.enve.engine.backup.SettingsCodeOffer
 import com.enve.engine.backup.SettingsTransferFacade
 import com.enve.engine.backup.SettingsTransferOffer
 import com.enve.engine.backup.SettingsTransferReview
 import kotlinx.coroutines.awaitCancellation
+import kotlinx.coroutines.flow.MutableStateFlow
 import androidx.compose.ui.test.performClick
 import androidx.test.ext.junit.runners.AndroidJUnit4
 import com.enve.engine.backup.SettingsBackup
@@ -56,7 +58,7 @@ class SettingsBackupUiTest {
 
         compose.onNodeWithText("Transfer to another device").performClick()
         compose.onNodeWithText("Include supported sign-ins").performClick()
-        compose.onNodeWithText("Continue").performClick()
+        compose.onNodeWithText("Show QR code").performClick()
         compose.onNodeWithText("Share your saved sign-ins?").assertIsDisplayed()
         compose.onNodeWithContentDescription("One-time transfer QR code").assertDoesNotExist()
         compose.runOnIdle { assertEquals(emptyList<Boolean>(), transfer.requests) }
@@ -65,14 +67,38 @@ class SettingsBackupUiTest {
 
         compose.onNodeWithText("Transfer to another device").performClick()
         compose.onNodeWithText("Include supported sign-ins").performClick()
-        compose.onNodeWithText("Continue").performClick()
+        compose.onNodeWithText("Show QR code").performClick()
         compose.onNodeWithText("Transfer without sign-ins").performClick()
         compose.onNodeWithContentDescription("One-time transfer QR code").assertExists()
         compose.runOnIdle { assertEquals(listOf(false), transfer.requests) }
     }
 
+    @Test
+    fun typedCodeRequiresSignInConsentAndSenderApproval() {
+        val transfer = TransferFixture()
+        val vm = SettingsBackupViewModel(BackupFixture(), transfer)
+        compose.setContent { HearthTheme { SettingsBackupScreen(onBack = {}, vm = vm) } }
+
+        compose.onNodeWithText("Transfer to another device").performClick()
+        compose.onNodeWithText("Include supported sign-ins").performClick()
+        compose.onNodeWithText("Show six-digit code").performClick()
+        compose.onNodeWithText("Share your saved sign-ins?").assertIsDisplayed()
+        compose.onNodeWithText("004201").assertDoesNotExist()
+        compose.onNodeWithText("Show code with sign-ins").performClick()
+        compose.onNodeWithText("004201").assertIsDisplayed()
+        compose.onNodeWithText("Approve transfer").assertDoesNotExist()
+        compose.runOnIdle {
+            assertEquals(listOf(true), transfer.requests)
+            transfer.awaitingApproval.value = true
+        }
+        compose.onNodeWithText("Approve transfer").performClick()
+        compose.runOnIdle { assertEquals(1, transfer.approvals) }
+    }
+
     private class TransferFixture : SettingsTransferFacade {
         val requests = mutableListOf<Boolean>()
+        val awaitingApproval = MutableStateFlow(false)
+        var approvals = 0
 
         override suspend fun send(
             includeSettings: Boolean, includeSources: Boolean, includeIntegrations: Boolean, includeSignIns: Boolean,
@@ -85,7 +111,21 @@ class SettingsBackupUiTest {
             }
         }
 
+        override suspend fun sendCode(
+            includeSettings: Boolean, includeSources: Boolean, includeIntegrations: Boolean, includeSignIns: Boolean,
+        ): SettingsCodeOffer {
+            requests += includeSignIns
+            return object : SettingsCodeOffer {
+                override val code = "004201"
+                override val awaitingApproval = this@TransferFixture.awaitingApproval
+                override fun approve() { approvals++ }
+                override suspend fun awaitTransfer(): Unit = awaitCancellation()
+                override fun close() = Unit
+            }
+        }
+
         override suspend fun receive(code: String): SettingsTransferReview = error("Unexpected receive")
+        override suspend fun receiveCode(code: String): SettingsTransferReview = error("Unexpected code")
         override suspend fun exportFile(
             uri: String, includeSettings: Boolean, includeSources: Boolean, includeIntegrations: Boolean,
             includeSignIns: Boolean, passphrase: String,

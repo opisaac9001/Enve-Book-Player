@@ -135,7 +135,7 @@ internal object SettingsTransferWire {
         }
     }
 
-    private fun readExactly(input: DataInputStream, socket: Socket, count: Int, deadline: Long): ByteArray {
+    fun readExactly(input: DataInputStream, socket: Socket, count: Int, deadline: Long): ByteArray {
         val data = ByteArray(count)
         var offset = 0
         while (offset < count) {

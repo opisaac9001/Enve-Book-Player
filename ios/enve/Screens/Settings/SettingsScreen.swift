@@ -148,7 +148,7 @@ struct SettingsScreen: View {
                 settingsNav(
                     settingsCategory(
                         title: "Downloads & sync",
-                        subtitle: "Offline files, storage, backups, and devices"
+                        subtitle: "Offline files, storage, and iCloud sync"
                     ) { storageGroup }
                 ) {
                     SettingsLinkRow(
@@ -383,6 +383,7 @@ struct SettingsScreen: View {
         case .narratorModels: NarratorModelsScreen()
         case .storage: SettingsParentGate { StorageScreen(profileSession: session) }
         case .dataManagement: SettingsParentGate { DataManagementScreen() }
+        case .settingsBackup: SettingsParentGate { SettingsBackupScreen() }
         case .sync: SyncScreen()
         case .achievements: AchievementsScreen()
         case .statsImport: StatsImportScreen()
@@ -703,7 +704,7 @@ struct SettingsScreen: View {
                 settingsNav(SettingsParentGate { DataManagementScreen() }) {
                     SettingsLinkRow(
                         title: "Data management",
-                        subtitle: session.isOwner ? "Back up settings and sources, or clear app data" : "Clear caches, metadata, or downloads",
+                        subtitle: "Clear caches, metadata, or downloads",
                         systemImage: "trash.circle.fill"
                     )
                 }
@@ -907,11 +908,11 @@ private enum SettingsSearchDestination: String {
     case sources, opds, video, libraryDisplay, metadataMatching, pendingMatches, collections, duplicates
     case bookSync, storyAlign, koReader, hardcover, vocabulary, dictionaries, obsidian, readwise, dragAndDrop
     case hiddenBooks, recentlyDeleted, rejectedContent, home, comicReader, restReminder, playback, appearance, accessibility
-    case playbackHistory, downloads, narratorModels, storage, dataManagement, sync, achievements, statsImport, advanced, metadataKeys
+    case playbackHistory, downloads, narratorModels, storage, dataManagement, settingsBackup, sync, achievements, statsImport, advanced, metadataKeys
     case podcastTransfer, podcastRoutines, externalServices, orphanedBooks, news, tipJar, reportIssue, tour
 
     var isOwnerOnly: Bool {
-        [.koReader, .hardcover, .obsidian, .sync, .metadataKeys].contains(self)
+        [.koReader, .hardcover, .obsidian, .settingsBackup, .sync, .metadataKeys].contains(self)
     }
 }
 
@@ -959,7 +960,8 @@ private struct SettingsSearchItem: Identifiable {
         item(.downloads, "Downloads", "Active, failed, and finished", "arrow.down.circle.fill", "offline queue"),
         item(.narratorModels, "Narrator models", "Offline voices, downloads, and storage", "waveform", "tts kokoro supertonic pocket speech narration"),
         item(.storage, "Storage", "Files on this phone and cleanup rules", "internaldrive.fill", "disk cache space"),
-        item(.dataManagement, "Data management", "Back up settings and sources, or clear app data", "trash.circle.fill", "backup transfer export import erase reset cleanup"),
+        item(.dataManagement, "Data management", "Clear caches, metadata, or downloads", "trash.circle.fill", "erase reset cleanup"),
+        item(.settingsBackup, "Backup & transfer", "Move settings between devices or save a backup", "arrow.left.arrow.right", "import export restore qr code six digits sign-in migration sources"),
         item(.sync, "Sync", "iCloud across your devices", "icloud.and.arrow.up.fill", "cloud backup progress apple tv servers connections"),
         item(.achievements, "Achievements", "Levels and milestones", "trophy.fill", "goals awards journal"),
         item(.statsImport, "Import listening history", "Bring stats in from another app", "square.and.arrow.down", "statistics data"),

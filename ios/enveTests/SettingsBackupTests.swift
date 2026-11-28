@@ -137,6 +137,53 @@ struct SettingsBackupTests {
         #expect(SettingsTransferCode(host: "192.168.2.4", port: 0, key: key) == nil)
     }
 
+    @Test(.enabled(if: ProcessInfo.processInfo.environment["ENVE_TEST_TYPED_PEER_CODE"] != nil))
+    func receivesSettingsFromAnAndroidTypedCodeOffer() async throws {
+        let code = try #require(ProcessInfo.processInfo.environment["ENVE_TEST_TYPED_PEER_CODE"])
+        let (encrypted, passphrase) = try await SettingsCodeTransfer.receive(code)
+        let payload = try encrypted.open(passphrase: passphrase)
+        let portable = try JSONDecoder().decode(PortableSettingsBackup.self, from: payload)
+        let shared = try #require(portable.sharedSettings)
+        var preferences = UserPreferences()
+        shared.apply(to: &preferences)
+        #expect(preferences.skipForwardAmount == 45)
+    }
+
+    @Test(.enabled(if: ProcessInfo.processInfo.environment["ENVE_TEST_TYPED_SENDER"] == "1"))
+    func sendsFixtureAfterTypedCodeApproval() async throws {
+        let payload = Data(#"{"sources":[],"sharedSettings":{"skipForwardSeconds":45}}"#.utf8)
+        var sealed = false
+        let offer = try await SettingsCodeTransferOffer.start { passphrase in
+            sealed = true
+            return try JSONEncoder().encode(EncryptedSettingsBackup.seal(payload, passphrase: passphrase))
+        }
+        let codeFile = FileManager.default.temporaryDirectory.appendingPathComponent("enve-test-typed-code")
+        defer {
+            offer.close()
+            try? FileManager.default.removeItem(at: codeFile)
+        }
+        try Data(offer.code.utf8).write(to: codeFile)
+        let deadline = ContinuousClock.now + .seconds(90)
+        while ContinuousClock.now < deadline {
+            switch offer.status {
+            case .waiting:
+                try await Task.sleep(for: .milliseconds(100))
+            case .approval:
+                #expect(!sealed)
+                offer.approve()
+                while offer.status == .approval {
+                    try await Task.sleep(for: .milliseconds(100))
+                }
+            case .sent:
+                #expect(sealed)
+                return
+            case .expired:
+                throw SettingsQRTransferError.connection
+            }
+        }
+        throw SettingsQRTransferError.connection
+    }
+
     @Test func sharedSettingsOnlyChangeSupportedPreferences() throws {
         let payload = Data("""
             {"sources":[],"sharedSettings":{"themeMode":"DARK","defaultSpeed":1.4,"skipForwardSeconds":30}}

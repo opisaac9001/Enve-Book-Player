@@ -20,7 +20,7 @@ class SyncCenterStatusTest {
         val state = mutableStateOf(SyncCenterState())
         compose.setContent {
             EnveTheme(dynamicBackgroundEnabled = false) {
-                SyncCenterScreen(state.value, {}, {}, {}, {}, {}, {}, {}, {}, {}, {}, {})
+                SyncCenterScreen(state.value, {}, {}, {}, {}, {}, {}, {}, {}, {}, {}, {}, onOpenBackup = {})
             }
         }
         compose.onNodeWithText("Not synced yet").assertIsDisplayed()

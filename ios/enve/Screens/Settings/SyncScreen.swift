@@ -95,6 +95,18 @@ struct SyncScreen: View {
                             SourcesErrorText(message: "Library sources couldn't sync. Check iCloud and try again.")
                         }
                     }
+                    Divider().overlay(hearth.hairline)
+                    NavigationLink {
+                        SettingsParentGate { SettingsBackupScreen() }
+                    } label: {
+                        SettingsLinkRow(
+                            title: "Backup & transfer",
+                            subtitle: "Move settings between devices or save a backup",
+                            systemImage: "arrow.left.arrow.right"
+                        )
+                    }
+                    .buttonStyle(PressableStyle())
+                    .accessibilityIdentifier("settings-backup-link")
                 }
             }
 
