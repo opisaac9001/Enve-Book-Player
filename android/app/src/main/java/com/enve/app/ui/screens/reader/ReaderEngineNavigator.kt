@@ -43,6 +43,7 @@ interface ReaderEngineNavigator {
     fun clearSelection()
     fun clearSearch()
     fun autoScrollStep(distance: Float)
+    suspend fun readingAnchor(): Locator?
     suspend fun search(query: String, limit: Int): List<Locator>
     fun close()
 }

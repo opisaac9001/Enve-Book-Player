@@ -74,6 +74,11 @@ final class KOReaderSyncService {
         persistConfig()
     }
 
+    func restoreBackupConfig(_ backup: KOReaderConfig) {
+        config = backup
+        persistConfig()
+    }
+
     func clearConfig() {
         config = KOReaderConfig()
         keychain.delete(passwordHashKeychainKey)

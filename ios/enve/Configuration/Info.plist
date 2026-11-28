@@ -22,6 +22,8 @@
 			</array>
 		</dict>
 	</array>
+	<key>EnveClubsServiceURL</key>
+	<string>$(ENVE_CLUBS_SERVICE_URL)</string>
 	<key>EnveSourceProvenance</key>
 	<string>enve-source-7f6167c5-3bdb-4a0d-91b8-0e5e30f1e9c4</string>
 	<key>ITSAppUsesNonExemptEncryption</key>
@@ -40,9 +42,9 @@
 		<string>_CC1AD845._googlecast._tcp</string>
 	</array>
 	<key>NSCameraUsageDescription</key>
-	<string>Enve uses the camera to scan a listening-position code someone shows you. Nothing is recorded or uploaded.</string>
+	<string>Enve uses the camera to scan book position and settings transfer codes. Nothing is recorded or uploaded.</string>
 	<key>NSLocalNetworkUsageDescription</key>
-	<string>Enve uses the local network to find Cast devices when you tap the Cast button, and to mirror books to the Read together app on your Apple TV.</string>
+	<string>Enve uses the local network to transfer settings between your devices, find Cast devices, and mirror books to your Apple TV.</string>
 	<key>NSPhotoLibraryAddUsageDescription</key>
 	<string>Enve saves images that you explicitly choose from a book to your Photos library.</string>
 	<key>NSSpeechRecognitionUsageDescription</key>

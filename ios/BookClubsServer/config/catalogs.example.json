@@ -1,0 +1,27 @@
+[
+  {
+    "id": "opds",
+    "name": "OPDS catalog",
+    "type": "opds",
+    "url": "https://books.example.net/opds",
+    "shareFiles": false
+  },
+  {
+    "id": "grimmory",
+    "name": "Grimmory",
+    "type": "grimmory",
+    "url": "http://grimmory:6060",
+    "shareFiles": false,
+    "usernameEnv": "GRIMMORY_OPDS_USER",
+    "passwordEnv": "GRIMMORY_OPDS_PASSWORD"
+  },
+  {
+    "id": "audiobookshelf",
+    "name": "Audiobookshelf",
+    "type": "audiobookshelf",
+    "url": "http://audiobookshelf:80",
+    "shareFiles": false,
+    "libraryId": "replace-with-your-books-library-id",
+    "tokenEnv": "ABS_CATALOG_TOKEN"
+  }
+]

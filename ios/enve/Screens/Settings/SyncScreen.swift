@@ -3,9 +3,12 @@ import SwiftUI
 struct SyncScreen: View {
     @Environment(\.hearth) private var hearth
     @Environment(\.profileSession) private var profileSession
+    @Environment(ProfileSwitchCoordinator.self) private var profiles
     private var session: ProfileSession { profileSession ?? .owner }
     private var coordinator: SyncCoordinator { session.sync }
+    private var sourceSync: ServerConnectionCloudKitSync { .shared }
     @State private var isManualSyncing = false
+    @State private var syncSources = ServerConnectionCloudKitSync.shared.isEnabled
 
     var body: some View {
         SettingsScaffold(
@@ -20,15 +23,6 @@ struct SyncScreen: View {
                     isOn: Binding(
                         get: { coordinator.syncEnabled },
                         set: { coordinator.setSyncEnabled($0) }
-                    )
-                )
-
-                SourcesToggleRow(
-                    title: "Sync to Apple TV",
-                    subtitle: "Share your server connections with Enve on Apple TV.",
-                    isOn: Binding(
-                        get: { ServerConnectionCloudKitSync.shared.isEnabled },
-                        set: { ServerConnectionCloudKitSync.shared.isEnabled = $0 }
                     )
                 )
 
@@ -65,6 +59,40 @@ struct SyncScreen: View {
                         Task {
                             await coordinator.manualSync()
                             isManualSyncing = false
+                        }
+                    }
+                }
+            }
+
+            if session.isOwner {
+                SourcesCard {
+                    SourcesToggleRow(
+                        title: "Sync library sources with iCloud",
+                        subtitle: "Share connections with Enve on iPhone, iPad and Apple TV signed in to the same Apple Account.",
+                        isOn: $syncSources
+                    )
+                    .onChange(of: syncSources) { _, enabled in
+                        guard (try? profiles.authorizeChanges(in: session)) != nil else {
+                            syncSources = sourceSync.isEnabled
+                            return
+                        }
+                        sourceSync.isEnabled = enabled
+                    }
+                    if syncSources {
+                        QuietButton(title: "Sync library sources now", systemImage: "arrow.triangle.2.circlepath") {
+                            guard (try? profiles.authorizeChanges(in: session)) != nil else { return }
+                            Task { await sourceSync.syncNow() }
+                        }
+                        .disabled(sourceSync.status == .syncing)
+                        switch sourceSync.status {
+                        case .idle: EmptyView()
+                        case .syncing: ProgressView()
+                        case .lastSyncedAt(let date):
+                            Text("Sources synced \(date.formatted(.relative(presentation: .named)))")
+                                .font(.hearthCaption)
+                                .foregroundStyle(hearth.textSecondary)
+                        case .error:
+                            SourcesErrorText(message: "Library sources couldn't sync. Check iCloud and try again.")
                         }
                     }
                 }

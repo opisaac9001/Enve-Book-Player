@@ -1,0 +1,21 @@
+services:
+  book-club:
+    build: .
+    ports:
+      - "${BOOK_CLUB_BIND:-127.0.0.1}:${BOOK_CLUB_PORT:-8794}:8794"
+    environment:
+      BOOK_CLUB_CATALOG_CONFIG: "${BOOK_CLUB_CATALOG_CONFIG:-}"
+      BOOK_CLUB_WEB_ORIGINS: "${BOOK_CLUB_WEB_ORIGINS:-}"
+      BOOK_CLUB_COPY_MAX_BYTES: "${BOOK_CLUB_COPY_MAX_BYTES:-4294967296}"
+      CLUB_MODERATOR_TOKEN: "${CLUB_MODERATOR_TOKEN:-}"
+      CLUB_BLOCKED_WORDS: "${CLUB_BLOCKED_WORDS:-}"
+    env_file:
+      - path: ./config/catalog.env
+        required: false
+    volumes:
+      - data:/data
+      - ./config:/config:ro
+    restart: unless-stopped
+
+volumes:
+  data:

@@ -99,5 +99,8 @@ abstract class FacadeModule {
     abstract fun bindSettingsBackupFacade(impl: com.enve.app.data.backup.SettingsBackupFacadeImpl): com.enve.engine.backup.SettingsBackupFacade
 
     @Binds @Singleton
+    abstract fun bindSettingsTransferFacade(impl: com.enve.app.data.backup.SettingsTransferFacadeImpl): com.enve.engine.backup.SettingsTransferFacade
+
+    @Binds @Singleton
     abstract fun bindPlayerExtrasFacade(impl: PlayerExtrasFacadeImpl): com.enve.engine.playback.PlayerExtrasFacade
 }

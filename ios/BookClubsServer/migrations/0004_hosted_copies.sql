@@ -1,0 +1,5 @@
+CREATE TABLE hosted_copies (
+  read_id TEXT PRIMARY KEY REFERENCES reads(id) ON DELETE CASCADE,
+  id TEXT NOT NULL UNIQUE,
+  manifest TEXT NOT NULL
+);

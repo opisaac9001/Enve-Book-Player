@@ -68,6 +68,9 @@ android {
     defaultConfig {
         minSdk = 26
         buildConfigField("boolean", "PHONON_AVAILABLE", phononLibrary.isPresent.toString())
+        val clubsServiceURL = providers.gradleProperty("enveClubsServiceURL").orElse("").get()
+        require(clubsServiceURL.none { it == '"' || it == '\\' || it.isISOControl() })
+        buildConfigField("String", "ENVE_CLUBS_SERVICE_URL", "\"$clubsServiceURL\"")
 
         consumerProguardFiles("consumer-rules.pro")
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"

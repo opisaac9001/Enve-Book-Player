@@ -26,6 +26,9 @@ struct LibraryScreen: View {
     @State private var destination: LibraryDestination?
     @State private var visibleScopeRefreshInProgress = false
     @State private var showPositionScanner = false
+    #if os(iOS)
+    @State private var showBookClubs = false
+    #endif
     @State private var detailSplit = BookDetailSplitState()
     #if DEBUG
     @State private var didPresentDebugCollectionSelection = false
@@ -136,6 +139,18 @@ struct LibraryScreen: View {
                 .enveEnvironment()
                 .hearthPresentationBackground()
         }
+        #if os(iOS)
+        .sheet(isPresented: $showBookClubs, onDismiss: {
+            (profileSession ?? .owner).clubs?.openQueuedBook(using: engine.playback)
+        }) {
+            let session = profileSession ?? .owner
+            if let clubs = session.clubs {
+                ClubsHomeScreen(store: clubs, session: session)
+                    .enveEnvironment(session: session)
+                    .hearthPresentationBackground()
+            }
+        }
+        #endif
         .sheet(item: $collectionSelection) { selection in
             CollectionsBatchAddSheet(books: selection.books)
                 .enveEnvironment()
@@ -271,6 +286,11 @@ struct LibraryScreen: View {
             } label: {
                 Label("Scan book position", systemImage: "qrcode.viewfinder")
             }
+            #if os(iOS)
+            if (profileSession ?? .owner).clubs != nil {
+                Button { showBookClubs = true } label: { Label("Book Clubs", systemImage: "person.2") }
+            }
+            #endif
             Divider()
             Button {
                 destination = .settings

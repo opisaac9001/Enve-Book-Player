@@ -63,6 +63,11 @@ class KOReaderHubService @Inject constructor(
         }
     }
 
+    internal suspend fun restoreBackupConfig(serverUrl: String, username: String, passwordHash: String, autoSync: Boolean) {
+        if (passwordHash.isNotEmpty()) vault.put(CredentialVault.KOSYNC_HUB_PASSWORD_HASH, passwordHash)
+        prefs.setKosyncHubConfig(serverUrl, username, autoSync)
+    }
+
     suspend fun clearConfig() {
         prefs.clearKosyncHubConfig()
         vault.remove(CredentialVault.KOSYNC_HUB_PASSWORD_HASH)

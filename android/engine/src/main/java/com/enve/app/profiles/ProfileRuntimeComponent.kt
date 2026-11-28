@@ -30,6 +30,7 @@ import javax.inject.Singleton
 interface ProfileRuntimeComponent {
     fun serverSync(): com.enve.core.data.local.ProfileServerSyncStore
     fun resources(): ProfileResources
+    fun clubs(): com.enve.app.clubs.ClubsStore
     fun listeningPosition(): com.enve.engine.listeningposition.ListeningPositionFacade
     fun library(): com.enve.engine.library.LibraryFacade
     fun savedBooks(): com.enve.engine.library.SavedBooksFacade
@@ -39,6 +40,7 @@ interface ProfileRuntimeComponent {
     fun playerExtras(): com.enve.engine.playback.PlayerExtrasFacade
     fun preferencesFacade(): com.enve.engine.prefs.PreferencesFacade
     fun settingsBackup(): com.enve.engine.backup.SettingsBackupFacade
+    fun settingsTransfer(): com.enve.engine.backup.SettingsTransferFacade
     fun sources(): com.enve.engine.sources.SourcesFacade
     fun collections(): com.enve.engine.collections.CollectionsFacade
     fun annotations(): com.enve.engine.annotations.AnnotationsFacade

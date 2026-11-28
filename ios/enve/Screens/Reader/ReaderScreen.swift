@@ -32,6 +32,7 @@ struct ReaderScreen: View {
     @State private var inkColor = "#FFF59D"
     @State private var noteDraft: ReaderNoteDraft?
     @State private var bookmarkDraft: ReaderBookmarkDraft?
+    @State private var clubPassageQuery: String?
     @State private var bookmarkToast: String?
     @State private var bookmarkToastTask: Task<Void, Never>?
     @State private var readAloudControlsVisible = false
@@ -354,15 +355,15 @@ struct ReaderScreen: View {
             .enveEnvironment()
         }
         // Explicit captures avoid the reproduced iOS 17 sheet update loop.
-        .sheet(item: $tray) { [model, ambient, book] presented in
+        .sheet(item: $tray, onDismiss: { clubPassageQuery = nil }) { [model, ambient, book, clubPassageQuery] presented in
             Group {
                 switch presented {
                 case .contents:
-                    ReaderContentsTray(model: model, ambient: ambient)
+                    ReaderContentsTray(model: model, ambient: ambient, profileSession: profileSession)
                 case .appearance:
                     ReaderAppearanceTray(model: model)
                 case .search:
-                    ReaderSearchTray(model: model)
+                    ReaderSearchTray(model: model, initialQuery: clubPassageQuery)
                 case .tts:
                     ReaderTTSSheet(tts: model.ttsService) { model.startTTS() }
                 case .readAloud:
@@ -673,6 +674,11 @@ struct ReaderScreen: View {
             } else {
                 hideReadAloudControls()
             }
+        }
+        .onChange(of: model.state.isReady, initial: true) { _, ready in
+            guard ready, let query = profileSession.clubs?.consumePassageSearch(for: book) else { return }
+            clubPassageQuery = query
+            tray = .search
         }
         .onDisappear(perform: endSession)
         .task {

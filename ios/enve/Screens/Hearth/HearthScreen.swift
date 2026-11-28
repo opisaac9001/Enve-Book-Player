@@ -33,6 +33,11 @@ struct HearthScreen: View {
     @State private var pendingUnread: Book?
     @State private var sectionOrder: [UserPreferences.HomeSection]
 
+    #if os(iOS)
+    @Environment(\.scenePhase) private var scenePhase
+    @State private var clubDestination: HearthClubDestination?
+    #endif
+
     private var lastOpened: LastOpenedBookStore { profileSession.lastOpened }
 
     var body: some View {
@@ -73,6 +78,12 @@ struct HearthScreen: View {
                             .padding(.horizontal, 24)
                     }
 
+                    #if os(iOS)
+                    if let clubs = profileSession.clubs {
+                        HearthClubBooks(store: clubs, session: profileSession) { clubDestination = $0 }
+                    }
+                    #endif
+
                     ForEach(sectionOrder) { section in
                         homeSection(section)
                     }
@@ -87,8 +98,25 @@ struct HearthScreen: View {
                 await engine.sources.refreshHearthCatalog()
                 rediscoverRefreshDate = nil
                 await load()
+                #if os(iOS)
+                if let clubs = profileSession.clubs, clubs.account != nil {
+                    try? await clubs.refreshClubs()
+                }
+                #endif
             }
         }
+        #if os(iOS)
+        .task(id: activeClubAccount) {
+            if activeClubAccount != nil { try? await profileSession.clubs?.refreshClubs() }
+        }
+        .sheet(item: $clubDestination, onDismiss: finishClubVisit) { destination in
+            if let store = profileSession.clubs {
+                clubScreen(destination, store: store)
+                    .enveEnvironment(session: profileSession)
+                    .hearthPresentationBackground()
+            }
+        }
+        #endif
         .accessibilityIdentifier("hearth-screen")
         .navigationDestination(item: $seeAll) { destination in
             HearthSeeAllScreen(destination: destination)
@@ -144,6 +172,44 @@ struct HearthScreen: View {
             Text("Your place in \"\(book.title)\" goes back to the beginning wherever it syncs. Bookmarks, highlights, and downloads stay.")
         }
     }
+
+    #if os(iOS)
+    private var activeClubAccount: String? {
+        isActive && scenePhase == .active ? profileSession.clubs?.account?.id : nil
+    }
+
+    @ViewBuilder
+    private func clubScreen(_ destination: HearthClubDestination, store: ClubsStore) -> some View {
+        switch destination {
+        case .all:
+            ClubsHomeScreen(store: store, session: profileSession)
+        case .club(let id):
+            NavigationStack {
+                if let account = store.account {
+                    ClubDashboard(store: store, session: profileSession, account: account, clubID: id) {
+                        clubDestination = nil
+                    }
+                    .toolbar {
+                        ToolbarItem(placement: .cancellationAction) {
+                            Button("Done") { clubDestination = nil }
+                        }
+                    }
+                } else {
+                    Button("Done") { clubDestination = nil }
+                }
+            }
+            .tint(Hearth.accent)
+        }
+    }
+
+    private func finishClubVisit() {
+        guard let store = profileSession.clubs else { return }
+        store.openQueuedBook(using: engine.playback)
+        if store.account != nil {
+            Task { try? await store.refreshClubs() }
+        }
+    }
+    #endif
 
     @ViewBuilder
     private func homeSection(_ section: UserPreferences.HomeSection) -> some View {

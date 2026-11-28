@@ -11,18 +11,25 @@ import androidx.test.core.app.ActivityScenario
 import androidx.test.core.app.ApplicationProvider
 import androidx.test.ext.junit.runners.AndroidJUnit4
 import com.enve.app.MainActivity
+import com.enve.app.data.offline.offlineDownloadKey
 import com.enve.app.profiles.ProfileActivityBinding
 import com.enve.app.viewmodel.ReaderViewModel
 import com.enve.core.data.local.toCachedBook
 import com.enve.core.data.model.AppMediaType
 import com.enve.core.data.model.Book
 import com.enve.core.data.model.BookSource
+import com.enve.core.data.model.ProviderConnection
+import com.enve.core.data.model.UrlScheme
 import com.enve.core.reader.ReaderEngineKind
 import dagger.hilt.android.EntryPointAccessors
 import java.io.File
+import java.net.InetAddress
+import java.net.ServerSocket
 import java.util.UUID
 import java.util.zip.ZipEntry
 import java.util.zip.ZipOutputStream
+import kotlin.coroutines.resume
+import kotlin.math.abs
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.first
@@ -35,8 +42,6 @@ import org.junit.Assert.assertTrue
 import org.junit.Test
 import org.junit.runner.RunWith
 import org.readium.r2.navigator.epub.EpubNavigatorFragment
-import kotlin.coroutines.resume
-import kotlin.math.abs
 
 @RunWith(AndroidJUnit4::class)
 class ReaderOfflineOpeningTest {
@@ -117,6 +122,50 @@ class ReaderOfflineOpeningTest {
             }
         }
         assertEquals(runtime.generation, coordinator.activeRuntime.value?.generation)
+    }
+
+    @Test
+    fun downloadedGrimmoryEpubRendersWhenItsServerStopsResponding() = runBlocking {
+        val context = ApplicationProvider.getApplicationContext<Context>()
+        val coordinator = EntryPointAccessors.fromApplication(context,
+            ProfileActivityBinding.DeviceEntryPoint::class.java).profiles()
+        ActivityScenario.launch(MainActivity::class.java).use {
+            await("profile runtime ready") { coordinator.activeRuntime.value != null }
+        }
+        val component = checkNotNull(coordinator.activeRuntime.value).component
+        val lastOpened = component.lastOpenedBookStore()
+        val previous = lastOpened.lastOpenedBookKey.first()
+        ServerSocket(0, 8, InetAddress.getByName("127.0.0.1")).use { stalled ->
+            val connection = ProviderConnection(UUID.randomUUID().toString(), BookSource.GRIMMORY, "Fixture",
+                "http://127.0.0.1:${stalled.localPort}", "", urlScheme = UrlScheme.HTTP)
+            val book = Book(id = "offline-${UUID.randomUUID()}", title = "Downloaded EPUB", source = connection.source,
+                connectionId = connection.id, mediaType = AppMediaType.EBOOK, primaryFileType = "EPUB", isDownloaded = true)
+            val storage = component.comicStorage()
+            component.connections().upsert(connection)
+            try {
+                val temp = storage.createTempFile(book.offlineDownloadKey, "epub")
+                writeEPUB(temp)
+                storage.commit(temp)
+                storage.saveManifest(book)
+                component.bookCacheDao().upsert(listOf(book.toCachedBook()))
+                val intent = EbookReaderActivity.createIntent(context, book.id, book.source, connection.id,
+                    book.title, "Fixture", "EPUB", null, 0f, readerEngine = ReaderEngineKind.READIUM)
+                val start = android.os.SystemClock.elapsedRealtime()
+                ActivityScenario.launch<EbookReaderActivity>(intent).use {
+                    awaitReader(it, ReaderEngineKind.READIUM, "FIRST_CHAPTER_MARKER")
+                    assertTrue("Downloaded Grimmory EPUB exceeded open budget",
+                        android.os.SystemClock.elapsedRealtime() - start < 10_000L)
+                }
+            } finally {
+                component.connections().remove(connection.id)
+                storage.removeDownload(book.offlineDownloadKey)
+                component.bookCacheDao().deleteByCacheKeys(listOf(book.uniqueKey))
+                if (lastOpened.lastOpenedBookKey.first() == book.uniqueKey) {
+                    if (previous == null) lastOpened.forget(book.uniqueKey)
+                    else lastOpened.record(previous.substringAfter(':'), BookSource.LOCAL, previous.substringBefore(':'))
+                }
+            }
+        }
     }
 
     @Test

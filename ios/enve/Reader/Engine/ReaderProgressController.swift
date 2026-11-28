@@ -865,6 +865,14 @@ final class ReaderProgressController {
         let capturedLocator = locatorJSON
         let capturedBook = book
         let capturedSourceEngine = sourceEngine
+        #if os(iOS)
+        if let clubs = profileSession.clubs, clubs.sharesProgress(for: capturedBook) {
+            let chapters = libraryCache.bookInMemory(uniqueId: capturedBook.uniqueId)?.chapters ?? capturedBook.chapters ?? []
+            let titles = chapters.map { ClubsStore.chapterKey($0.title) }
+            clubs.record(book: capturedBook, fraction: capturedProgression, at: now, active: true,
+                         chapter: host?.progressSectionTitle, chapterOrder: titles)
+        }
+        #endif
         if host?.progressPreservesListeningPosition != true {
             Task {
                 await profileSession.linkedProgress.recordEbookProgress(

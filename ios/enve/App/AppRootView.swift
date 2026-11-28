@@ -52,6 +52,12 @@ struct AppRootView: View {
         let message: String
     }
     @State private var sharedPositionLink: SharedPositionLink?
+    private struct ClubInvitation: Identifiable {
+        let code: String
+        var id: String { code }
+    }
+
+    @State private var clubInvitation: ClubInvitation?
     @State private var incomingBook: IncomingBookImportRequest?
     @State private var queuedIncomingBooks: [IncomingBookImportRequest] = []
     @State private var importedBookToOpen: Book?
@@ -157,6 +163,15 @@ struct AppRootView: View {
                 .enveEnvironment(session: profileSession)
                 .hearthPresentationBackground()
         }
+        .sheet(item: $clubInvitation, onDismiss: {
+            profileSession.clubs?.openQueuedBook(using: engine.playback)
+        }) { invitation in
+            if let clubs = profileSession.clubs {
+                ClubsHomeScreen(store: clubs, session: profileSession, initialCode: invitation.code)
+                    .enveEnvironment(session: profileSession)
+                    .hearthPresentationBackground()
+            }
+        }
         .alert(item: $presentation.userFacingError) { error in
             Alert(title: Text(error.title), message: Text(error.message), dismissButton: .default(Text("OK")))
         }
@@ -250,6 +265,10 @@ struct AppRootView: View {
             profileSession.opdsLogin.handleCallback(url)
             return
         }
+        if let code = ClubsAPI.inviteCode(from: url), profileSession.clubs != nil {
+            clubInvitation = ClubInvitation(code: code)
+            return
+        }
         if let message = ListeningPositionLink.message(from: url) {
             appState.presentation.isPlayerPresented = false
             sharedPositionLink = SharedPositionLink(message: message)
@@ -311,6 +330,7 @@ struct AppRootView: View {
         reauthConnection = nil
         showOrphanedMatcher = false
         sharedPositionLink = nil
+        clubInvitation = nil
         debugSettingsPresented = false
         debugAddSourcePresented = false
         debugDetailBook = nil

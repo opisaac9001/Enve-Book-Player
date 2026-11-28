@@ -31,6 +31,7 @@ import androidx.compose.material.icons.outlined.CheckCircle
 import androidx.compose.material.icons.outlined.Folder
 import androidx.compose.material.icons.outlined.GridView
 import androidx.compose.material.icons.outlined.MoreVert
+import androidx.compose.material.icons.outlined.People
 import androidx.compose.material.icons.outlined.Refresh
 import androidx.compose.material.icons.outlined.QrCodeScanner
 import com.enve.hearth.listeningposition.ListeningPositionScanScreen
@@ -100,6 +101,7 @@ fun HearthLibraryScreen(
     onPlaybackStarted: () -> Unit = {},
     onAddSource: () -> Unit = {},
     onOpenSettings: () -> Unit = {},
+    onOpenClubs: (() -> Unit)? = null,
     onOpenBookOrbitTool: (BookOrbitTool) -> Unit = {},
 ) {
     var showPositionScanner by rememberSaveable { mutableStateOf(false) }
@@ -268,6 +270,12 @@ fun HearthLibraryScreen(
                         Icon(Icons.Outlined.MoreVert, contentDescription = "More library options", tint = palette.textSecondary)
                     }
                     LibraryMenu(expanded = moreMenuOpen, onDismissRequest = { moreMenuOpen = false }) {
+                        if (onOpenClubs != null) {
+                            MoreMenuItem(Icons.Outlined.People, "Book Clubs") {
+                                moreMenuOpen = false
+                                onOpenClubs()
+                            }
+                        }
                         MoreMenuItem(Icons.Outlined.QrCodeScanner, "Scan book position") {
                             moreMenuOpen = false
                             showPositionScanner = true

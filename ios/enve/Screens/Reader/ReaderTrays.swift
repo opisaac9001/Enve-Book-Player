@@ -6,6 +6,7 @@ import UIKit
 struct ReaderContentsTray: View {
     @ObservedObject var model: ClassicReaderModel
     let ambient: Color
+    let profileSession: ProfileSession
 
     @Environment(\.hearth) private var hearth
     @Environment(\.openURL) private var openURL
@@ -17,6 +18,8 @@ struct ReaderContentsTray: View {
     @State private var annotationColorFilter: String?
     @State private var bookmarkEditor: ReaderBookmarkEditorPresentation?
     @State private var annotationEditor: ReaderAnnotationEditorPresentation?
+    @State private var clubAnnotation: ReaderAnnotation?
+
 
     var body: some View {
         VStack(spacing: 0) {
@@ -61,6 +64,12 @@ struct ReaderContentsTray: View {
             .presentationDragIndicator(.visible)
             .hearthPresentationBackground()
             .enveEnvironment()
+        }
+        .sheet(item: $clubAnnotation) { annotation in
+            if let clubs = profileSession.clubs {
+                ClubSharePassage(store: clubs, book: model.book, annotation: annotation)
+                    .enveEnvironment(session: profileSession)
+            }
         }
         .sheet(item: $annotationEditor) { presentation in
             ReaderAnnotationEditorSheet(
@@ -361,6 +370,12 @@ struct ReaderContentsTray: View {
                 Label("Copy", systemImage: "doc.on.doc")
             }
             .tint(hearth.statusOK)
+        }
+        .contextMenu {
+            if let clubs = profileSession.clubs, clubs.account != nil, !clubs.linkedCopies(for: model.book).isEmpty,
+               !annotation.text.clubTrimmed.isEmpty {
+                Button { clubAnnotation = annotation } label: { Label("Share with a Club", systemImage: "person.2") }
+            }
         }
         .swipeActions(edge: .trailing, allowsFullSwipe: false) {
             Button(role: .destructive) {
@@ -796,6 +811,7 @@ struct ReaderAnnotationEditorSheet: View {
 
 struct ReaderSearchTray: View {
     @ObservedObject var model: ClassicReaderModel
+    var initialQuery: String? = nil
 
     @Environment(\.hearth) private var hearth
     @Environment(\.dismiss) private var dismiss
@@ -893,8 +909,8 @@ struct ReaderSearchTray: View {
         .background(hearth.bg)
         .hearthPresentationBackground()
         .onAppear {
-            query = service.query
-            fieldFocused = service.results.isEmpty
+            query = initialQuery ?? service.query
+            fieldFocused = initialQuery == nil && service.results.isEmpty
         }
         .task(id: query) {
             try? await Task.sleep(for: .milliseconds(250))

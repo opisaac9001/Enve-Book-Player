@@ -1,3 +1,4 @@
+import AVFAudio
 import Foundation
 import Testing
 
@@ -137,6 +138,39 @@ private final class ResumeProgressProviderStub: PlexProvider, @unchecked Sendabl
 @MainActor
 @Suite(.serialized)
 struct PlaybackStartupTests {
+    @Test(arguments: [AVAudioSession.RouteChangeReason.oldDeviceUnavailable, .routeConfigurationChange])
+    func losingCarAudioPausesAndPreservesTheAudiobookPosition(reason: AVAudioSession.RouteChangeReason) async throws {
+        try await withFixture(startupTimeout: 30) { fixture in
+            let url = fixture.root.appendingPathComponent("carplay.wav")
+            try PlaybackTestAudioFixture.wave(seconds: 30).write(to: url)
+            let book = Book(id: "carplay", title: "CarPlay fixture", duration: 30, source: .local)
+            let manager = fixture.manager
+            manager.playDirectURL(book, url: url, startPosition: 10)
+            try await waitUntil { manager.isPlaying && manager.livePosition.map { $0 > 10.1 } == true }
+
+            manager.handleAudioRouteChange(
+                reason: .oldDeviceUnavailable, previousOutputs: [.headphones], currentOutputs: [.builtInSpeaker]
+            )
+            manager.handleAudioRouteChange(
+                reason: .routeConfigurationChange, previousOutputs: [.carAudio], currentOutputs: [.carAudio]
+            )
+            #expect(manager.isPlaying)
+
+            manager.handleAudioRouteChange(reason: reason, previousOutputs: [.carAudio], currentOutputs: [.builtInSpeaker])
+
+            #expect(!manager.isPlaying)
+            let pausedPosition = try #require(manager.livePosition)
+            let savedPosition = try #require(fixture.session.bookProgress.loadProgress(for: book)).progress
+            #expect(savedPosition == manager.currentTime)
+            #expect(abs(savedPosition - pausedPosition) < 0.35)
+            try await Task.sleep(for: .milliseconds(500))
+            #expect(abs((try #require(manager.livePosition)) - pausedPosition) < 0.1)
+
+            manager.play()
+            try await waitUntil { manager.isPlaying && manager.livePosition.map { $0 > pausedPosition + 0.1 } == true }
+        }
+    }
+
     @Test(arguments: [false, true])
     func failedSecondFileKeepsTheRealPositionAndTrack(relative: Bool) async throws {
         try await withFixture(startupTimeout: 30) { fixture in

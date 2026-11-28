@@ -72,7 +72,11 @@ class PlaybackOpenProgressResolver internal constructor(
     @Volatile
     private var heldBookKey: String? = null
 
-    suspend fun resolveStartSeconds(book: Book, promptForConflict: Boolean = true): Long {
+    suspend fun resolveStartSeconds(
+        book: Book,
+        promptForConflict: Boolean = true,
+        hasLocalAudio: Boolean = book.isDownloaded,
+    ): Long {
         if (heldBookKey == book.uniqueKey) heldBookKey = null
         val syncStartedAt = System.currentTimeMillis()
         val (checkpoint, hasPending) = readLocalCheckpoint(book)
@@ -83,7 +87,15 @@ class PlaybackOpenProgressResolver internal constructor(
         if (hasPending) return localStart
         val automaticSequence = checkpointOrder.newSequence()
         val result = try {
-            pullProgress(localBook, audioLocalPercentage(localBook), audioLocalUpdatedAt(localBook))
+            val percentage = audioLocalPercentage(localBook)
+            val updatedAt = audioLocalUpdatedAt(localBook)
+            if (hasLocalAudio || checkpoint?.isDownloaded == true) {
+                withTimeoutOrNull(DOWNLOADED_PROGRESS_TIMEOUT_MS) {
+                    pullProgress(localBook, percentage, updatedAt)
+                } ?: return latestLocalStart(book)
+            } else {
+                pullProgress(localBook, percentage, updatedAt)
+            }
         } catch (e: CancellationException) {
             throw e
         } catch (_: Exception) {
@@ -195,6 +207,7 @@ class PlaybackOpenProgressResolver internal constructor(
     ) > 0
 
     private companion object {
+        const val DOWNLOADED_PROGRESS_TIMEOUT_MS = 1_000L
         const val CONFLICT_PROMPT_TIMEOUT_MS = 30_000L
     }
 }

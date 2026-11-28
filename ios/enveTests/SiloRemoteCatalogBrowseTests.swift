@@ -258,6 +258,68 @@ private func waitUntil(_ condition: () -> Bool) async throws {
 @MainActor
 @Suite(.serialized, .timeLimit(.minutes(1)))
 struct SiloRemoteCatalogBrowseTests {
+    @Test func recentWindowsDoNotLimitBrowsingAfterReturningToTheLibrary() async throws {
+        SiloBrowseFixture.install { request in
+            switch request.path {
+            case "/api/v2/user/libraries":
+                return (200, ["items": ["3", "4"].map {
+                    ["id": $0, "name": "Library \($0)", "type": "audiobooks"]
+                }], 0)
+            case "/api/v2/catalog":
+                let library = request.query("library_id").first ?? "3"
+                return catalog(request, items: (0..<120).map { card("audiobook:\(library)-\($0)", "audiobook") })
+            default:
+                return (200, ["items": [], "collections": []], 0)
+            }
+        }
+        let harness = try RemoteBrowseHarness(libraries: ["3", "4"])
+        for id in ["3", "4"] {
+            await harness.fixture.session.catalog.refreshLibrary(providerId: harness.fixture.providerID, libraryId: id)
+        }
+        #expect(await harness.fixture.session.bookStore.bookCount(providerId: harness.fixture.providerID, mediaType: nil) == 24)
+
+        let model = harness.model(source: .connection(harness.fixture.providerID))
+        await model.reload()
+        #expect(model.books.count == 100)
+        while let page = model.loadMoreRemote() { await page.value }
+        #expect(model.books.count == 240)
+        await model.reload()
+        #expect(model.books.count == 240)
+        #expect(model.remoteCatalog == .loaded(hasMore: false))
+        #expect(SiloBrowseFixture.detailRequests().isEmpty)
+        await harness.close()
+    }
+
+    @Test(arguments: ["/api/v2/catalog", "/api/v2/user/libraries"])
+    func refreshFailurePreservesSavedBooksAndClearsAfterRetry(failedPath: String) async throws {
+        let responder: SiloBrowseFixture.Responder = { request in
+            switch request.path {
+            case "/api/v2/user/libraries":
+                return (200, ["items": [["id": "3", "name": "Books", "type": "audiobooks"]]], 0)
+            case "/api/v2/catalog":
+                return catalog(request, items: [card("audiobook:fresh", "audiobook")])
+            default:
+                return (200, ["items": [], "collections": []], 0)
+            }
+        }
+        SiloBrowseFixture.install { request in
+            request.path == failedPath ? (503, problem("unavailable", 503), 0) : responder(request)
+        }
+        let harness = try RemoteBrowseHarness()
+        let saved = harness.book("audiobook:saved")
+        await harness.fixture.session.bookStore.upsertBooks([saved])
+        let source = LibrarySourceFilter.library(providerId: harness.fixture.providerID, libraryId: "3")
+        await harness.fixture.session.catalog.refreshLibrary(providerId: harness.fixture.providerID, libraryId: "3")
+        #expect(harness.fixture.session.catalog.refreshFailure(for: source) != nil)
+        #expect(await harness.fixture.session.bookStore.book(uniqueId: saved.uniqueId) != nil)
+
+        SiloBrowseFixture.install(responder)
+        await harness.fixture.session.catalog.refreshLibrary(providerId: harness.fixture.providerID, libraryId: "3")
+        #expect(harness.fixture.session.catalog.refreshFailure(for: source) == nil)
+        #expect(await harness.fixture.session.bookStore.bookCount(providerId: harness.fixture.providerID, mediaType: nil) == 2)
+        await harness.close()
+    }
+
     @Test func paginationOutageShowsDownloadsAndAnOrdinaryReloadStartsAFreshSession() async throws {
         let responder: SiloBrowseFixture.Responder = { request in
             catalog(request, items: (0..<120).map { card("audiobook:\($0)", "audiobook") })

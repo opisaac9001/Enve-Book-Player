@@ -3,6 +3,11 @@ package com.enve.app.ui.screens
 import androidx.compose.ui.test.assertIsDisplayed
 import androidx.compose.ui.test.junit4.createComposeRule
 import androidx.compose.ui.test.onNodeWithText
+import androidx.compose.ui.test.onNodeWithContentDescription
+import com.enve.engine.backup.SettingsTransferFacade
+import com.enve.engine.backup.SettingsTransferOffer
+import com.enve.engine.backup.SettingsTransferReview
+import kotlinx.coroutines.awaitCancellation
 import androidx.compose.ui.test.performClick
 import androidx.test.ext.junit.runners.AndroidJUnit4
 import com.enve.engine.backup.SettingsBackup
@@ -41,6 +46,51 @@ class SettingsBackupUiTest {
         compose.onNodeWithText("Import", useUnmergedTree = true).performClick()
         compose.runOnIdle { assertEquals(1, facade.applied) }
         compose.onNodeWithText("Imported 1 setting.").assertExists()
+    }
+
+    @Test
+    fun qrRequiresExplicitConfirmationBeforeIncludingSignIns() {
+        val transfer = TransferFixture()
+        val vm = SettingsBackupViewModel(BackupFixture(), transfer)
+        compose.setContent { HearthTheme { SettingsBackupScreen(onBack = {}, vm = vm) } }
+
+        compose.onNodeWithText("Transfer to another device").performClick()
+        compose.onNodeWithText("Include supported sign-ins").performClick()
+        compose.onNodeWithText("Continue").performClick()
+        compose.onNodeWithText("Share your saved sign-ins?").assertIsDisplayed()
+        compose.onNodeWithContentDescription("One-time transfer QR code").assertDoesNotExist()
+        compose.runOnIdle { assertEquals(emptyList<Boolean>(), transfer.requests) }
+        compose.onNodeWithText("Cancel").performClick()
+        compose.runOnIdle { assertEquals(emptyList<Boolean>(), transfer.requests) }
+
+        compose.onNodeWithText("Transfer to another device").performClick()
+        compose.onNodeWithText("Include supported sign-ins").performClick()
+        compose.onNodeWithText("Continue").performClick()
+        compose.onNodeWithText("Transfer without sign-ins").performClick()
+        compose.onNodeWithContentDescription("One-time transfer QR code").assertExists()
+        compose.runOnIdle { assertEquals(listOf(false), transfer.requests) }
+    }
+
+    private class TransferFixture : SettingsTransferFacade {
+        val requests = mutableListOf<Boolean>()
+
+        override suspend fun send(
+            includeSettings: Boolean, includeSources: Boolean, includeIntegrations: Boolean, includeSignIns: Boolean,
+        ): SettingsTransferOffer {
+            requests += includeSignIns
+            return object : SettingsTransferOffer {
+                override val code = "test-only QR fixture"
+                override suspend fun awaitTransfer(): Unit = awaitCancellation()
+                override fun close() = Unit
+            }
+        }
+
+        override suspend fun receive(code: String): SettingsTransferReview = error("Unexpected receive")
+        override suspend fun exportFile(
+            uri: String, includeSettings: Boolean, includeSources: Boolean, includeIntegrations: Boolean,
+            includeSignIns: Boolean, passphrase: String,
+        ) = error("Unexpected export")
+        override suspend fun importFile(uri: String, passphrase: String): SettingsTransferReview = error("Unexpected import")
     }
 
     private class BackupFixture : SettingsBackupFacade {

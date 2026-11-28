@@ -1,0 +1,3954 @@
+{
+  "openapi": "3.1.0",
+  "info": {
+    "title": "book club: by Enve",
+    "version": "1.0-draft",
+    "description": "A vendor-neutral protocol for private, shared reading. An account, club and invite belong to one server origin."
+  },
+  "servers": [
+    {
+      "url": "/v1"
+    }
+  ],
+  "security": [
+    {
+      "clubSession": []
+    }
+  ],
+  "paths": {
+    "/health": {
+      "get": {
+        "operationId": "getHealth",
+        "summary": "Check service health",
+        "security": [],
+        "responses": {
+          "200": {
+            "description": "Success.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/OK"
+                }
+              }
+            }
+          },
+          "default": {
+            "$ref": "#/components/responses/Failure"
+          }
+        }
+      }
+    },
+    "/discovery": {
+      "get": {
+        "operationId": "getDiscovery",
+        "summary": "Discover the service and its capabilities",
+        "security": [],
+        "responses": {
+          "200": {
+            "description": "Success.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Discovery"
+                }
+              }
+            }
+          },
+          "default": {
+            "$ref": "#/components/responses/Failure"
+          }
+        }
+      }
+    },
+    "/accounts": {
+      "post": {
+        "operationId": "postAccounts",
+        "summary": "Create a Clubs profile",
+        "security": [],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "properties": {
+                  "name": {
+                    "type": "string",
+                    "minLength": 1,
+                    "maxLength": 36
+                  }
+                },
+                "required": [
+                  "name"
+                ]
+              }
+            }
+          }
+        },
+        "responses": {
+          "201": {
+            "description": "Created.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Credentials"
+                }
+              }
+            }
+          },
+          "default": {
+            "$ref": "#/components/responses/Failure"
+          }
+        }
+      }
+    },
+    "/sessions": {
+      "post": {
+        "operationId": "postSessions",
+        "summary": "Restore a profile with its recovery key",
+        "security": [],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "properties": {
+                  "recoveryKey": {
+                    "type": "string"
+                  }
+                },
+                "required": [
+                  "recoveryKey"
+                ]
+              }
+            }
+          }
+        },
+        "responses": {
+          "201": {
+            "description": "Created.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Credentials"
+                }
+              }
+            }
+          },
+          "default": {
+            "$ref": "#/components/responses/Failure"
+          }
+        }
+      }
+    },
+    "/me": {
+      "get": {
+        "operationId": "getMe",
+        "summary": "Get the signed-in profile",
+        "responses": {
+          "200": {
+            "description": "Success.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Account"
+                }
+              }
+            }
+          },
+          "default": {
+            "$ref": "#/components/responses/Failure"
+          }
+        }
+      },
+      "delete": {
+        "operationId": "deleteMe",
+        "summary": "Delete the profile and its personal data",
+        "responses": {
+          "200": {
+            "description": "Success.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/OK"
+                }
+              }
+            }
+          },
+          "default": {
+            "$ref": "#/components/responses/Failure"
+          }
+        }
+      }
+    },
+    "/me/session": {
+      "delete": {
+        "operationId": "deleteMeSession",
+        "summary": "Revoke this session",
+        "responses": {
+          "200": {
+            "description": "Success.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/OK"
+                }
+              }
+            }
+          },
+          "default": {
+            "$ref": "#/components/responses/Failure"
+          }
+        }
+      }
+    },
+    "/me/recovery": {
+      "post": {
+        "operationId": "postMeRecovery",
+        "summary": "Rotate the recovery key and revoke other sessions",
+        "responses": {
+          "200": {
+            "description": "Success.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Recovery"
+                }
+              }
+            }
+          },
+          "default": {
+            "$ref": "#/components/responses/Failure"
+          }
+        }
+      }
+    },
+    "/me/feed": {
+      "get": {
+        "operationId": "getMeFeed",
+        "summary": "Read activity across joined clubs",
+        "description": "Newest first, limited to active club memberships. Posts contribute an event with the reading title and no post text. Notes are excluded.",
+        "responses": {
+          "200": {
+            "description": "Success.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ClubFeed"
+                }
+              }
+            }
+          },
+          "default": {
+            "$ref": "#/components/responses/Failure"
+          }
+        },
+        "parameters": [
+          {
+            "name": "before",
+            "in": "query",
+            "schema": {
+              "type": "string"
+            },
+            "description": "Opaque cursor from the preceding response."
+          }
+        ]
+      }
+    },
+    "/me/notes": {
+      "get": {
+        "operationId": "getMeNotes",
+        "summary": "List notes owned by the signed-in profile",
+        "parameters": [
+          {
+            "name": "before",
+            "in": "query",
+            "schema": {
+              "type": "string"
+            },
+            "description": "Opaque cursor from the preceding response."
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Success.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Notes"
+                }
+              }
+            }
+          },
+          "default": {
+            "$ref": "#/components/responses/Failure"
+          }
+        }
+      }
+    },
+    "/me/notes/{note}": {
+      "parameters": [
+        {
+          "name": "note",
+          "in": "path",
+          "required": true,
+          "schema": {
+            "type": "string",
+            "format": "uuid"
+          }
+        }
+      ],
+      "delete": {
+        "operationId": "deleteMeNotesNote",
+        "summary": "Delete an owned note, including after leaving a club",
+        "responses": {
+          "200": {
+            "description": "Success.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/OK"
+                }
+              }
+            }
+          },
+          "default": {
+            "$ref": "#/components/responses/Failure"
+          }
+        }
+      }
+    },
+    "/clubs": {
+      "get": {
+        "operationId": "getClubs",
+        "summary": "List clubs the profile belongs to",
+        "responses": {
+          "200": {
+            "description": "Success.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "array",
+                  "items": {
+                    "$ref": "#/components/schemas/ClubSummary"
+                  }
+                }
+              }
+            }
+          },
+          "default": {
+            "$ref": "#/components/responses/Failure"
+          }
+        }
+      },
+      "post": {
+        "operationId": "postClubs",
+        "summary": "Create a club with an optional first read",
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "properties": {
+                  "name": {
+                    "type": "string",
+                    "maxLength": 72
+                  },
+                  "read": {
+                    "anyOf": [
+                      {
+                        "$ref": "#/components/schemas/ReadInput"
+                      },
+                      {
+                        "type": "null"
+                      }
+                    ]
+                  }
+                },
+                "required": [
+                  "name"
+                ]
+              }
+            }
+          }
+        },
+        "responses": {
+          "201": {
+            "description": "Created.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ID"
+                }
+              }
+            }
+          },
+          "default": {
+            "$ref": "#/components/responses/Failure"
+          }
+        }
+      }
+    },
+    "/clubs/join": {
+      "post": {
+        "operationId": "postClubsJoin",
+        "summary": "Join with an invitation and an optional club display name",
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "properties": {
+                  "code": {
+                    "type": "string",
+                    "description": "10-character invite code. The server accepts separators and lower case."
+                  },
+                  "name": {
+                    "type": "string",
+                    "minLength": 1,
+                    "maxLength": 36
+                  }
+                },
+                "required": [
+                  "code"
+                ]
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Success.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ID"
+                }
+              }
+            }
+          },
+          "default": {
+            "$ref": "#/components/responses/Failure"
+          }
+        }
+      }
+    },
+    "/clubs/{club}": {
+      "parameters": [
+        {
+          "name": "club",
+          "in": "path",
+          "required": true,
+          "schema": {
+            "type": "string",
+            "format": "uuid"
+          }
+        }
+      ],
+      "get": {
+        "operationId": "getClubsClub",
+        "summary": "Get club membership, history and activity",
+        "responses": {
+          "200": {
+            "description": "Success.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ClubDetail"
+                }
+              }
+            }
+          },
+          "default": {
+            "$ref": "#/components/responses/Failure"
+          }
+        }
+      },
+      "delete": {
+        "operationId": "deleteClubsClub",
+        "summary": "Delete the club as its host",
+        "responses": {
+          "200": {
+            "description": "Success.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/OK"
+                }
+              }
+            }
+          },
+          "default": {
+            "$ref": "#/components/responses/Failure"
+          }
+        }
+      }
+    },
+    "/clubs/{club}/invite": {
+      "parameters": [
+        {
+          "name": "club",
+          "in": "path",
+          "required": true,
+          "schema": {
+            "type": "string",
+            "format": "uuid"
+          }
+        }
+      ],
+      "post": {
+        "operationId": "postClubsClubInvite",
+        "summary": "Issue or replace a club invitation",
+        "responses": {
+          "200": {
+            "description": "Success.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Invitation"
+                }
+              }
+            }
+          },
+          "default": {
+            "$ref": "#/components/responses/Failure"
+          }
+        }
+      },
+      "delete": {
+        "operationId": "deleteClubsClubInvite",
+        "summary": "Revoke the club invitation",
+        "responses": {
+          "200": {
+            "description": "Success.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/OK"
+                }
+              }
+            }
+          },
+          "default": {
+            "$ref": "#/components/responses/Failure"
+          }
+        }
+      }
+    },
+    "/clubs/{club}/leave": {
+      "parameters": [
+        {
+          "name": "club",
+          "in": "path",
+          "required": true,
+          "schema": {
+            "type": "string",
+            "format": "uuid"
+          }
+        }
+      ],
+      "post": {
+        "operationId": "postClubsClubLeave",
+        "summary": "Leave the club",
+        "responses": {
+          "200": {
+            "description": "Success.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/OK"
+                }
+              }
+            }
+          },
+          "default": {
+            "$ref": "#/components/responses/Failure"
+          }
+        }
+      }
+    },
+    "/clubs/{club}/members/{member}": {
+      "parameters": [
+        {
+          "name": "club",
+          "in": "path",
+          "required": true,
+          "schema": {
+            "type": "string",
+            "format": "uuid"
+          }
+        },
+        {
+          "name": "member",
+          "in": "path",
+          "required": true,
+          "schema": {
+            "type": "string",
+            "format": "uuid"
+          }
+        }
+      ],
+      "delete": {
+        "operationId": "deleteClubsClubMembersMember",
+        "summary": "Remove a member as the host",
+        "responses": {
+          "200": {
+            "description": "Success.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/OK"
+                }
+              }
+            }
+          },
+          "default": {
+            "$ref": "#/components/responses/Failure"
+          }
+        }
+      }
+    },
+    "/clubs/{club}/host": {
+      "parameters": [
+        {
+          "name": "club",
+          "in": "path",
+          "required": true,
+          "schema": {
+            "type": "string",
+            "format": "uuid"
+          }
+        }
+      ],
+      "put": {
+        "operationId": "putClubsClubHost",
+        "summary": "Transfer hosting to an active member",
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "properties": {
+                  "memberID": {
+                    "type": "string",
+                    "format": "uuid"
+                  }
+                },
+                "required": [
+                  "memberID"
+                ]
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Success.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/OK"
+                }
+              }
+            }
+          },
+          "default": {
+            "$ref": "#/components/responses/Failure"
+          }
+        }
+      }
+    },
+    "/clubs/{club}/reads": {
+      "parameters": [
+        {
+          "name": "club",
+          "in": "path",
+          "required": true,
+          "schema": {
+            "type": "string",
+            "format": "uuid"
+          }
+        }
+      ],
+      "post": {
+        "operationId": "postClubsClubReads",
+        "summary": "Start a read and archive its predecessor",
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/ReadInput"
+              }
+            }
+          }
+        },
+        "responses": {
+          "201": {
+            "description": "Created.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ID"
+                }
+              }
+            }
+          },
+          "default": {
+            "$ref": "#/components/responses/Failure"
+          }
+        }
+      }
+    },
+    "/clubs/{club}/reads/{read}": {
+      "parameters": [
+        {
+          "name": "club",
+          "in": "path",
+          "required": true,
+          "schema": {
+            "type": "string",
+            "format": "uuid"
+          }
+        },
+        {
+          "name": "read",
+          "in": "path",
+          "required": true,
+          "schema": {
+            "type": "string",
+            "format": "uuid"
+          }
+        }
+      ],
+      "get": {
+        "operationId": "getClubsClubReadsRead",
+        "summary": "Get the reading plan, check-ins and shared positions",
+        "responses": {
+          "200": {
+            "description": "Success.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ReadDetail"
+                }
+              }
+            }
+          },
+          "default": {
+            "$ref": "#/components/responses/Failure"
+          }
+        }
+      }
+    },
+    "/clubs/{club}/reads/{read}/checkpoints": {
+      "parameters": [
+        {
+          "name": "club",
+          "in": "path",
+          "required": true,
+          "schema": {
+            "type": "string",
+            "format": "uuid"
+          }
+        },
+        {
+          "name": "read",
+          "in": "path",
+          "required": true,
+          "schema": {
+            "type": "string",
+            "format": "uuid"
+          }
+        }
+      ],
+      "post": {
+        "operationId": "postClubsClubReadsReadCheckpoints",
+        "summary": "Add a checkpoint as the host",
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/CheckpointInput"
+              }
+            }
+          }
+        },
+        "responses": {
+          "201": {
+            "description": "Created.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ID"
+                }
+              }
+            }
+          },
+          "default": {
+            "$ref": "#/components/responses/Failure"
+          }
+        }
+      }
+    },
+    "/clubs/{club}/reads/{read}/checkpoints/{checkpoint}": {
+      "parameters": [
+        {
+          "name": "club",
+          "in": "path",
+          "required": true,
+          "schema": {
+            "type": "string",
+            "format": "uuid"
+          }
+        },
+        {
+          "name": "read",
+          "in": "path",
+          "required": true,
+          "schema": {
+            "type": "string",
+            "format": "uuid"
+          }
+        },
+        {
+          "name": "checkpoint",
+          "in": "path",
+          "required": true,
+          "schema": {
+            "type": "string",
+            "format": "uuid"
+          }
+        }
+      ],
+      "patch": {
+        "operationId": "patchClubsClubReadsReadCheckpointsCheckpoint",
+        "summary": "Update a checkpoint label and deadline",
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "properties": {
+                  "label": {
+                    "type": "string"
+                  },
+                  "dueAt": {
+                    "anyOf": [
+                      {
+                        "type": "integer",
+                        "format": "int64",
+                        "description": "Unix timestamp in milliseconds."
+                      },
+                      {
+                        "type": "null"
+                      }
+                    ]
+                  }
+                },
+                "required": [
+                  "label"
+                ]
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Success.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/OK"
+                }
+              }
+            }
+          },
+          "default": {
+            "$ref": "#/components/responses/Failure"
+          }
+        }
+      }
+    },
+    "/clubs/{club}/reads/{read}/checkpoints/{checkpoint}/complete": {
+      "parameters": [
+        {
+          "name": "club",
+          "in": "path",
+          "required": true,
+          "schema": {
+            "type": "string",
+            "format": "uuid"
+          }
+        },
+        {
+          "name": "read",
+          "in": "path",
+          "required": true,
+          "schema": {
+            "type": "string",
+            "format": "uuid"
+          }
+        },
+        {
+          "name": "checkpoint",
+          "in": "path",
+          "required": true,
+          "schema": {
+            "type": "string",
+            "format": "uuid"
+          }
+        }
+      ],
+      "put": {
+        "operationId": "putClubsClubReadsReadCheckpointsCheckpointComplete",
+        "summary": "Check in at a checkpoint",
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "properties": {
+                  "epoch": {
+                    "anyOf": [
+                      {
+                        "type": "string",
+                        "format": "uuid"
+                      },
+                      {
+                        "type": "null"
+                      }
+                    ]
+                  }
+                },
+                "required": []
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Success.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/OK"
+                }
+              }
+            }
+          },
+          "default": {
+            "$ref": "#/components/responses/Failure"
+          }
+        }
+      }
+    },
+    "/clubs/{club}/reads/{read}/sharing": {
+      "parameters": [
+        {
+          "name": "club",
+          "in": "path",
+          "required": true,
+          "schema": {
+            "type": "string",
+            "format": "uuid"
+          }
+        },
+        {
+          "name": "read",
+          "in": "path",
+          "required": true,
+          "schema": {
+            "type": "string",
+            "format": "uuid"
+          }
+        }
+      ],
+      "put": {
+        "operationId": "putClubsClubReadsReadSharing",
+        "summary": "Change the signed-in member's progress and presence settings",
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "properties": {
+                  "enabled": {
+                    "type": "boolean"
+                  },
+                  "presence": {
+                    "type": "boolean"
+                  }
+                },
+                "required": [
+                  "enabled",
+                  "presence"
+                ]
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Success.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Sharing"
+                }
+              }
+            }
+          },
+          "default": {
+            "$ref": "#/components/responses/Failure"
+          }
+        }
+      }
+    },
+    "/clubs/{club}/reads/{read}/progress": {
+      "parameters": [
+        {
+          "name": "club",
+          "in": "path",
+          "required": true,
+          "schema": {
+            "type": "string",
+            "format": "uuid"
+          }
+        },
+        {
+          "name": "read",
+          "in": "path",
+          "required": true,
+          "schema": {
+            "type": "string",
+            "format": "uuid"
+          }
+        }
+      ],
+      "put": {
+        "operationId": "putClubsClubReadsReadProgress",
+        "summary": "Send an observation with the current sharing epoch",
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/ProgressInput"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Success.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/OK"
+                }
+              }
+            }
+          },
+          "default": {
+            "$ref": "#/components/responses/Failure"
+          }
+        }
+      }
+    },
+    "/clubs/{club}/reads/{read}/threads/{thread}": {
+      "parameters": [
+        {
+          "name": "club",
+          "in": "path",
+          "required": true,
+          "schema": {
+            "type": "string",
+            "format": "uuid"
+          }
+        },
+        {
+          "name": "read",
+          "in": "path",
+          "required": true,
+          "schema": {
+            "type": "string",
+            "format": "uuid"
+          }
+        },
+        {
+          "name": "thread",
+          "in": "path",
+          "required": true,
+          "schema": {
+            "type": "string"
+          }
+        }
+      ],
+      "get": {
+        "operationId": "getClubsClubReadsReadThreadsThread",
+        "summary": "Read general or checkpoint discussions",
+        "description": "The thread is 'general' or a checkpoint ID. Apps should gate checkpoint discussions behind a check-in or an explicit spoiler reveal.",
+        "parameters": [
+          {
+            "name": "before",
+            "in": "query",
+            "schema": {
+              "type": "string"
+            },
+            "description": "Opaque cursor from the preceding response."
+          },
+          {
+            "name": "focus",
+            "in": "query",
+            "schema": {
+              "type": "string",
+              "format": "uuid"
+            },
+            "description": "Optionally include this post from the thread independently of the page cursor. Does not reveal a spoiler."
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Success.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Discussion"
+                }
+              }
+            }
+          },
+          "default": {
+            "$ref": "#/components/responses/Failure"
+          }
+        }
+      },
+      "post": {
+        "operationId": "postClubsClubReadsReadThreadsThread",
+        "summary": "Post to a discussion",
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/PostInput"
+              }
+            }
+          }
+        },
+        "responses": {
+          "201": {
+            "description": "Created.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ID"
+                }
+              }
+            }
+          },
+          "default": {
+            "$ref": "#/components/responses/Failure"
+          }
+        }
+      }
+    },
+    "/clubs/{club}/reads/{read}/threads/{thread}/prompt": {
+      "parameters": [
+        {
+          "name": "club",
+          "in": "path",
+          "required": true,
+          "schema": {
+            "type": "string",
+            "format": "uuid"
+          }
+        },
+        {
+          "name": "read",
+          "in": "path",
+          "required": true,
+          "schema": {
+            "type": "string",
+            "format": "uuid"
+          }
+        },
+        {
+          "name": "thread",
+          "in": "path",
+          "required": true,
+          "schema": {
+            "type": "string"
+          }
+        }
+      ],
+      "put": {
+        "operationId": "putDiscussionPrompt",
+        "summary": "Pin or replace a discussion prompt as the host",
+        "description": "Available on active reads when discussion-prompts is advertised.",
+        "responses": {
+          "200": {
+            "description": "Success.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/OK"
+                }
+              }
+            }
+          },
+          "default": {
+            "$ref": "#/components/responses/Failure"
+          }
+        },
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "properties": {
+                  "body": {
+                    "type": "string",
+                    "minLength": 1,
+                    "maxLength": 1000
+                  }
+                },
+                "required": [
+                  "body"
+                ]
+              }
+            }
+          }
+        }
+      },
+      "delete": {
+        "operationId": "deleteDiscussionPrompt",
+        "summary": "Remove a pinned discussion prompt as the host",
+        "description": "Available on active reads when discussion-prompts is advertised.",
+        "responses": {
+          "200": {
+            "description": "Success.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/OK"
+                }
+              }
+            }
+          },
+          "default": {
+            "$ref": "#/components/responses/Failure"
+          }
+        }
+      }
+    },
+    "/clubs/{club}/reads/{read}/posts/{post}": {
+      "parameters": [
+        {
+          "name": "club",
+          "in": "path",
+          "required": true,
+          "schema": {
+            "type": "string",
+            "format": "uuid"
+          }
+        },
+        {
+          "name": "read",
+          "in": "path",
+          "required": true,
+          "schema": {
+            "type": "string",
+            "format": "uuid"
+          }
+        },
+        {
+          "name": "post",
+          "in": "path",
+          "required": true,
+          "schema": {
+            "type": "string",
+            "format": "uuid"
+          }
+        }
+      ],
+      "get": {
+        "operationId": "getDiscussionPost",
+        "summary": "Explicitly reveal a discussion post",
+        "description": "Fetch only after the viewer explicitly chooses to reveal the post. The service checks active club membership and blocks.",
+        "responses": {
+          "200": {
+            "description": "Success.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Post"
+                }
+              }
+            }
+          },
+          "default": {
+            "$ref": "#/components/responses/Failure"
+          }
+        }
+      },
+      "delete": {
+        "operationId": "deleteClubsClubReadsReadPostsPost",
+        "summary": "Delete a discussion post as its author or the host",
+        "responses": {
+          "200": {
+            "description": "Success.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/OK"
+                }
+              }
+            }
+          },
+          "default": {
+            "$ref": "#/components/responses/Failure"
+          }
+        }
+      }
+    },
+    "/clubs/{club}/reads/{read}/posts/{post}/reaction": {
+      "parameters": [
+        {
+          "name": "club",
+          "in": "path",
+          "required": true,
+          "schema": {
+            "type": "string",
+            "format": "uuid"
+          }
+        },
+        {
+          "name": "read",
+          "in": "path",
+          "required": true,
+          "schema": {
+            "type": "string",
+            "format": "uuid"
+          }
+        },
+        {
+          "name": "post",
+          "in": "path",
+          "required": true,
+          "schema": {
+            "type": "string",
+            "format": "uuid"
+          }
+        }
+      ],
+      "put": {
+        "operationId": "putClubsClubReadsReadPostsPostReaction",
+        "summary": "Enable or remove a reaction",
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "properties": {
+                  "emoji": {
+                    "type": "string",
+                    "enum": [
+                      "\u2764\ufe0f",
+                      "\ud83d\ude02",
+                      "\ud83d\ude2e",
+                      "\ud83d\udc4f",
+                      "\ud83d\udcda"
+                    ]
+                  },
+                  "enabled": {
+                    "type": "boolean"
+                  }
+                },
+                "required": [
+                  "emoji",
+                  "enabled"
+                ]
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Success.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/OK"
+                }
+              }
+            }
+          },
+          "default": {
+            "$ref": "#/components/responses/Failure"
+          }
+        }
+      }
+    },
+    "/clubs/{club}/reads/{read}/posts/{post}/report": {
+      "parameters": [
+        {
+          "name": "club",
+          "in": "path",
+          "required": true,
+          "schema": {
+            "type": "string",
+            "format": "uuid"
+          }
+        },
+        {
+          "name": "read",
+          "in": "path",
+          "required": true,
+          "schema": {
+            "type": "string",
+            "format": "uuid"
+          }
+        },
+        {
+          "name": "post",
+          "in": "path",
+          "required": true,
+          "schema": {
+            "type": "string",
+            "format": "uuid"
+          }
+        }
+      ],
+      "post": {
+        "operationId": "postClubsClubReadsReadPostsPostReport",
+        "summary": "Report a discussion post",
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "properties": {
+                  "reason": {
+                    "type": "string",
+                    "maxLength": 400
+                  }
+                },
+                "required": [
+                  "reason"
+                ]
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Success.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/OK"
+                }
+              }
+            }
+          },
+          "default": {
+            "$ref": "#/components/responses/Failure"
+          }
+        }
+      }
+    },
+    "/clubs/{club}/reads/{read}/notes": {
+      "parameters": [
+        {
+          "name": "club",
+          "in": "path",
+          "required": true,
+          "schema": {
+            "type": "string",
+            "format": "uuid"
+          }
+        },
+        {
+          "name": "read",
+          "in": "path",
+          "required": true,
+          "schema": {
+            "type": "string",
+            "format": "uuid"
+          }
+        }
+      ],
+      "get": {
+        "operationId": "getClubsClubReadsReadNotes",
+        "summary": "List personal notes and visible shared notes",
+        "parameters": [
+          {
+            "name": "before",
+            "in": "query",
+            "schema": {
+              "type": "string"
+            },
+            "description": "Opaque cursor from the preceding response."
+          },
+          {
+            "name": "revealSpoilers",
+            "in": "query",
+            "schema": {
+              "type": "boolean"
+            },
+            "description": "Explicitly include shared notes on checkpoints the viewer has not completed."
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Success.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Notes"
+                }
+              }
+            }
+          },
+          "default": {
+            "$ref": "#/components/responses/Failure"
+          }
+        }
+      },
+      "post": {
+        "operationId": "postClubsClubReadsReadNotes",
+        "summary": "Write a note, private by default",
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/NoteInput"
+              }
+            }
+          }
+        },
+        "responses": {
+          "201": {
+            "description": "Created.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ID"
+                }
+              }
+            }
+          },
+          "default": {
+            "$ref": "#/components/responses/Failure"
+          }
+        }
+      }
+    },
+    "/clubs/{club}/reads/{read}/notes/{note}": {
+      "parameters": [
+        {
+          "name": "club",
+          "in": "path",
+          "required": true,
+          "schema": {
+            "type": "string",
+            "format": "uuid"
+          }
+        },
+        {
+          "name": "read",
+          "in": "path",
+          "required": true,
+          "schema": {
+            "type": "string",
+            "format": "uuid"
+          }
+        },
+        {
+          "name": "note",
+          "in": "path",
+          "required": true,
+          "schema": {
+            "type": "string",
+            "format": "uuid"
+          }
+        }
+      ],
+      "patch": {
+        "operationId": "patchClubsClubReadsReadNotesNote",
+        "summary": "Replace an owned note's content, visibility and checkpoint",
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/NoteInput"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Success.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/OK"
+                }
+              }
+            }
+          },
+          "default": {
+            "$ref": "#/components/responses/Failure"
+          }
+        }
+      },
+      "delete": {
+        "operationId": "deleteClubsClubReadsReadNotesNote",
+        "summary": "Delete an owned note from a reading",
+        "responses": {
+          "200": {
+            "description": "Success.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/OK"
+                }
+              }
+            }
+          },
+          "default": {
+            "$ref": "#/components/responses/Failure"
+          }
+        }
+      }
+    },
+    "/clubs/{club}/next": {
+      "parameters": [
+        {
+          "name": "club",
+          "in": "path",
+          "required": true,
+          "schema": {
+            "type": "string",
+            "format": "uuid"
+          }
+        }
+      ],
+      "get": {
+        "operationId": "getClubsClubNext",
+        "summary": "Get nominations and polls",
+        "responses": {
+          "200": {
+            "description": "Success.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Next"
+                }
+              }
+            }
+          },
+          "default": {
+            "$ref": "#/components/responses/Failure"
+          }
+        }
+      }
+    },
+    "/clubs/{club}/nominations": {
+      "parameters": [
+        {
+          "name": "club",
+          "in": "path",
+          "required": true,
+          "schema": {
+            "type": "string",
+            "format": "uuid"
+          }
+        }
+      ],
+      "post": {
+        "operationId": "postClubsClubNominations",
+        "summary": "Nominate a book",
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "properties": {
+                  "name": {
+                    "type": "string",
+                    "maxLength": 160
+                  },
+                  "author": {
+                    "anyOf": [
+                      {
+                        "type": "string"
+                      },
+                      {
+                        "type": "null"
+                      }
+                    ]
+                  }
+                },
+                "required": [
+                  "name"
+                ]
+              }
+            }
+          }
+        },
+        "responses": {
+          "201": {
+            "description": "Created.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ID"
+                }
+              }
+            }
+          },
+          "default": {
+            "$ref": "#/components/responses/Failure"
+          }
+        }
+      }
+    },
+    "/clubs/{club}/polls": {
+      "parameters": [
+        {
+          "name": "club",
+          "in": "path",
+          "required": true,
+          "schema": {
+            "type": "string",
+            "format": "uuid"
+          }
+        }
+      ],
+      "post": {
+        "operationId": "postClubsClubPolls",
+        "summary": "Open a poll as the host",
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "properties": {
+                  "name": {
+                    "type": "string"
+                  },
+                  "optionIDs": {
+                    "type": "array",
+                    "items": {
+                      "type": "string",
+                      "format": "uuid"
+                    },
+                    "minItems": 2,
+                    "maxItems": 12,
+                    "uniqueItems": true
+                  },
+                  "closesAt": {
+                    "anyOf": [
+                      {
+                        "type": "integer",
+                        "format": "int64",
+                        "description": "Unix timestamp in milliseconds."
+                      },
+                      {
+                        "type": "null"
+                      }
+                    ]
+                  }
+                },
+                "required": [
+                  "name",
+                  "optionIDs"
+                ]
+              }
+            }
+          }
+        },
+        "responses": {
+          "201": {
+            "description": "Created.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ID"
+                }
+              }
+            }
+          },
+          "default": {
+            "$ref": "#/components/responses/Failure"
+          }
+        }
+      }
+    },
+    "/clubs/{club}/polls/{poll}/vote": {
+      "parameters": [
+        {
+          "name": "club",
+          "in": "path",
+          "required": true,
+          "schema": {
+            "type": "string",
+            "format": "uuid"
+          }
+        },
+        {
+          "name": "poll",
+          "in": "path",
+          "required": true,
+          "schema": {
+            "type": "string",
+            "format": "uuid"
+          }
+        }
+      ],
+      "put": {
+        "operationId": "putClubsClubPollsPollVote",
+        "summary": "Cast or replace a vote",
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "properties": {
+                  "nominationID": {
+                    "type": "string",
+                    "format": "uuid"
+                  }
+                },
+                "required": [
+                  "nominationID"
+                ]
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Success.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/OK"
+                }
+              }
+            }
+          },
+          "default": {
+            "$ref": "#/components/responses/Failure"
+          }
+        }
+      }
+    },
+    "/clubs/{club}/polls/{poll}/close": {
+      "parameters": [
+        {
+          "name": "club",
+          "in": "path",
+          "required": true,
+          "schema": {
+            "type": "string",
+            "format": "uuid"
+          }
+        },
+        {
+          "name": "poll",
+          "in": "path",
+          "required": true,
+          "schema": {
+            "type": "string",
+            "format": "uuid"
+          }
+        }
+      ],
+      "post": {
+        "operationId": "postClubsClubPollsPollClose",
+        "summary": "Close a poll as its host",
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "properties": {
+                  "winnerID": {
+                    "anyOf": [
+                      {
+                        "type": "string",
+                        "format": "uuid"
+                      },
+                      {
+                        "type": "null"
+                      }
+                    ]
+                  }
+                },
+                "required": []
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Success.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/OK"
+                }
+              }
+            }
+          },
+          "default": {
+            "$ref": "#/components/responses/Failure"
+          }
+        }
+      }
+    },
+    "/clubs/{club}/catalog": {
+      "parameters": [
+        {
+          "name": "club",
+          "in": "path",
+          "required": true,
+          "schema": {
+            "type": "string",
+            "format": "uuid"
+          }
+        }
+      ],
+      "get": {
+        "operationId": "getClubsClubCatalog",
+        "summary": "List configured catalog plugins",
+        "responses": {
+          "200": {
+            "description": "Success.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/CatalogSources"
+                }
+              }
+            }
+          },
+          "default": {
+            "$ref": "#/components/responses/Failure"
+          }
+        }
+      }
+    },
+    "/clubs/{club}/catalog/{source}": {
+      "parameters": [
+        {
+          "name": "club",
+          "in": "path",
+          "required": true,
+          "schema": {
+            "type": "string",
+            "format": "uuid"
+          }
+        },
+        {
+          "name": "source",
+          "in": "path",
+          "required": true,
+          "schema": {
+            "type": "string"
+          }
+        }
+      ],
+      "get": {
+        "operationId": "getClubsClubCatalogSource",
+        "summary": "Browse or search a metadata catalog",
+        "parameters": [
+          {
+            "name": "q",
+            "in": "query",
+            "schema": {
+              "type": "string",
+              "maxLength": 120
+            },
+            "description": "Search text. Keep it unchanged when following a cursor."
+          },
+          {
+            "name": "cursor",
+            "in": "query",
+            "schema": {
+              "type": "string"
+            },
+            "description": "Opaque pagination or navigation cursor."
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Success.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/CatalogPage"
+                }
+              }
+            }
+          },
+          "default": {
+            "$ref": "#/components/responses/Failure"
+          }
+        }
+      }
+    },
+    "/blocks/{member}": {
+      "parameters": [
+        {
+          "name": "member",
+          "in": "path",
+          "required": true,
+          "schema": {
+            "type": "string",
+            "format": "uuid"
+          }
+        }
+      ],
+      "put": {
+        "operationId": "putBlocksMember",
+        "summary": "Block another member",
+        "responses": {
+          "200": {
+            "description": "Success.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/OK"
+                }
+              }
+            }
+          },
+          "default": {
+            "$ref": "#/components/responses/Failure"
+          }
+        }
+      },
+      "delete": {
+        "operationId": "deleteBlocksMember",
+        "summary": "Unblock a member",
+        "responses": {
+          "200": {
+            "description": "Success.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/OK"
+                }
+              }
+            }
+          },
+          "default": {
+            "$ref": "#/components/responses/Failure"
+          }
+        }
+      }
+    },
+    "/clubs/{club}/reads/{read}/copy": {
+      "parameters": [
+        {
+          "in": "path",
+          "name": "club",
+          "required": true,
+          "schema": {
+            "type": "string",
+            "format": "uuid"
+          }
+        },
+        {
+          "in": "path",
+          "name": "read",
+          "required": true,
+          "schema": {
+            "type": "string",
+            "format": "uuid"
+          }
+        }
+      ],
+      "get": {
+        "operationId": "getHostedCopy",
+        "summary": "Get the published club copy and import status",
+        "responses": {
+          "200": {
+            "description": "Current copy and import status.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HostedCopyStatus"
+                }
+              }
+            }
+          },
+          "default": {
+            "$ref": "#/components/responses/Failure"
+          }
+        }
+      },
+      "post": {
+        "operationId": "startHostedCopyImport",
+        "summary": "Import a catalog edition as the host",
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "properties": {
+                  "sourceID": {
+                    "type": "string"
+                  },
+                  "publicationID": {
+                    "type": "string"
+                  },
+                  "format": {
+                    "type": "string",
+                    "enum": [
+                      "ebook",
+                      "audiobook"
+                    ]
+                  }
+                },
+                "required": [
+                  "sourceID",
+                  "publicationID",
+                  "format"
+                ]
+              }
+            }
+          }
+        },
+        "responses": {
+          "202": {
+            "description": "Import started.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "importing": {
+                      "type": "boolean",
+                      "const": true
+                    }
+                  },
+                  "required": [
+                    "importing"
+                  ]
+                }
+              }
+            }
+          },
+          "default": {
+            "$ref": "#/components/responses/Failure"
+          }
+        }
+      },
+      "delete": {
+        "operationId": "deleteHostedCopy",
+        "summary": "Revoke the club copy and cancel any import",
+        "responses": {
+          "200": {
+            "description": "Removed.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/OK"
+                }
+              }
+            }
+          },
+          "default": {
+            "$ref": "#/components/responses/Failure"
+          }
+        }
+      }
+    },
+    "/clubs/{club}/reads/{read}/copy/{copy}/files/{index}": {
+      "parameters": [
+        {
+          "in": "path",
+          "name": "club",
+          "required": true,
+          "schema": {
+            "type": "string",
+            "format": "uuid"
+          }
+        },
+        {
+          "in": "path",
+          "name": "read",
+          "required": true,
+          "schema": {
+            "type": "string",
+            "format": "uuid"
+          }
+        },
+        {
+          "in": "path",
+          "name": "copy",
+          "required": true,
+          "schema": {
+            "type": "string",
+            "format": "uuid"
+          }
+        },
+        {
+          "in": "path",
+          "name": "index",
+          "required": true,
+          "schema": {
+            "type": "integer",
+            "minimum": 0,
+            "maximum": 249
+          }
+        },
+        {
+          "name": "Range",
+          "in": "header",
+          "schema": {
+            "type": "string"
+          },
+          "description": "An optional single byte range."
+        }
+      ],
+      "get": {
+        "operationId": "getHostedFile",
+        "summary": "Download a file of the published club copy",
+        "responses": {
+          "200": {
+            "description": "An attachment using its actual media type.",
+            "headers": {
+              "Content-Disposition": {
+                "schema": {
+                  "type": "string"
+                }
+              },
+              "Content-Length": {
+                "schema": {
+                  "type": "integer"
+                }
+              },
+              "Accept-Ranges": {
+                "schema": {
+                  "type": "string"
+                }
+              }
+            },
+            "content": {
+              "application/octet-stream": {
+                "schema": {
+                  "type": "string",
+                  "format": "binary"
+                }
+              }
+            }
+          },
+          "206": {
+            "description": "Requested bytes.",
+            "headers": {
+              "Content-Range": {
+                "schema": {
+                  "type": "string"
+                }
+              },
+              "Content-Disposition": {
+                "schema": {
+                  "type": "string"
+                }
+              },
+              "Content-Length": {
+                "schema": {
+                  "type": "integer"
+                }
+              },
+              "Accept-Ranges": {
+                "schema": {
+                  "type": "string"
+                }
+              }
+            },
+            "content": {
+              "application/octet-stream": {
+                "schema": {
+                  "type": "string",
+                  "format": "binary"
+                }
+              }
+            }
+          },
+          "416": {
+            "description": "Range not satisfiable.",
+            "headers": {
+              "Content-Range": {
+                "schema": {
+                  "type": "string"
+                }
+              }
+            }
+          },
+          "default": {
+            "$ref": "#/components/responses/Failure"
+          }
+        }
+      },
+      "head": {
+        "operationId": "headHostedFile",
+        "summary": "Get member-authorized download headers",
+        "responses": {
+          "200": {
+            "description": "Attachment headers.",
+            "headers": {
+              "Content-Disposition": {
+                "schema": {
+                  "type": "string"
+                }
+              },
+              "Content-Length": {
+                "schema": {
+                  "type": "integer"
+                }
+              },
+              "Accept-Ranges": {
+                "schema": {
+                  "type": "string"
+                }
+              }
+            }
+          },
+          "206": {
+            "description": "Partial attachment headers.",
+            "headers": {
+              "Content-Range": {
+                "schema": {
+                  "type": "string"
+                }
+              },
+              "Content-Disposition": {
+                "schema": {
+                  "type": "string"
+                }
+              },
+              "Content-Length": {
+                "schema": {
+                  "type": "integer"
+                }
+              },
+              "Accept-Ranges": {
+                "schema": {
+                  "type": "string"
+                }
+              }
+            }
+          },
+          "416": {
+            "description": "Range not satisfiable.",
+            "headers": {
+              "Content-Range": {
+                "schema": {
+                  "type": "string"
+                }
+              }
+            }
+          },
+          "default": {
+            "$ref": "#/components/responses/Failure"
+          }
+        }
+      }
+    }
+  },
+  "components": {
+    "securitySchemes": {
+      "clubSession": {
+        "type": "http",
+        "scheme": "bearer",
+        "description": "Use the token returned by account creation or recovery."
+      }
+    },
+    "responses": {
+      "Failure": {
+        "description": "Request failed. The HTTP status distinguishes invalid input, authentication, authorization, conflict, throttling and service failures.",
+        "content": {
+          "application/json": {
+            "schema": {
+              "$ref": "#/components/schemas/Failure"
+            }
+          }
+        }
+      }
+    },
+    "schemas": {
+      "Failure": {
+        "type": "object",
+        "properties": {
+          "error": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "error"
+        ]
+      },
+      "OK": {
+        "type": "object",
+        "properties": {
+          "ok": {
+            "type": "boolean",
+            "const": true
+          }
+        },
+        "required": [
+          "ok"
+        ]
+      },
+      "ID": {
+        "type": "object",
+        "properties": {
+          "id": {
+            "type": "string",
+            "format": "uuid"
+          }
+        },
+        "required": [
+          "id"
+        ]
+      },
+      "Discovery": {
+        "type": "object",
+        "properties": {
+          "name": {
+            "type": "string"
+          },
+          "protocol": {
+            "type": "string",
+            "const": "book-club"
+          },
+          "version": {
+            "type": "string"
+          },
+          "api": {
+            "type": "string"
+          },
+          "features": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          }
+        },
+        "required": [
+          "name",
+          "protocol",
+          "version",
+          "api",
+          "features"
+        ]
+      },
+      "Account": {
+        "type": "object",
+        "properties": {
+          "id": {
+            "type": "string",
+            "format": "uuid"
+          },
+          "name": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "id",
+          "name"
+        ]
+      },
+      "Credentials": {
+        "type": "object",
+        "properties": {
+          "account": {
+            "$ref": "#/components/schemas/Account"
+          },
+          "token": {
+            "type": "string"
+          },
+          "recoveryKey": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "account",
+          "token",
+          "recoveryKey"
+        ]
+      },
+      "Recovery": {
+        "type": "object",
+        "properties": {
+          "recoveryKey": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "recoveryKey"
+        ]
+      },
+      "Invitation": {
+        "type": "object",
+        "properties": {
+          "code": {
+            "type": "string",
+            "description": "10-character invite code. The server accepts separators and lower case."
+          },
+          "expiresAt": {
+            "type": "integer",
+            "format": "int64",
+            "description": "Unix timestamp in milliseconds."
+          }
+        },
+        "required": [
+          "code",
+          "expiresAt"
+        ]
+      },
+      "ClubSummary": {
+        "type": "object",
+        "properties": {
+          "id": {
+            "type": "string",
+            "format": "uuid"
+          },
+          "name": {
+            "type": "string"
+          },
+          "ownerID": {
+            "type": "string",
+            "format": "uuid"
+          },
+          "currentTitle": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "currentReadID": {
+            "anyOf": [
+              {
+                "type": "string",
+                "format": "uuid"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "currentAuthor": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "nextCheckpoint": {
+            "anyOf": [
+              {
+                "type": "object",
+                "properties": {
+                  "label": {
+                    "type": "string"
+                  },
+                  "dueAt": {
+                    "anyOf": [
+                      {
+                        "type": "integer",
+                        "format": "int64",
+                        "description": "Unix timestamp in milliseconds."
+                      },
+                      {
+                        "type": "null"
+                      }
+                    ]
+                  }
+                },
+                "required": [
+                  "label",
+                  "dueAt"
+                ]
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "The first checkpoint in plan order that this member has yet to complete."
+          }
+        },
+        "required": [
+          "id",
+          "name",
+          "ownerID",
+          "currentTitle"
+        ]
+      },
+      "ClubDetail": {
+        "type": "object",
+        "properties": {
+          "id": {
+            "type": "string",
+            "format": "uuid"
+          },
+          "name": {
+            "type": "string"
+          },
+          "ownerID": {
+            "type": "string",
+            "format": "uuid"
+          },
+          "members": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/Account"
+            }
+          },
+          "reads": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/Read"
+            }
+          },
+          "activity": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/Activity"
+            }
+          },
+          "blockedIDs": {
+            "type": "array",
+            "items": {
+              "type": "string",
+              "format": "uuid"
+            }
+          }
+        },
+        "required": [
+          "id",
+          "name",
+          "ownerID",
+          "members",
+          "reads",
+          "activity",
+          "blockedIDs"
+        ]
+      },
+      "Activity": {
+        "type": "object",
+        "properties": {
+          "id": {
+            "type": "string",
+            "format": "uuid"
+          },
+          "accountID": {
+            "anyOf": [
+              {
+                "type": "string",
+                "format": "uuid"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "memberName": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "kind": {
+            "type": "string"
+          },
+          "label": {
+            "type": "string"
+          },
+          "createdAt": {
+            "type": "integer",
+            "format": "int64",
+            "description": "Unix timestamp in milliseconds."
+          }
+        },
+        "required": [
+          "id",
+          "accountID",
+          "memberName",
+          "kind",
+          "label",
+          "createdAt"
+        ]
+      },
+      "Read": {
+        "type": "object",
+        "properties": {
+          "id": {
+            "type": "string",
+            "format": "uuid"
+          },
+          "title": {
+            "type": "string"
+          },
+          "author": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "series": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "createdAt": {
+            "type": "integer",
+            "format": "int64",
+            "description": "Unix timestamp in milliseconds."
+          },
+          "closedAt": {
+            "anyOf": [
+              {
+                "type": "integer",
+                "format": "int64",
+                "description": "Unix timestamp in milliseconds."
+              },
+              {
+                "type": "null"
+              }
+            ]
+          }
+        },
+        "required": [
+          "id",
+          "title",
+          "author",
+          "series",
+          "createdAt",
+          "closedAt"
+        ]
+      },
+      "CheckpointInput": {
+        "type": "object",
+        "properties": {
+          "label": {
+            "type": "string",
+            "maxLength": 100
+          },
+          "chapterKey": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "dueAt": {
+            "anyOf": [
+              {
+                "type": "integer",
+                "format": "int64",
+                "description": "Unix timestamp in milliseconds."
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "trackPosition": {
+            "anyOf": [
+              {
+                "type": "number",
+                "minimum": 0,
+                "maximum": 1
+              },
+              {
+                "type": "null"
+              }
+            ]
+          }
+        },
+        "required": [
+          "label"
+        ]
+      },
+      "Checkpoint": {
+        "type": "object",
+        "properties": {
+          "id": {
+            "type": "string",
+            "format": "uuid"
+          },
+          "label": {
+            "type": "string"
+          },
+          "chapterKey": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "dueAt": {
+            "anyOf": [
+              {
+                "type": "integer",
+                "format": "int64",
+                "description": "Unix timestamp in milliseconds."
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "trackPosition": {
+            "anyOf": [
+              {
+                "type": "number",
+                "minimum": 0,
+                "maximum": 1
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "sortOrder": {
+            "type": "integer"
+          }
+        },
+        "required": [
+          "id",
+          "label",
+          "chapterKey",
+          "dueAt",
+          "trackPosition",
+          "sortOrder"
+        ]
+      },
+      "ReadInput": {
+        "type": "object",
+        "properties": {
+          "title": {
+            "type": "string",
+            "maxLength": 160
+          },
+          "author": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "series": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "checkpoints": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/CheckpointInput"
+            },
+            "maxItems": 24
+          },
+          "pollID": {
+            "anyOf": [
+              {
+                "type": "string",
+                "format": "uuid"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          }
+        },
+        "required": [
+          "title",
+          "checkpoints"
+        ]
+      },
+      "ReadDetail": {
+        "type": "object",
+        "properties": {
+          "read": {
+            "$ref": "#/components/schemas/Read"
+          },
+          "checkpoints": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/Checkpoint"
+            }
+          },
+          "progress": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/Position"
+            }
+          },
+          "completions": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/Completion"
+            }
+          },
+          "sharing": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/Sharing"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "hostedCopy": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/HostedCopy"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          }
+        },
+        "required": [
+          "read",
+          "checkpoints",
+          "progress",
+          "completions",
+          "sharing"
+        ]
+      },
+      "Sharing": {
+        "type": "object",
+        "properties": {
+          "epoch": {
+            "anyOf": [
+              {
+                "type": "string",
+                "format": "uuid"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "presence": {
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "epoch",
+          "presence"
+        ]
+      },
+      "ProgressInput": {
+        "type": "object",
+        "properties": {
+          "epoch": {
+            "type": "string",
+            "format": "uuid"
+          },
+          "fraction": {
+            "type": "number",
+            "minimum": 0,
+            "maximum": 1
+          },
+          "observedAt": {
+            "type": "integer",
+            "format": "int64",
+            "description": "Unix timestamp in milliseconds."
+          },
+          "active": {
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "epoch",
+          "fraction",
+          "observedAt",
+          "active"
+        ]
+      },
+      "Position": {
+        "type": "object",
+        "properties": {
+          "accountID": {
+            "type": "string",
+            "format": "uuid"
+          },
+          "fraction": {
+            "type": "number",
+            "minimum": 0,
+            "maximum": 1
+          },
+          "observedAt": {
+            "type": "integer",
+            "format": "int64",
+            "description": "Unix timestamp in milliseconds."
+          },
+          "activeUntil": {
+            "anyOf": [
+              {
+                "type": "integer",
+                "format": "int64",
+                "description": "Unix timestamp in milliseconds."
+              },
+              {
+                "type": "null"
+              }
+            ]
+          }
+        },
+        "required": [
+          "accountID",
+          "fraction",
+          "observedAt",
+          "activeUntil"
+        ]
+      },
+      "Completion": {
+        "type": "object",
+        "properties": {
+          "accountID": {
+            "type": "string",
+            "format": "uuid"
+          },
+          "checkpointID": {
+            "type": "string",
+            "format": "uuid"
+          },
+          "completedAt": {
+            "type": "integer",
+            "format": "int64",
+            "description": "Unix timestamp in milliseconds."
+          }
+        },
+        "required": [
+          "accountID",
+          "checkpointID",
+          "completedAt"
+        ]
+      },
+      "Reaction": {
+        "type": "object",
+        "properties": {
+          "accountID": {
+            "type": "string",
+            "format": "uuid"
+          },
+          "emoji": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "accountID",
+          "emoji"
+        ]
+      },
+      "PostInput": {
+        "type": "object",
+        "properties": {
+          "body": {
+            "type": "string",
+            "maxLength": 3000
+          },
+          "passage": {
+            "type": "string",
+            "maxLength": 600
+          },
+          "passageChapter": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "parentID": {
+            "anyOf": [
+              {
+                "type": "string",
+                "format": "uuid"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "isSpoiler": {
+            "type": "boolean",
+            "default": false,
+            "description": "Conceal for other members until they explicitly reveal it. Replies inherit concealment from a marked parent."
+          }
+        },
+        "required": []
+      },
+      "Post": {
+        "type": "object",
+        "properties": {
+          "id": {
+            "type": "string",
+            "format": "uuid"
+          },
+          "authorID": {
+            "type": "string",
+            "format": "uuid"
+          },
+          "authorName": {
+            "type": "string"
+          },
+          "parentID": {
+            "anyOf": [
+              {
+                "type": "string",
+                "format": "uuid"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "body": {
+            "type": "string"
+          },
+          "passage": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "passageChapter": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "createdAt": {
+            "type": "integer",
+            "format": "int64",
+            "description": "Unix timestamp in milliseconds."
+          },
+          "reactions": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/Reaction"
+            }
+          },
+          "isSpoiler": {
+            "type": "boolean"
+          },
+          "concealed": {
+            "type": "boolean",
+            "description": "When true, the body is empty and the passage fields are null."
+          }
+        },
+        "required": [
+          "id",
+          "authorID",
+          "authorName",
+          "parentID",
+          "body",
+          "passage",
+          "passageChapter",
+          "createdAt",
+          "reactions"
+        ]
+      },
+      "Discussion": {
+        "type": "object",
+        "properties": {
+          "posts": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/Post"
+            }
+          },
+          "before": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "archived": {
+            "type": "boolean"
+          },
+          "discussionTools": {
+            "type": "boolean",
+            "description": "This instance supports pinned prompts and individual post reveal."
+          },
+          "prompt": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/DiscussionPrompt"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "focusedPost": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/Post"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "Present when focus is requested. Contains the visible requested post, including normal spoiler masking, or null if it is unavailable in this thread."
+          }
+        },
+        "required": [
+          "posts",
+          "before",
+          "archived"
+        ]
+      },
+      "Nomination": {
+        "type": "object",
+        "properties": {
+          "id": {
+            "type": "string",
+            "format": "uuid"
+          },
+          "name": {
+            "type": "string"
+          },
+          "author": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "accountID": {
+            "anyOf": [
+              {
+                "type": "string",
+                "format": "uuid"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "memberName": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "createdAt": {
+            "type": "integer",
+            "format": "int64",
+            "description": "Unix timestamp in milliseconds."
+          }
+        },
+        "required": [
+          "id",
+          "name",
+          "author",
+          "accountID",
+          "memberName",
+          "createdAt"
+        ]
+      },
+      "Poll": {
+        "type": "object",
+        "properties": {
+          "id": {
+            "type": "string",
+            "format": "uuid"
+          },
+          "name": {
+            "type": "string"
+          },
+          "createdAt": {
+            "type": "integer",
+            "format": "int64",
+            "description": "Unix timestamp in milliseconds."
+          },
+          "closesAt": {
+            "anyOf": [
+              {
+                "type": "integer",
+                "format": "int64",
+                "description": "Unix timestamp in milliseconds."
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "closedAt": {
+            "anyOf": [
+              {
+                "type": "integer",
+                "format": "int64",
+                "description": "Unix timestamp in milliseconds."
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "winnerID": {
+            "anyOf": [
+              {
+                "type": "string",
+                "format": "uuid"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "startedReadID": {
+            "anyOf": [
+              {
+                "type": "string",
+                "format": "uuid"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "optionIDs": {
+            "type": "array",
+            "items": {
+              "type": "string",
+              "format": "uuid"
+            }
+          },
+          "votes": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/Vote"
+            }
+          }
+        },
+        "required": [
+          "id",
+          "name",
+          "createdAt",
+          "closesAt",
+          "closedAt",
+          "winnerID",
+          "startedReadID",
+          "optionIDs",
+          "votes"
+        ]
+      },
+      "Vote": {
+        "type": "object",
+        "properties": {
+          "accountID": {
+            "type": "string",
+            "format": "uuid"
+          },
+          "nominationID": {
+            "type": "string",
+            "format": "uuid"
+          },
+          "memberName": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "accountID",
+          "nominationID",
+          "memberName"
+        ]
+      },
+      "Next": {
+        "type": "object",
+        "properties": {
+          "nominations": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/Nomination"
+            }
+          },
+          "polls": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/Poll"
+            }
+          }
+        },
+        "required": [
+          "nominations",
+          "polls"
+        ]
+      },
+      "NoteInput": {
+        "type": "object",
+        "properties": {
+          "body": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 3000
+          },
+          "visibility": {
+            "type": "string",
+            "enum": [
+              "private",
+              "club"
+            ],
+            "default": "private"
+          },
+          "checkpointID": {
+            "anyOf": [
+              {
+                "type": "string",
+                "format": "uuid"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          }
+        },
+        "required": [
+          "body"
+        ]
+      },
+      "Note": {
+        "type": "object",
+        "properties": {
+          "id": {
+            "type": "string",
+            "format": "uuid"
+          },
+          "authorID": {
+            "type": "string",
+            "format": "uuid"
+          },
+          "authorName": {
+            "type": "string"
+          },
+          "readID": {
+            "anyOf": [
+              {
+                "type": "string",
+                "format": "uuid"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "clubID": {
+            "anyOf": [
+              {
+                "type": "string",
+                "format": "uuid"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "bookTitle": {
+            "type": "string"
+          },
+          "checkpointID": {
+            "anyOf": [
+              {
+                "type": "string",
+                "format": "uuid"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "body": {
+            "type": "string"
+          },
+          "visibility": {
+            "type": "string",
+            "enum": [
+              "private",
+              "club"
+            ]
+          },
+          "createdAt": {
+            "type": "integer",
+            "format": "int64",
+            "description": "Unix timestamp in milliseconds."
+          },
+          "updatedAt": {
+            "type": "integer",
+            "format": "int64",
+            "description": "Unix timestamp in milliseconds."
+          }
+        },
+        "required": [
+          "id",
+          "authorID",
+          "authorName",
+          "readID",
+          "clubID",
+          "bookTitle",
+          "checkpointID",
+          "body",
+          "visibility",
+          "createdAt",
+          "updatedAt"
+        ]
+      },
+      "Notes": {
+        "type": "object",
+        "properties": {
+          "notes": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/Note"
+            }
+          },
+          "before": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          }
+        },
+        "required": [
+          "notes",
+          "before"
+        ]
+      },
+      "CatalogSource": {
+        "type": "object",
+        "properties": {
+          "id": {
+            "type": "string"
+          },
+          "name": {
+            "type": "string"
+          },
+          "type": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "id",
+          "name",
+          "type"
+        ]
+      },
+      "CatalogSources": {
+        "type": "object",
+        "properties": {
+          "sources": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/CatalogSource"
+            }
+          }
+        },
+        "required": [
+          "sources"
+        ]
+      },
+      "CatalogPublication": {
+        "type": "object",
+        "properties": {
+          "id": {
+            "type": "string"
+          },
+          "title": {
+            "type": "string"
+          },
+          "author": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "series": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "format": {
+            "type": "string",
+            "enum": [
+              "ebook",
+              "audiobook",
+              "unknown"
+            ]
+          },
+          "shareableFormats": {
+            "type": "array",
+            "items": {
+              "type": "string",
+              "enum": [
+                "ebook",
+                "audiobook"
+              ]
+            }
+          }
+        },
+        "required": [
+          "id",
+          "title",
+          "author",
+          "series",
+          "format"
+        ]
+      },
+      "CatalogPage": {
+        "type": "object",
+        "properties": {
+          "publications": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/CatalogPublication"
+            }
+          },
+          "navigation": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "properties": {
+                "title": {
+                  "type": "string"
+                },
+                "cursor": {
+                  "type": "string"
+                }
+              },
+              "required": [
+                "title",
+                "cursor"
+              ]
+            }
+          },
+          "nextCursor": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          }
+        },
+        "required": [
+          "publications",
+          "navigation",
+          "nextCursor"
+        ]
+      },
+      "HostedFile": {
+        "type": "object",
+        "properties": {
+          "index": {
+            "type": "integer",
+            "minimum": 0
+          },
+          "name": {
+            "type": "string"
+          },
+          "bytes": {
+            "type": "integer",
+            "minimum": 1
+          },
+          "contentType": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "index",
+          "name",
+          "bytes",
+          "contentType"
+        ]
+      },
+      "HostedCopy": {
+        "type": "object",
+        "properties": {
+          "id": {
+            "type": "string",
+            "format": "uuid"
+          },
+          "title": {
+            "type": "string"
+          },
+          "format": {
+            "type": "string",
+            "enum": [
+              "ebook",
+              "audiobook"
+            ]
+          },
+          "files": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/HostedFile"
+            }
+          }
+        },
+        "required": [
+          "id",
+          "title",
+          "format",
+          "files"
+        ]
+      },
+      "HostedCopyStatus": {
+        "type": "object",
+        "properties": {
+          "copy": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/HostedCopy"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "importing": {
+            "type": "boolean"
+          },
+          "error": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          }
+        },
+        "required": [
+          "copy",
+          "importing",
+          "error"
+        ]
+      },
+      "DiscussionPrompt": {
+        "type": "object",
+        "properties": {
+          "body": {
+            "type": "string"
+          },
+          "updatedAt": {
+            "type": "integer",
+            "format": "int64",
+            "description": "Unix timestamp in milliseconds."
+          }
+        },
+        "required": [
+          "body",
+          "updatedAt"
+        ]
+      },
+      "FeedEvent": {
+        "type": "object",
+        "properties": {
+          "id": {
+            "type": "string",
+            "format": "uuid"
+          },
+          "clubID": {
+            "type": "string",
+            "format": "uuid"
+          },
+          "clubName": {
+            "type": "string"
+          },
+          "memberName": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "kind": {
+            "type": "string"
+          },
+          "label": {
+            "type": "string"
+          },
+          "createdAt": {
+            "type": "integer",
+            "format": "int64",
+            "description": "Unix timestamp in milliseconds."
+          },
+          "discussion": {
+            "$ref": "#/components/schemas/DiscussionLink",
+            "description": "Present for discussion post activity."
+          }
+        },
+        "required": [
+          "id",
+          "clubID",
+          "clubName",
+          "memberName",
+          "kind",
+          "label",
+          "createdAt"
+        ]
+      },
+      "ClubFeed": {
+        "type": "object",
+        "properties": {
+          "events": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/FeedEvent"
+            }
+          },
+          "before": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          }
+        },
+        "required": [
+          "events",
+          "before"
+        ]
+      },
+      "DiscussionLink": {
+        "type": "object",
+        "properties": {
+          "clubID": {
+            "type": "string",
+            "format": "uuid"
+          },
+          "readID": {
+            "type": "string",
+            "format": "uuid"
+          },
+          "threadID": {
+            "type": "string",
+            "description": "The checkpoint ID or 'general'."
+          },
+          "postID": {
+            "type": "string",
+            "format": "uuid"
+          }
+        },
+        "required": [
+          "clubID",
+          "readID",
+          "threadID",
+          "postID"
+        ]
+      }
+    }
+  }
+}

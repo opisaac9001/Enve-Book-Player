@@ -617,8 +617,8 @@ final class SiloProvider: IncrementalCatalogProvider, RemoteCatalogBrowsingProvi
         startPosition: Double? = nil
     ) async throws -> SiloPlaybackStartResponse {
         let attemptID = Self.canonicalUUID()
-        let audioCodecs = ["aac", "mp3"]
-        let containers = ["mp3", "m4a", "m4b", "aac", "mp4"]
+        let audioCodecs = ["aac", "mp3", "flac"]
+        let containers = ["mp3", "m4a", "m4b", "aac", "mp4", "flac"]
         let (data, http) = try await sendPlaybackCommand(path: "/playback/start", method: "POST") { installationID in
             var body: [String: Any] = [
                 "installation_id": installationID,

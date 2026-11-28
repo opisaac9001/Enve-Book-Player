@@ -15,6 +15,17 @@ final class ProfileSession {
     }()
 
     let profile: FamilyProfile
+    #if os(iOS)
+    private var clubsStorage: ClubsStore?
+    var clubs: ClubsStore? {
+        guard profile.role == .adult, !isRetired, let url = ClubsAPI.configuredURL else { return nil }
+        if let clubsStorage { return clubsStorage }
+        let store = ClubsStore(profileID: profile.id, defaults: defaults, url: url)
+        clubsStorage = store
+        store.bindPlayback { [weak self] in self?.playback.composition.controller.snapshots }
+        return store
+    }
+    #endif
     let storage: ProfileStorageLocations
     let defaults: UserDefaults
     private let allowsSystemIntegrations: Bool
@@ -442,6 +453,9 @@ final class ProfileSession {
         playback.autoSleep.start()
         downloads.start()
         configureSyncPlugins()
+        #if os(iOS)
+        _ = clubs
+        #endif
         appState.start()
         sessionManager.start()
         sync.startAppIntegration()
@@ -492,6 +506,7 @@ final class ProfileSession {
         if didCreateNetworkSession { networkSession.invalidateAndCancel() }
         await downloads.retire()
         #if os(iOS)
+        clubsStorage?.retire()
         await comicStreamingPages.retire()
         #endif
         await readingCache.trim()

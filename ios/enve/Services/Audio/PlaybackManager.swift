@@ -792,6 +792,23 @@ final class PlaybackManager {
             }
             .store(in: &cancellables)
 
+        NotificationCenter.default.publisher(for: AVAudioSession.routeChangeNotification)
+            .receive(on: RunLoop.main)
+            .sink { [weak self] notification in
+                guard let info = notification.userInfo,
+                    let reasonValue = info[AVAudioSessionRouteChangeReasonKey] as? UInt,
+                    let reason = AVAudioSession.RouteChangeReason(rawValue: reasonValue),
+                    let previousRoute = info[AVAudioSessionRouteChangePreviousRouteKey] as? AVAudioSessionRouteDescription
+                else { return }
+
+                self?.handleAudioRouteChange(
+                    reason: reason,
+                    previousOutputs: previousRoute.outputs.map(\.portType),
+                    currentOutputs: AVAudioSession.sharedInstance().currentRoute.outputs.map(\.portType)
+                )
+            }
+            .store(in: &cancellables)
+
         NotificationCenter.default.publisher(for: AVAudioSession.interruptionNotification)
             .receive(on: RunLoop.main)
             .sink { [weak self] notification in
@@ -847,6 +864,22 @@ final class PlaybackManager {
             .store(in: &cancellables)
         #endif
     }
+
+    #if os(iOS)
+    func handleAudioRouteChange(
+        reason: AVAudioSession.RouteChangeReason,
+        previousOutputs: [AVAudioSession.Port],
+        currentOutputs: [AVAudioSession.Port]
+    ) {
+        guard reason == .oldDeviceUnavailable || reason == .routeConfigurationChange,
+            previousOutputs.contains(.carAudio), !currentOutputs.contains(.carAudio),
+            isPlaying || shouldResumeAfterInterruption || isRefreshingResumeProgress
+        else { return }
+
+        shouldResumeAfterInterruption = false
+        pause()
+    }
+    #endif
 
     private var currentStatsTickInterval: TimeInterval {
         #if os(iOS)

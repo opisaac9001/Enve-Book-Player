@@ -34,6 +34,21 @@ final class ReadwiseExportService {
         lastSentAt = defaults.object(forKey: Self.lastSentKey) as? Date
     }
 
+    var backupToken: String? {
+        guard !isRetired else { return nil }
+        return keychain.token(forConnectionId: Self.credentialID)
+    }
+
+    func restoreBackupToken(_ token: String) -> Bool {
+        guard !isRetired, !isWorking, backupToken == nil, !token.isEmpty, !token.contains(where: \.isNewline),
+            keychain.setToken(token, forConnectionId: Self.credentialID)
+        else { return false }
+        clearTracking()
+        isConnected = true
+        lastError = nil
+        return true
+    }
+
     func connect(token: String) async {
         guard !isRetired, !isWorking else { return }
         let token = token.trimmingCharacters(in: .whitespacesAndNewlines)

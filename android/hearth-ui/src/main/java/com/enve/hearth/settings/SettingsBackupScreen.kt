@@ -98,6 +98,9 @@ fun SettingsBackupScreen(
             ),
             verticalArrangement = Arrangement.spacedBy(Hearth.Spacing.XXL),
         ) {
+            vm.transfer?.let { transfer ->
+                item { Card { SettingsDeviceTransfer(transfer) } }
+            }
             item {
                 Card {
                     Overline("Export")
@@ -152,7 +155,7 @@ fun SettingsBackupScreen(
             }
             item {
                 Text(
-                    "Backups never include server addresses, accounts, passwords, tokens, PINs, library selections, books, progress, highlights, or downloads. Backups from Enve on iPhone or iPad use a different format and can't be imported here.",
+                    "The settings-only JSON file contains Android preferences. Use an encrypted backup or QR transfer to move supported settings and sources between platforms.",
                     style = HearthText.Caption,
                     color = palette.textTertiary,
                 )

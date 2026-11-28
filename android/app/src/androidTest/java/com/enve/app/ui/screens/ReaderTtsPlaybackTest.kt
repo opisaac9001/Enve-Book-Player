@@ -21,6 +21,8 @@ import androidx.test.ext.junit.runners.AndroidJUnit4
 import androidx.test.platform.app.InstrumentationRegistry
 import com.enve.app.MainActivity
 import com.enve.app.profiles.ProfileActivityBinding
+import com.enve.app.readium.EbookTTSContent
+import com.enve.app.readium.ReadiumManager
 import com.enve.app.readium.narrator.NarratorPack
 import com.enve.app.viewmodel.ReaderNarratorPackState
 import com.enve.app.viewmodel.ReaderViewModel
@@ -37,13 +39,18 @@ import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.runBlocking
 import kotlinx.coroutines.withContext
+import kotlinx.coroutines.withTimeoutOrNull
 import kotlinx.coroutines.withTimeout
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
+import org.junit.Assert.assertNull
 import org.junit.Assert.assertTrue
 import org.junit.Rule
 import org.junit.Test
 import org.junit.runner.RunWith
+import org.json.JSONObject
+import org.readium.r2.shared.publication.Locator
+import org.readium.r2.shared.util.getOrElse
 
 @RunWith(AndroidJUnit4::class)
 class ReaderTtsPlaybackTest {
@@ -55,6 +62,119 @@ class ReaderTtsPlaybackTest {
 
     @Test
     fun foliateSpeechKeepsNormalControlsAccessible() = verify(ReaderEngineKind.FOLIATE)
+
+    @Test
+    fun speechExtractionPreservesVisibleAnchorsAndChapterOrder() = runBlocking {
+        val context = ApplicationProvider.getApplicationContext<Context>()
+        val file = File(context.cacheDir, "speech-anchors-${UUID.randomUUID()}.epub")
+        writeBook(file, """<div id="opening">Opening sentence.<p id="nested">Nested paragraph.</p><p>Last nested paragraph.</p></div>
+            <p id="repeat1">Prefix one. Shared sentence. Tail one.</p>
+            <p id="repeat2">Prefix two. Shared sentence. Tail two.</p>
+            <p id="inline">Before <em>inline passage here</em> after text.</p>""")
+        val readium = ReadiumManager(context)
+        val asset = readium.assetRetriever.retrieve(file).getOrElse { error("Cannot open test book") }
+        val publication = readium.publicationOpener.open(asset, allowUserInteraction = false)
+            .getOrElse { error("Cannot parse test book") }
+        fun anchor(selector: String, quote: String, before: String = "", after: String = ""): Locator =
+            checkNotNull(Locator.fromJSON(JSONObject()
+                .put("href", publication.readingOrder.first().href.toString())
+                .put("type", "application/xhtml+xml")
+                .put("locations", JSONObject().put("cssSelector", selector))
+                .put("text", JSONObject().put("highlight", quote).put("before", before).put("after", after))))
+        try {
+            val opening = EbookTTSContent(publication, anchor("#opening", "Opening sentence."))
+            assertEquals("Opening sentence.", opening.next()?.text)
+            assertEquals("Nested paragraph.", opening.next()?.text)
+            assertEquals("Last nested paragraph.", opening.next()?.text)
+
+            val repeated = EbookTTSContent(publication, anchor("body", "Shared sentence.", "Prefix two.", "Tail two."))
+            assertEquals("Shared sentence. Tail two.", repeated.next()?.text)
+            assertEquals("Before inline passage here after text.", repeated.next()?.text)
+            assertTrue(checkNotNull(repeated.next()).text.startsWith("Paragraph 1."))
+            repeat(5) { repeated.next() }
+            assertNull(repeated.next())
+
+            val inline = EbookTTSContent(publication, anchor("#inline > em", "inline\npassage", "Before ", " here"))
+            val spoken = checkNotNull(inline.next())
+            assertEquals("inline passage here after text.", spoken.text)
+            assertTrue(checkNotNull(spoken.locator?.text?.before).endsWith("Before "))
+            assertEquals(spoken.text, spoken.locator?.text?.highlight)
+
+            for (quote in listOf("Missing passage", "Shared sentence.")) {
+                var rejected = false
+                try {
+                    EbookTTSContent(publication, anchor("body", quote)).next()
+                } catch (_: IllegalStateException) {
+                    rejected = true
+                }
+                assertTrue("An unresolved or ambiguous anchor must not jump elsewhere", rejected)
+            }
+        } finally {
+            publication.close()
+            file.delete()
+        }
+    }
+
+    @Test
+    fun readiumSpeechStartsAtVisibleText() = verifyVisibleStart(ReaderEngineKind.READIUM)
+
+    @Test
+    fun foliateSpeechStartsAtVisibleText() = verifyVisibleStart(ReaderEngineKind.FOLIATE)
+
+    private fun verifyVisibleStart(engine: ReaderEngineKind) = runBlocking {
+        val context = ApplicationProvider.getApplicationContext<Context>()
+        val coordinator = EntryPointAccessors.fromApplication(context, ProfileActivityBinding.DeviceEntryPoint::class.java).profiles()
+        ActivityScenario.launch(MainActivity::class.java).use { await { coordinator.activeRuntime.value != null } }
+        val runtime = checkNotNull(coordinator.activeRuntime.value)
+        val id = "tts-position-${UUID.randomUUID()}"
+        val file = File(runtime.component.storageLocations().cacheDirectory, "ebooks/$id.epub")
+        file.parentFile!!.mkdirs()
+        val opening = "Opening sentence on the first page. " + (1..12).joinToString(" ") { "Opening line $it stays inside its containing division." }
+        writeBook(file, "<div id='opening'>$opening<p>Nested paragraph that must not be spoken first.</p><p>Last nested paragraph.</p></div>" +
+            (1..12).joinToString("") { "<p id='page$it'>Passage $it. " + (1..25).joinToString(" ") { sentence -> "Sentence $sentence in passage $it follows the words on the visible page." } + "</p>" })
+        val intent = EbookReaderActivity.createIntent(context, id, BookSource.LOCAL,
+            title = "Enve speech position verification", author = "Enve tests", bookFormat = "EPUB",
+            epubLocator = null, epubProgress = 0f, readerEngine = engine)
+        try {
+            ActivityScenario.launch<EbookReaderActivity>(intent).use { scenario ->
+                lateinit var vm: ReaderViewModel
+                await {
+                    scenario.onActivity { vm = ViewModelProvider(it)[ReaderViewModel::class.java] }
+                    vm.state.value.isReady && vm.state.value.ttsReady && vm.state.value.totalPages > 0
+                }
+                val priorNarrator = vm.state.value.ttsNarratorPack
+                try {
+                    withContext(Dispatchers.Main) {
+                        vm.selectNarrator(null)
+                        if (!vm.state.value.showChrome) vm.toggleChrome()
+                    }
+                    click("Read back")
+                    await { vm.state.value.ttsPlayback.passage.isNotEmpty() }
+                    withContext(Dispatchers.Main) { vm.pauseTts() }
+                    assertTrue(vm.state.value.ttsPlayback.passage.startsWith("Opening sentence on the first page."))
+                    withContext(Dispatchers.Main) { vm.stopTts() }
+                    val firstPage = vm.state.value.currentPage
+                    withContext(Dispatchers.Main) { vm.pageForward() }
+                    await { vm.state.value.currentPage > firstPage }
+                    delay(500)
+                    val page = vm.state.value.currentPage
+                    val expected = withContext(Dispatchers.Main) {
+                        checkNotNull(vm.readBackAnchor()?.text?.highlight)
+                    }
+                    withContext(Dispatchers.Main) { vm.startTts() }
+                    await { vm.state.value.ttsPlayback.passage.isNotEmpty() }
+                    withContext(Dispatchers.Main) { vm.pauseTts() }
+                    val normalize: (String) -> String = { it.replace(Regex("[\\s\\p{Z}]+"), " ").trim() }
+                    assertTrue("Speech must start at the visible text", normalize(vm.state.value.ttsPlayback.passage).startsWith(normalize(expected)))
+                    assertEquals("Starting speech must keep the visible page", page, vm.state.value.currentPage)
+                } finally {
+                    withContext(Dispatchers.Main) { vm.stopTts(); vm.selectNarrator(priorNarrator) }
+                }
+            }
+        } finally {
+            file.delete()
+        }
+    }
 
     @Test
     fun downloadedNarratorReadsLocally() {
@@ -192,11 +312,16 @@ class ReaderTtsPlaybackTest {
         }
     }
 
-    private suspend fun await(predicate: () -> Boolean) = withTimeout(30_000) {
-        while (!predicate()) delay(100)
+    private suspend fun await(predicate: () -> Boolean) {
+        val caller = AssertionError("Reader did not reach the expected state within 30 seconds")
+        val reached = withTimeoutOrNull(30_000) {
+            while (!predicate()) delay(100)
+            true
+        } ?: false
+        if (!reached) throw caller
     }
 
-    private fun writeBook(file: File) {
+    private fun writeBook(file: File, opening: String? = null) {
         ZipOutputStream(file.outputStream()).use { zip ->
             fun entry(path: String, value: String, stored: Boolean = false) {
                 val bytes = value.toByteArray()
@@ -215,7 +340,7 @@ class ReaderTtsPlaybackTest {
             entry("OPS/book.opf", """<?xml version="1.0"?><package xmlns="http://www.idpf.org/2007/opf" version="3.0" unique-identifier="id"><metadata xmlns:dc="http://purl.org/dc/elements/1.1/"><dc:identifier id="id">enve-tts-verification</dc:identifier><dc:title>Enve speech verification</dc:title><dc:language>en</dc:language><meta property="dcterms:modified">2026-10-24T00:00:00Z</meta></metadata><manifest><item id="nav" href="nav.xhtml" media-type="application/xhtml+xml" properties="nav"/><item id="one" href="one.xhtml" media-type="application/xhtml+xml"/><item id="two" href="two.xhtml" media-type="application/xhtml+xml"/></manifest><spine><itemref idref="one"/><itemref idref="two"/></spine></package>""")
             entry("OPS/nav.xhtml", """<html xmlns="http://www.w3.org/1999/xhtml" xmlns:epub="http://www.idpf.org/2007/ops"><head><title>Contents</title></head><body><nav epub:type="toc"><ol><li><a href="one.xhtml">First chapter</a></li><li><a href="two.xhtml">Second chapter</a></li></ol></nav></body></html>""")
             for (chapter in listOf("one", "two")) {
-                val paragraphs = (1..6).joinToString("") { index ->
+                val paragraphs = if (chapter == "one" && opening != null) opening else (1..6).joinToString("") { index ->
                     "<p>Paragraph $index. " + "The orange book rests beside a window while the reader explores another story. ".repeat(30) + "</p>"
                 }
                 entry("OPS/$chapter.xhtml", """<html xmlns="http://www.w3.org/1999/xhtml"><head><title>Chapter $chapter</title></head><body>$paragraphs</body></html>""")
